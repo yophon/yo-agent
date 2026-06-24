@@ -15,6 +15,7 @@ import type {
   ProviderEvent,
   ToolChoice,
 } from './types';
+import { sseDataLines } from './sse';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -265,22 +266,5 @@ export function mapStopReason(r: string): 'end_turn' | 'tool_use' | 'max_tokens'
       return 'pause_turn';
     default:
       return 'end_turn';
-  }
-}
-
-async function* sseDataLines(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, idx).replace(/\r$/, '');
-      buf = buf.slice(idx + 1);
-      if (line.startsWith('data:')) yield line.slice(5).trim();
-    }
   }
 }

@@ -119,3 +119,4 @@ export interface KernelDeps {
 export * from './kernel';
 export * from './loop-breaker';
 export * from './condenser';
+export * from './context-files';

@@ -1,14 +1,16 @@
 /**
- * yo-agent headless CLI（Phase 1 Slice A）。
+ * yo-agent headless CLI（Phase 1）。
  *
  *   pnpm --filter @yo-agent/cli start -- -p "你的提问"
  *
- * 有 ANTHROPIC_API_KEY → 接真实 Anthropic（流式编程对话）；否则用 FakeProvider 演示内核循环。
+ * Provider 选择：ANTHROPIC_API_KEY → Anthropic；OPENAI_API_KEY(+OPENAI_BASE_URL) → OpenAI 兼容；
+ * 否则 FakeProvider 演示。YO_DB=路径 → SQLite 持久化（否则内存）。自动加载 cwd 链上的 yo.md/AGENTS.md。
  */
-import { AgentKernel, HistoryLoopBreaker, NoopCondenser } from '@yo-agent/kernel';
-import { MemoryEventStore } from '@yo-agent/store';
+import { AgentKernel, HistoryLoopBreaker, NoopCondenser, loadConventionFiles } from '@yo-agent/kernel';
+import { MemoryEventStore, SqliteEventStore } from '@yo-agent/store';
+import type { EventStore } from '@yo-agent/store';
 import { InMemoryToolRegistry, builtinTools } from '@yo-agent/tools';
-import { AnthropicProvider, FakeProvider, textTurn } from '@yo-agent/provider';
+import { AnthropicProvider, FakeProvider, OpenAiCompatibleProvider, textTurn } from '@yo-agent/provider';
 import type { Provider } from '@yo-agent/provider';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
@@ -20,9 +22,22 @@ function parsePrompt(argv: string[]): string {
 
 function buildProvider(prompt: string): Provider {
   if (process.env.ANTHROPIC_API_KEY) return new AnthropicProvider();
+  if (process.env.OPENAI_API_KEY) return new OpenAiCompatibleProvider({ baseUrl: process.env.OPENAI_BASE_URL });
   const fake = new FakeProvider();
-  fake.script(textTurn(`（FakeProvider 演示）收到："${prompt}"。设置 ANTHROPIC_API_KEY 后接真实模型。`));
+  fake.script(textTurn(`（FakeProvider 演示）收到："${prompt}"。设置 ANTHROPIC_API_KEY 或 OPENAI_API_KEY 接真实模型。`));
   return fake;
+}
+
+function buildStore(): EventStore {
+  const dbPath = process.env.YO_DB;
+  if (dbPath) {
+    try {
+      return SqliteEventStore.open(dbPath);
+    } catch (e) {
+      console.error(`[warn] SQLite 不可用，降级内存：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return new MemoryEventStore();
 }
 
 function render(env: EventEnvelope): void {
@@ -30,9 +45,6 @@ function render(env: EventEnvelope): void {
   switch (e.kind) {
     case 'AssistantText':
       if (e.delta) process.stdout.write(e.delta);
-      break;
-    case 'Reasoning':
-      if (e.delta) process.stdout.write(`[2m${e.delta}[0m`);
       break;
     case 'ToolCallStarted':
       process.stdout.write(`\n[tool ${e.name}] `);
@@ -60,19 +72,20 @@ async function main(): Promise<void> {
     console.error('用法：yo-agent -p "你的提问"');
     process.exit(2);
   }
-  const store = new MemoryEventStore();
+  const cwd = process.cwd();
+  const system = (await loadConventionFiles(cwd)) || undefined;
   const tools = new InMemoryToolRegistry();
   for (const t of builtinTools) tools.register(t);
   const kernel = new AgentKernel({
-    store,
+    store: buildStore(),
     provider: buildProvider(prompt),
     tools,
     loopBreaker: new HistoryLoopBreaker(),
     condenser: new NoopCondenser(),
     model: process.env.YO_MODEL ?? 'claude-opus-4-8',
-    cwd: process.cwd(),
+    cwd,
   });
-  const sessionId = await kernel.startSession();
+  const sessionId = await kernel.startSession({ system });
   kernel.subscribe(sessionId, null, render);
   await kernel.submitInput(sessionId, prompt, `cli-${Date.now()}`);
 }

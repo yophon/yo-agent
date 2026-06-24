@@ -16,8 +16,9 @@
 🏗️ **Phase 1 · Slice A 完成（内核 turn 循环可离线跑通）** —— 见 [`docs/PHASE-1.md`](docs/PHASE-1.md)（Phase 0 协议骨架见 [`docs/PHASE-0.md`](docs/PHASE-0.md)）。
 
 - 协议单一事实源 `@yo-agent/protocol` 冻结：`AgentEvent`（20 变体）+ JSON-RPC 方法表 + cursor/resume，zod 定义、导出 JSON Schema；与 yo-aichat `AgentEvent` 同构（可执行测试）。
-- **`AgentKernel` turn 循环**（infer→tool→observe）+ 事件溯源 + 熔断 + `max_tokens` 续传 + 审批；`MemoryEventStore`、`InMemoryToolRegistry` + `read/write/ls`、`FakeProvider`、真实 `AnthropicProvider`（SSE 单测）。
-- **headless CLI** 可端到端跑通；验证门全绿：`pnpm run check` = typecheck + gen:schema + **33 测试**。
+- **`AgentKernel` turn 循环**（infer→tool→observe）+ 事件溯源 + 熔断 + `max_tokens` 续传 + 审批；工具 `read/write/ls`、`FakeProvider`。
+- **持久化** `MemoryEventStore` + `SqliteEventStore`（`node:sqlite`）；**provider** 真实 `AnthropicProvider` + `OpenAiCompatibleProvider`（含 DeepSeek/Ollama，SSE 单测）；**yo.md/AGENTS.md** 约定文件加载。
+- **headless CLI** 可端到端跑通（含 SQLite 落盘）；验证门全绿：`pnpm run check` = typecheck + gen:schema + **42 测试**。
 
 竞品调研 15 份 + 横向综述见 [`docs/research/`](docs/research/)；全面设计见 [`docs/DESIGN.md`](docs/DESIGN.md)（14 章 + §15 实现补遗 + 8 ADR）。
 
@@ -28,20 +29,20 @@ yo-agent/
 ├─ packages/
 │  ├─ protocol/   # ★ 单一事实源：AgentEvent + JSON-RPC + cursor/resume（zod → TS + JSON Schema）
 │  │  └─ schema/  #   生成的 JSON Schema（给 Go bridge 对接）
-│  ├─ provider/   # Provider 抽象 + FakeProvider + AnthropicProvider
+│  ├─ provider/   # Provider 抽象 + Fake / Anthropic / OpenAI 兼容（含 DeepSeek）
 │  ├─ tools/      # ToolRegistry + 内置 read/write/ls（声明/执行分离）
-│  ├─ store/      # MemoryEventStore（append-only EventLog）
-│  └─ kernel/     # AgentKernel turn 循环 + LoopBreaker + Condenser
-├─ apps/yo-agent/ # headless CLI
+│  ├─ store/      # Memory / Sqlite(node:sqlite) EventLog（append-only）
+│  └─ kernel/     # AgentKernel turn 循环 + LoopBreaker + yo.md 加载
+├─ apps/yo-agent/ # headless CLI（provider 选择 + SQLite + yo.md 注入）
 ├─ docs/{DESIGN,PHASE-0,PHASE-1}.md + research/
-└─ (Slice B：OpenAI/Gemini/DeepSeek adapter · SQLite 持久化 · TUI · yo.md)
+└─ (Slice B-2：Gemini/Responses adapter · TUI · Condenser 接入)
 ```
 
 ## 快速开始
 
 ```bash
 pnpm install        # 需 Node ≥ 20、pnpm 10
-pnpm run check      # typecheck + 生成 JSON Schema + 跑测试（33 个）
+pnpm run check      # typecheck + 生成 JSON Schema + 跑测试（42 个）
 
 # headless CLI（FakeProvider 演示，无需 key）
 pnpm --filter @yo-agent/cli start -- -p "你的提问"
