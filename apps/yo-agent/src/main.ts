@@ -4,6 +4,7 @@
  *   pnpm --filter @yo-agent/cli start -- --tui -p "提问"        # Ink TUI（交互审批）
  *   pnpm --filter @yo-agent/cli start -- --mode jsonl -p "提问"  # 结构化 JSONL 单次
  *   pnpm --filter @yo-agent/cli start -- rpc                     # JSON-RPC over stdin/stdout（通用远端驱动，常驻）
+ *   pnpm --filter @yo-agent/cli start -- rpc --listen 8787      # JSON-RPC over WS + ed25519 设备鉴权（隧道内）
  *   pnpm --filter @yo-agent/cli start -- mcp-server             # MCP server over stdio（被 Claude Code/Cursor 调用，常驻）
  *
  * Provider：ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY（OPENAI_MODE=responses，YO_TOOL_SHIM=1 双轨）；
@@ -23,8 +24,9 @@ import {
   selectProvider,
   usableContextTokens,
 } from '@yo-agent/surface-cli';
-import { JsonlStreamChannel, RpcSurface } from '@yo-agent/surface-rpc';
+import { JsonlStreamChannel, RpcSurface, serveWebSocket } from '@yo-agent/surface-rpc';
 import { McpServerSurface, autoApproveGate, createStdioTransport } from '@yo-agent/surface-mcp';
+import { PairingGate } from '@yo-agent/auth';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
@@ -33,6 +35,8 @@ type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server';
 interface Args {
   prompt: string;
   mode: Mode;
+  /** rpc --listen <port>：WS server 模式（带设备鉴权），否则 stdio。 */
+  listenPort?: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -41,10 +45,19 @@ function parseArgs(argv: string[]): Args {
   let wantTui = false;
   let wantRpc = false;
   let wantMcp = false;
+  let listenPort: number | undefined;
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--') continue; // pnpm 注入的分隔符
+    if (a === '--listen') {
+      const v = argv[i + 1];
+      if (v !== undefined && !v.startsWith('-')) {
+        listenPort = Number.parseInt(v, 10);
+        i++;
+      }
+      continue;
+    }
     if (a === '-p') {
       const v = argv[i + 1];
       if (v !== undefined && !v.startsWith('-')) {
@@ -76,7 +89,7 @@ function parseArgs(argv: string[]): Args {
   }
   if (!prompt) prompt = positional.join(' ');
   const mode: Mode = wantMcp ? 'mcp-server' : wantRpc ? 'rpc' : wantJsonl ? 'jsonl' : wantTui ? 'tui' : 'headless';
-  return { prompt, mode };
+  return { prompt, mode, listenPort };
 }
 
 function buildStore(): EventStore {
@@ -121,7 +134,7 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
 }
 
 async function main(): Promise<void> {
-  const { prompt, mode } = parseArgs(process.argv.slice(2));
+  const { prompt, mode, listenPort } = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
   const env = process.env;
 
@@ -134,9 +147,29 @@ async function main(): Promise<void> {
     process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
   }
 
-  // RPC 模式：stdout 是 JSON-RPC 通道（日志/警告一律走 stderr），常驻读 stdin。客户端经 session/new 驱动。
+  // RPC 模式：--listen <port> → WS server（带设备鉴权），否则 stdio JSONL。日志一律走 stderr，进程常驻。
   if (mode === 'rpc') {
     const { kernel } = buildKernel({ env, cwd, prompt: '', mode });
+    if (listenPort !== undefined) {
+      // WS server：每连接先过 ed25519 + 配对码 + nonce 挑战握手，再交给 RpcSurface。
+      const gate = new PairingGate();
+      for (const k of (env.YO_TRUSTED_KEYS ?? '').split(',').map((s) => s.trim()).filter(Boolean)) gate.trust(k);
+      if (gate.trustedKeys().length === 0) {
+        console.error(`[配对] 首次连接请用配对码：${gate.issueCode()}（带外告知客户端）`);
+      }
+      const handle = await serveWebSocket({
+        port: listenPort,
+        gate,
+        onSession: (channel, pubKey) => {
+          console.error(`[rpc] 已鉴权连接 ${pubKey.slice(0, 16)}…（设 YO_TRUSTED_KEYS=${pubKey} 可免配对重连）`);
+          void new RpcSurface(channel).start(kernel as Kernel);
+        },
+        onAuthError: (e) => console.error('[rpc] 鉴权失败：', e instanceof Error ? e.message : e),
+      });
+      console.error(`[rpc] WS 监听 ws://0.0.0.0:${handle.port}（建议仅经 Tailscale/WireGuard 隧道访问）`);
+      await new Promise<void>(() => {});
+      return;
+    }
     const channel = new JsonlStreamChannel(process.stdin, process.stdout);
     await new RpcSurface(channel).start(kernel as Kernel);
     await new Promise<void>(() => {}); // 永不 resolve：进程常驻

@@ -4,7 +4,7 @@
 > **Slice 2A**：RpcSurface 核心（JSON-RPC over JSONL/in-memory，通用远端驱动）—— **已交付**。
 > **Slice 2C**：McpServerSurface（`mcp-server`，被 Claude Code/Cursor 调用）—— **已交付**。
 > **Slice 2B**：resume/reconnect 完整化（ResumeBuffer 接入 + gap 溢出 + 跨进程会话重建 + 审批跨重连存活）—— **已交付**。
-> **Slice 2D（后续）**：鉴权（ed25519 + 配对码 + nonce）给 socket/WS 传输。
+> **Slice 2D**：设备鉴权（ed25519 + 配对码 + nonce 挑战）+ WS 传输 —— **已交付**。**Phase 2 全部交付。**
 
 ## Slice 2A 已交付
 
@@ -43,6 +43,16 @@
 
 **新增覆盖**（共 **133 测试 / 26 文件**）：surface-rpc resume/ordering 测试（reconnect 缺口填充、gap 溢出折叠流式、跨进程重建续 turn、审批跨重连存活、cursor 对账、resume 不重投已决审批、**gap 溢出读期间并发实时事件不丢缺口摘要**、信道关闭 reject pending）；surface-mcp 熔断→isError；store sqlite 会话行 messages 往返。
 
+## Slice 2D 已交付
+
+| 包 | 实现 | 说明 |
+|---|---|---|
+| `@yo-agent/auth`（新包） | **`DeviceIdentity`**（ed25519）+ **`PairingGate`** + 握手 | 设备身份（seed 存安全存储、公钥作标识）；配对门：受信公钥集 + 一次性配对码（**HMAC-SHA256(code, pubKey) 证明绑公钥 + 失败锁定**）；`serverHandshake`/`clientHandshake`：hello→challenge(nonce)→auth(签名[+配对证明])→ok/err，**nonce 签名挑战证明持有私钥（抗捕获重放，非静态 bearer）** |
+| `@yo-agent/surface-rpc` | **`WebSocketChannel`** + `serveWebSocket` / `connectWebSocket` | WS 传输（MessageChannel over ws，写错误/close→onClose 断连清算）；serve 每连接先过 serverHandshake 鉴权才交 RpcSurface；connect 先握手再回已鉴权信道 |
+| `apps/yo-agent` | **`rpc --listen <port>`** | WS server 模式：YO_TRUSTED_KEYS 载入受信公钥、否则发一次性配对码（stderr）；每连接鉴权 → RpcSurface（共享内核）。建议仅经 Tailscale/WireGuard 隧道访问 |
+
+**新增覆盖**：auth 9 测试（签名验/篡改换钥失败、seed 还原、受信通过、配对成功并注册、无码拒、错码拒、配对码一次性、失败锁定、**坏签名抗重放冒充**）；surface-rpc ws 3 测试（**真 localhost ws**：配对→受信→JSON-RPC ping/pong+驱动一轮、未配对拒绝、受信免码重连）。真进程冒烟：`rpc --listen 8799` 打印配对码 + WS 监听。
+
 ## 对抗式审查（Phase 2 表面）→ 15 项确认缺陷全部修复
 
 5 维多智能体审查（JSON-RPC 并发 / RpcSurface / resume 跨进程 / MCP / app 接线）→ 17 原始、15 确认、逐条对抗式核验：
@@ -65,13 +75,15 @@ printf '%s\n' \
 pnpm exec tsx apps/yo-agent/src/main.ts mcp-server   # 常驻，stdio 说 MCP
 ```
 
-## 剩余（Phase 2 后续分片）
+## 退出标准 —— ✅ Phase 2 全达成
 
-- **Slice 2D**：鉴权（`@noble/ed25519` + 配对码 + 每连接 nonce 挑战）给 socket/WS 传输；WS 传输（TCP）。这是把 RPC 暴露到网络（隧道外）前的安全闸。
-- **MCP server 打磨**：破坏性工具经 MCP elicitation 二次确认（替代 autoApprove）；`run` 进度经 MCP progress notification 流式。
-- **resume 打磨**：`gitRef` 纳入会话行（resume 四要素之一）；gap 溢出降级里"当前快照"接 checkpoint；turn 进行中（非完成态）的更细粒度持久化。
+- ① **任意远端客户端经 resume 驱动 yo-agent，断网/重启不丢 token / 不丢审批**：session/reconnect 缺口填充 + gap 溢出降级 + 跨进程会话从持久态重建续 turn + 审批跨重连存活（2B），经对抗式审查加固（并发/排序）；**WS + ed25519 设备鉴权（2D）→ 可隧道内端到端**。
+- ② **yo-agent 作 MCP server 被 Claude Code 调用、内置工具可用**：`run` 工具委派整个内核，真 stdio MCP 握手 + tools/list 验证（2C）。
 
-## 退出标准
+**验证门**：`pnpm run check` —— typecheck 0 错误 + 12 份 JSON Schema + **145 个测试（28 文件）**全绿。
 
-- ① **任意远端客户端经 resume 驱动 yo-agent，断网/重启不丢 token / 不丢审批 —— ✅ 核心达成**：session/reconnect 缺口填充 + gap 溢出降级 + 跨进程会话从持久态重建续 turn + 审批跨重连存活，均离线测试覆盖（rpc/mcp stdio 真进程冒烟 + memory/sqlite 持久化往返）。网络传输鉴权（2D）后即可隧道外端到端。
-- ② **yo-agent 作 MCP server 被 Claude Code 调用、内置工具可用 —— ✅ 已达成**：`run` 工具委派整个内核，真 stdio MCP 握手 + tools/list 验证。
+## 后续打磨（Phase 2 之外）
+
+- **传输加固**：TLS + cert-pin / 服务端身份验证（当前 client→server 单向鉴权，依赖 Tailscale/WireGuard 隧道加密）；WS 满载 `-32001` + 指数退避；token 静默轮换。
+- **MCP**：破坏性工具经 MCP elicitation 二次确认（替代 autoApprove）；`run` 进度经 MCP progress notification 流式。
+- **resume**：`gitRef` 纳入会话行；gap 溢出降级"当前快照"接 checkpoint；turn 进行中更细粒度持久化。

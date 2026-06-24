@@ -9,9 +9,14 @@
   },
   "types": "./src/index.ts",
   "dependencies": {
+    "@yo-agent/auth": "workspace:*",
     "@yo-agent/kernel": "workspace:*",
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",
-    "@yo-agent/store": "workspace:*"
+    "@yo-agent/store": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
   }
 }

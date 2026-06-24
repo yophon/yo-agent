@@ -26,6 +26,9 @@ importers:
 
   apps/yo-agent:
     dependencies:
+      '@yo-agent/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@yo-agent/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
@@ -54,6 +57,15 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.22.4
+
+  packages/auth:
+    dependencies:
+      '@noble/ed25519':
+        specifier: ^2.1.0
+        version: 2.3.0
+      '@noble/hashes':
+        specifier: ^1.6.0
+        version: 1.8.0
 
   packages/kernel:
     dependencies:
@@ -146,6 +158,9 @@ importers:
 
   packages/surface-rpc:
     dependencies:
+      '@yo-agent/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@yo-agent/kernel':
         specifier: workspace:*
         version: link:../kernel
@@ -158,6 +173,13 @@ importers:
       '@yo-agent/store':
         specifier: workspace:*
         version: link:../store
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
 
   packages/tools:
     dependencies:
@@ -502,6 +524,13 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
+  '@noble/ed25519@2.3.0':
+    resolution: {integrity: sha512-M7dvXL2B92/M7dw9+gzuydL8qn/jiqNHaoR3Q+cb1q1GHV7uwE17WCyFMG+Y+TZb5izcaXk5TdJRrDUxHXL78A==}
+
+  '@noble/hashes@1.8.0':
+    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
+    engines: {node: ^14.21.3 || >=16}
+
   '@rollup/rollup-android-arm-eabi@4.62.2':
     resolution: {integrity: sha512-6o7ZLZK+BeenkZCFNDXqpbjw9bD6nuWonvS/lwQJp7NoVVxm6p3qE7qQ5jGuBjiFsgvqjD8mZAU5oWxTmbOeOg==}
     cpu: [arm]
@@ -644,6 +673,9 @@ packages:
 
   '@types/react@18.3.31':
     resolution: {integrity: sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@vitest/expect@3.2.6':
     resolution: {integrity: sha512-1+7q9BtaKzEmO+fmNT3kYvoNn5Y71XWAx2Q5HRim4tTVRQVRv4uJFAQ5FbK0OPUeNP/WmVCpxYxoJdvuHVjzBQ==}
@@ -1791,6 +1823,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@noble/ed25519@2.3.0': {}
+
+  '@noble/hashes@1.8.0': {}
+
   '@rollup/rollup-android-arm-eabi@4.62.2':
     optional: true
 
@@ -1885,6 +1921,10 @@ snapshots:
     dependencies:
       '@types/prop-types': 15.7.15
       csstype: 3.2.3
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.20.0
 
   '@vitest/expect@3.2.6':
     dependencies:

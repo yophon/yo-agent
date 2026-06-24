@@ -8,6 +8,7 @@
     "start": "tsx src/main.ts"
   },
   "dependencies": {
+    "@yo-agent/auth": "workspace:*",
     "@yo-agent/kernel": "workspace:*",
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",

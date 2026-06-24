@@ -5,3 +5,4 @@
 export * from './transport';
 export * from './jsonrpc';
 export * from './rpc-surface';
+export * from './ws';
