@@ -39,6 +39,7 @@ export class SqliteEventStore implements EventStore {
   private readonly selectHead: SqliteStmt;
   private readonly upsertSession: SqliteStmt;
   private readonly selectSession: SqliteStmt;
+  private readonly selectAllSessions: SqliteStmt;
   private readonly insertCheckpoint: SqliteStmt;
 
   private constructor(db: SqliteDb) {
@@ -68,6 +69,7 @@ export class SqliteEventStore implements EventStore {
     this.selectHead = db.prepare(`SELECT MAX(cursor) AS head FROM events WHERE session_id = ?`);
     this.upsertSession = db.prepare(`INSERT OR REPLACE INTO sessions (session_id, row_json) VALUES (?, ?)`);
     this.selectSession = db.prepare(`SELECT row_json FROM sessions WHERE session_id = ?`);
+    this.selectAllSessions = db.prepare(`SELECT row_json FROM sessions`);
     this.insertCheckpoint = db.prepare(`INSERT OR REPLACE INTO checkpoints (checkpoint_id, row_json) VALUES (?, ?)`);
   }
 
@@ -123,6 +125,11 @@ export class SqliteEventStore implements EventStore {
   async getSession(sessionId: Id): Promise<SessionRow | null> {
     const row = this.selectSession.get(sessionId) as { row_json: string } | undefined;
     return row ? (JSON.parse(row.row_json) as SessionRow) : null;
+  }
+
+  async listSessions(): Promise<SessionRow[]> {
+    const rows = this.selectAllSessions.all() as Array<{ row_json: string }>;
+    return rows.map((r) => JSON.parse(r.row_json) as SessionRow);
   }
 
   async saveCheckpoint(cp: Checkpoint): Promise<void> {

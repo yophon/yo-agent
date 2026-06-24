@@ -43,6 +43,10 @@ export interface Kernel {
   decideApproval(requestId: Id, decision: ApprovalDecision, updatedInput?: unknown): void;
   listSessions(): SessionSummary[];
   listModels(): Promise<ModelInfo[]>;
+  /** 跨进程 resume：会话不在内存则从持久态重建；store 无此会话返回 false。 */
+  resumeSession(sessionId: Id): Promise<boolean>;
+  /** 实时重连缺口（内存 ring）；null=gap 溢出，调用方走 EventLog 降级。 */
+  bufferedSince(sessionId: Id, fromCursor: number): EventEnvelope[] | null;
 }
 
 export interface ContextState {

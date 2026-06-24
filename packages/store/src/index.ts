@@ -32,6 +32,8 @@ export interface SessionRow {
   headCursor: Cursor;
   createdAt: number;
   lastActiveAt: number;
+  /** 送 LLM 的消息窗口快照（opaque JSON，CanonMessage[]）——跨进程 resume 重建会话状态用。 */
+  messages?: unknown[];
 }
 
 export interface EventStore {
@@ -40,7 +42,10 @@ export interface EventStore {
   /** 区间重放（resume / gap 溢出降级）。 */
   read(sessionId: Id, fromCursor?: Cursor, toCursor?: Cursor): AsyncIterable<EventEnvelope>;
   head(sessionId: Id): Promise<Cursor | null>;
+  /** upsert 会话行（含 messages 快照），跨进程 resume 重建用。 */
   createSession(row: SessionRow): Promise<void>;
   getSession(sessionId: Id): Promise<SessionRow | null>;
+  /** 列持久会话（"last" / 跨进程发现）。 */
+  listSessions(): Promise<SessionRow[]>;
   saveCheckpoint(cp: Checkpoint): Promise<void>;
 }

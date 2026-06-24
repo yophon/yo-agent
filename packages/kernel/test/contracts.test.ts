@@ -62,6 +62,9 @@ describe('四接口冻结（Provider / Tool / Surface / Condenser）', () => {
       async getSession() {
         return null;
       },
+      async listSessions() {
+        return [];
+      },
       async saveCheckpoint() {},
     } satisfies EventStore;
     expect(store).toBeDefined();

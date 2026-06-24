@@ -42,6 +42,10 @@ export class MemoryEventStore implements EventStore {
     return this.sessions.get(sessionId) ?? null;
   }
 
+  async listSessions(): Promise<SessionRow[]> {
+    return [...this.sessions.values()];
+  }
+
   async saveCheckpoint(cp: Checkpoint): Promise<void> {
     this.checkpoints.push(cp);
   }

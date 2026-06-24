@@ -10,7 +10,8 @@ import type {
 } from '@yo-agent/protocol';
 import type { CanonMessage, ChatRequest, ContentBlock, Provider, ToolSpec } from '@yo-agent/provider';
 import type { ToolContext, ToolRegistry } from '@yo-agent/tools';
-import type { EventStore } from '@yo-agent/store';
+import type { EventStore, SessionRow } from '@yo-agent/store';
+import { ResumeBuffer } from '@yo-agent/store';
 import type { ApprovalGate, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
 import { estimateMessagesTokens } from './tokens';
 
@@ -36,6 +37,8 @@ export interface AgentKernelDeps {
   interactiveApproval?: boolean;
   /** 交互审批超时（ms），到时默认 deny（§6.3）。0/缺省=不超时。 */
   approvalTimeoutMs?: number;
+  /** ResumeBuffer 容量（最近 N 帧，服务实时重连缺口）。默认 512。 */
+  resumeBufferCapacity?: number;
 }
 
 export interface StartSessionOpts {
@@ -79,6 +82,8 @@ export class AgentKernel implements Kernel {
   readonly events: EventStore;
   private readonly d: AgentKernelDeps;
   private readonly sessions = new Map<Id, SessionState>();
+  /** 内存 ring：服务实时重连缺口（§6.3 / §10.1）；跨进程（新内核）为空 → 走 EventLog gap 溢出降级。 */
+  private readonly resumeBuffer: ResumeBuffer;
   private readonly pendingApprovals = new Map<
     Id,
     (decision: { decision: ApprovalDecision; updatedInput?: unknown }) => void
@@ -87,6 +92,7 @@ export class AgentKernel implements Kernel {
   constructor(deps: AgentKernelDeps) {
     this.events = deps.store;
     this.d = deps;
+    this.resumeBuffer = new ResumeBuffer(deps.resumeBufferCapacity ?? 512);
   }
 
   async startSession(opts: StartSessionOpts = {}): Promise<Id> {
@@ -115,7 +121,39 @@ export class AgentKernel implements Kernel {
       permissionMode: s.permissionMode,
       profile: 'default',
     });
+    await this.persistState(s); // 持久会话行（含 messages 快照），跨进程 resume 重建用
     return id;
+  }
+
+  /**
+   * 跨进程 resume：会话不在内存（进程重启）则从持久态重建 SessionState（messages 快照 + headCursor），
+   * 使其后续 turn 带完整上下文续接。已在内存则直接返回 true；store 无此会话返回 false。
+   */
+  async resumeSession(sessionId: Id): Promise<boolean> {
+    if (this.sessions.has(sessionId)) return true;
+    const row = await this.events.getSession(sessionId);
+    if (!row) return false;
+    const s: SessionState = {
+      id: sessionId,
+      model: row.model,
+      cwd: row.workspacePath,
+      permissionMode: (row.permissionMode as PermissionMode) ?? 'supervised',
+      messages: (row.messages as CanonMessage[]) ?? [],
+      headCursor: row.headCursor,
+      interrupted: false,
+      subscribers: new Set(),
+      lastCompactCursor: 0,
+      stepsSinceCompact: 0,
+      approvalCache: new Map(),
+      pendingApprovalIds: new Set(),
+    };
+    this.sessions.set(sessionId, s);
+    return true;
+  }
+
+  /** 内存 ring 取 fromCursor 之后的缺口（实时重连）；返回 null 表示 gap 溢出，调用方走 EventLog 降级。 */
+  bufferedSince(sessionId: Id, fromCursor: number): EventEnvelope[] | null {
+    return this.resumeBuffer.since(sessionId, fromCursor);
   }
 
   subscribe(sessionId: Id, _fromCursor: number | null, handler: (env: EventEnvelope) => void): () => void {
@@ -449,7 +487,30 @@ export class AgentKernel implements Kernel {
       event,
     };
     await this.events.append(env);
+    this.resumeBuffer.add(env); // 服务实时重连缺口
     for (const h of s.subscribers) h(env);
+    // 在 turn 完成态把会话状态（含 messages 快照）落库，供跨进程 resume 重建。
+    if (event.kind === 'TurnCompleted' || event.kind === 'TurnFailed') await this.persistState(s);
+  }
+
+  /** upsert 会话行（含 messages 窗口快照 + headCursor），跨进程 resume 重建用（§6.3 / §10.1）。 */
+  private async persistState(s: SessionState): Promise<void> {
+    const now = Date.now();
+    const row: SessionRow = {
+      sessionId: s.id,
+      owner: 'self',
+      surfaceKind: 'kernel',
+      agentProfile: 'default',
+      workspacePath: s.cwd,
+      model: s.model,
+      permissionMode: s.permissionMode,
+      state: 'active',
+      headCursor: s.headCursor,
+      createdAt: now,
+      lastActiveAt: now,
+      messages: s.messages,
+    };
+    await this.events.createSession(row);
   }
 
   private require(id: Id): SessionState {

@@ -58,4 +58,30 @@ suite('SqliteEventStore (node:sqlite)', () => {
     expect(rows[1]!.parentId).toBe(0);
     b.close();
   });
+
+  it('会话行（含 messages 快照）落盘重开往返 —— 跨进程 resume 重建基座', async () => {
+    const path = join(tmpdir(), `yo-sqlite-${randomUUID()}.db`);
+    const a = SqliteEventStore.open(path);
+    await a.createSession({
+      sessionId: 's1',
+      owner: 'self',
+      surfaceKind: 'kernel',
+      agentProfile: 'default',
+      workspacePath: '/ws',
+      model: 'm',
+      permissionMode: 'supervised',
+      state: 'active',
+      headCursor: 3,
+      createdAt: 1,
+      lastActiveAt: 2,
+      messages: [{ role: 'user', content: '问题一' }, { role: 'assistant', content: '回答一' }],
+    });
+    a.close();
+    const b = SqliteEventStore.open(path); // 模拟新进程
+    const row = await b.getSession('s1');
+    expect(row?.headCursor).toBe(3);
+    expect(row?.messages).toEqual([{ role: 'user', content: '问题一' }, { role: 'assistant', content: '回答一' }]);
+    expect((await b.listSessions()).map((r) => r.sessionId)).toEqual(['s1']);
+    b.close();
+  });
 });
