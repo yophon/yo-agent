@@ -6,6 +6,7 @@ import type { Cursor, EventEnvelope, Id } from '@yo-agent/protocol';
 import { EVENTLOG_SCHEMA_VERSION } from '@yo-agent/protocol';
 
 export { EVENTLOG_SCHEMA_VERSION };
+export * from './memory';
 
 export interface Checkpoint {
   checkpointId: Id;

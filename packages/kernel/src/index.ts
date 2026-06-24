@@ -115,3 +115,7 @@ export interface KernelDeps {
   condenser: Condenser;
   loopBreaker: LoopBreaker;
 }
+
+export * from './kernel';
+export * from './loop-breaker';
+export * from './condenser';

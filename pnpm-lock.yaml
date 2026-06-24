@@ -24,6 +24,28 @@ importers:
         specifier: ^3.0.5
         version: 3.2.6(@types/node@22.20.0)(tsx@4.22.4)
 
+  apps/yo-agent:
+    dependencies:
+      '@yo-agent/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      '@yo-agent/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@yo-agent/provider':
+        specifier: workspace:*
+        version: link:../../packages/provider
+      '@yo-agent/store':
+        specifier: workspace:*
+        version: link:../../packages/store
+      '@yo-agent/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+    devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
+
   packages/kernel:
     dependencies:
       '@yo-agent/protocol':

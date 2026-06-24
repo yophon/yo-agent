@@ -1,0 +1,20 @@
+{
+  "name": "@yo-agent/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "yo-agent headless CLI（Phase 1 Slice A）。无 ANTHROPIC_API_KEY 时用 FakeProvider 演示。",
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*",
+    "@yo-agent/tools": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

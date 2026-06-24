@@ -55,3 +55,6 @@ export interface ToolRegistry {
   resolveAvailable(ctx: ToolContext): ToolDescriptor[];
   executor(name: string): ToolExecutorRef | undefined;
 }
+
+export * from './registry';
+export * from './builtins';
