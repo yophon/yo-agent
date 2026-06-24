@@ -4,8 +4,8 @@ import { PermissionModeSchema, ApprovalDecisionSchema, EffortSchema, RiskLevelSc
 import { ApprovalSuggestionSchema, EventEnvelopeSchema } from './events';
 
 /**
- * JSON-RPC 2.0 方法表（DESIGN §6.2），以 codex app-server 为蓝本、与 yo-aichat bridge
- * session.* 逐项对齐。客户端(bridge) → 服务端(yo-agent) 的请求方法。
+ * JSON-RPC 2.0 方法表（DESIGN §6.2），以 codex app-server 为蓝本，作通用远端驱动协议。
+ * 客户端 → 服务端(yo-agent) 的请求方法。
  */
 export const RpcMethod = {
   SessionNew: 'session/new',
@@ -25,7 +25,7 @@ export const RpcMethod = {
 } as const;
 export type RpcMethod = (typeof RpcMethod)[keyof typeof RpcMethod];
 
-/** 服务端(yo-agent) → 客户端(bridge) 的 notification / 反向请求。 */
+/** 服务端(yo-agent) → 客户端 的 notification / 反向请求。 */
 export const RpcServerMethod = {
   Event: 'event',
   ApprovalRequest: 'approval/request',
@@ -103,7 +103,7 @@ export type ApprovalDecideParams = z.infer<typeof ApprovalDecideParamsSchema>;
 export const EventNotificationParamsSchema = EventEnvelopeSchema;
 export type EventNotificationParams = z.infer<typeof EventNotificationParamsSchema>;
 
-/** approval/request：bridge→app 主动请求审批，阻塞 agent 直到应答/超时（默认 deny）。 */
+/** approval/request：server→client 主动请求审批，阻塞 agent 直到应答/超时（默认 deny）。 */
 export const ApprovalRequestParamsSchema = z.object({
   requestId: IdSchema,
   sessionId: IdSchema,

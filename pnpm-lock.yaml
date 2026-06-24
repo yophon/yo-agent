@@ -41,6 +41,9 @@ importers:
       '@yo-agent/surface-cli':
         specifier: workspace:*
         version: link:../../packages/surface-cli
+      '@yo-agent/surface-rpc':
+        specifier: workspace:*
+        version: link:../../packages/surface-rpc
       '@yo-agent/tools':
         specifier: workspace:*
         version: link:../../packages/tools
@@ -119,6 +122,21 @@ importers:
       ink-testing-library:
         specifier: ^4.0.0
         version: 4.0.0(@types/react@18.3.31)
+
+  packages/surface-rpc:
+    dependencies:
+      '@yo-agent/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@yo-agent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@yo-agent/provider':
+        specifier: workspace:*
+        version: link:../provider
+      '@yo-agent/store':
+        specifier: workspace:*
+        version: link:../store
 
   packages/tools:
     dependencies:

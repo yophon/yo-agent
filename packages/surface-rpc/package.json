@@ -1,0 +1,17 @@
+{
+  "name": "@yo-agent/surface-rpc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "RpcSurface：JSON-RPC 2.0（stdio / JSONL / WS）通用远端驱动协议（DESIGN §6，泛化、不绑特定前端）。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*"
+  }
+}

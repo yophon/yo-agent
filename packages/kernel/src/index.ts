@@ -7,18 +7,32 @@ import type {
   ApprovalDecision,
   EventEnvelope,
   Id,
+  PermissionMode,
   RiskLevel,
 } from '@yo-agent/protocol';
-import type { CanonMessage, Provider } from '@yo-agent/provider';
+import type { CanonMessage, ModelInfo, Provider } from '@yo-agent/provider';
 import type { ToolRegistry } from '@yo-agent/tools';
 import type { EventStore } from '@yo-agent/store';
+import type { StartSessionOpts } from './kernel';
 
 export type SurfaceKind = 'cli' | 'rpc' | 'chat' | 'acp' | 'mcp-server';
+
+export interface SessionSummary {
+  sessionId: Id;
+  model: string;
+  workspacePath: string;
+  permissionMode: PermissionMode;
+  headCursor: number;
+}
 
 /** 内核：唯一会写 AgentEvent 流的人（§0.3 脊柱）。 */
 export interface Kernel {
   readonly events: EventStore;
+  startSession(opts?: StartSessionOpts): Promise<Id>;
+  /** 阻塞版：跑完整 turn 才 resolve（CLI）。 */
   submitInput(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }>;
+  /** 非阻塞版：发出 TurnStarted 即返回 turnId，turn 后台跑（RpcSurface）。 */
+  beginTurn(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }>;
   steer(sessionId: Id, text: string): Promise<void>;
   interrupt(sessionId: Id): Promise<void>;
   subscribe(
@@ -27,6 +41,8 @@ export interface Kernel {
     handler: (env: EventEnvelope) => void,
   ): () => void;
   decideApproval(requestId: Id, decision: ApprovalDecision, updatedInput?: unknown): void;
+  listSessions(): SessionSummary[];
+  listModels(): Promise<ModelInfo[]>;
 }
 
 export interface ContextState {

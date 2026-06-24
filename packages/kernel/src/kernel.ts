@@ -132,14 +132,45 @@ export class AgentKernel implements Kernel {
     }
   }
 
+  /** 阻塞版（CLI 用）：跑完整 turn 才 resolve。 */
   async submitInput(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }> {
-    const s = this.require(sessionId);
+    const { turnId, done } = await this.launchTurn(this.require(sessionId), prompt, idemKey);
+    await done;
+    return { turnId };
+  }
+
+  /** 非阻塞版（RpcSurface 用）：发出 TurnStarted 后立即返回 turnId，turn 在后台跑、事件经订阅推送。 */
+  async beginTurn(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }> {
+    const { turnId } = await this.launchTurn(this.require(sessionId), prompt, idemKey);
+    return { turnId };
+  }
+
+  /** 公共起 turn 逻辑：emit TurnStarted → 后台跑 runTurn（异常兜底 TurnFailed）。返回 turnId 与完成 Promise。 */
+  private async launchTurn(s: SessionState, prompt: string, idemKey: string): Promise<{ turnId: Id; done: Promise<void> }> {
     s.interrupted = false;
     const turnId = randomUUID();
     await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
     s.messages.push({ role: 'user', content: prompt });
-    await this.runTurn(s, turnId);
-    return { turnId };
+    const done = this.runTurn(s, turnId).catch(async (e) => {
+      await this.emit(s, { kind: 'TurnFailed', error: { message: e instanceof Error ? e.message : String(e) } }, turnId);
+    });
+    return { turnId, done };
+  }
+
+  /** 列活动会话摘要（RpcSurface session/list）。 */
+  listSessions(): Array<{ sessionId: Id; model: string; workspacePath: string; permissionMode: PermissionMode; headCursor: number }> {
+    return [...this.sessions.values()].map((s) => ({
+      sessionId: s.id,
+      model: s.model,
+      workspacePath: s.cwd,
+      permissionMode: s.permissionMode,
+      headCursor: s.headCursor,
+    }));
+  }
+
+  /** 模型目录（RpcSurface model/list），委派 provider。 */
+  listModels(): ReturnType<Provider['listModels']> {
+    return this.d.provider.listModels();
   }
 
   async steer(sessionId: Id, text: string): Promise<void> {
