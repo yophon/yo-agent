@@ -33,7 +33,7 @@ export function selectProvider(env: NodeJS.ProcessEnv, prompt = ''): ProviderCho
   if (env.GEMINI_API_KEY || env.GOOGLE_API_KEY) return { provider: new GeminiProvider(), model: model ?? 'gemini-2.0-flash', demo: false };
   if (env.OPENAI_API_KEY) {
     if (env.OPENAI_MODE === 'responses') {
-      return { provider: new OpenAiResponsesProvider(), model: model ?? 'gpt-4o', demo: false };
+      return { provider: new OpenAiResponsesProvider({ baseUrl: env.OPENAI_BASE_URL }), model: model ?? 'gpt-4o', demo: false };
     }
     let provider: Provider = new OpenAiCompatibleProvider({ baseUrl: env.OPENAI_BASE_URL });
     if (env.YO_TOOL_SHIM === '1') provider = new PromptShimProvider(provider); // 双轨：弱/本地模型回退
