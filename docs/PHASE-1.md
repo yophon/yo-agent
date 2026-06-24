@@ -76,5 +76,5 @@ OPENAI_API_KEY=... OPENAI_BASE_URL=http://localhost:11434/v1 YO_TOOL_SHIM=1 \
 ## 剩余（Phase 2 接力 + 后续打磨）
 
 - **退出标准 ✅ 已达成**：真机（真实 OpenAI 兼容端点，gpt-5.5）跑通流式对话 + native 工具调用（ls）+ 多轮 infer→tool→observe + 熔断（loop_detected）+ jsonl 结构化事件流（SessionStarted→…→TurnCompleted）。交互审批/resume/checkpoint 由单测覆盖。
-- **Phase 2 接力**：`ResumeBuffer`/`gapOverflowSummary` 已就绪，待 RpcSurface（JSON-RPC/JSONL + `session/* turn/* approval/*`）消费；audit 鉴权（ed25519 + 配对码）。
+- **Phase 2（已重排，yo-aichat 废弃后）= 协议化暴露**：泛化 RpcSurface（通用远端驱动，非 yo-aichat bridge）消费已就绪的 `ResumeBuffer`/`gapOverflowSummary`（cursor resume + gap 降级 + 审批跨重连存活）+ McpServerSurface（`--mcp-server`，被 Claude Code 调用）+ yo-agent 自带鉴权（ed25519 + 配对码 + nonce）。详见 [DESIGN §13](DESIGN.md#13-mvp-里程碑与分阶段路线)。
 - **后续打磨**：effort 按模型 capabilities 过滤再发（§15.4，当前内核未发 effort 故为潜伏项）；Gemini/Responses 的 thinking 块原样回传与跨模型丢弃；prompt-cache breakpoint 注入；provider fallback 链/auth rotation。
