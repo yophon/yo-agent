@@ -1,0 +1,36 @@
+# Node / TypeScript
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.local
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 测试 / 覆盖率
+coverage/
+.nyc_output/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# 缓存
+.cache/
+.turbo/
