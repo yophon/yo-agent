@@ -125,6 +125,15 @@ async function main(): Promise<void> {
   const cwd = process.cwd();
   const env = process.env;
 
+  // 常驻服务（rpc/mcp）兜底：管道断开/写错误降级为受控退出，后台 turn 异常不崩进程（审查 high/medium）。
+  if (mode === 'rpc' || mode === 'mcp-server') {
+    process.stdout.on('error', (e: NodeJS.ErrnoException) => {
+      if (e.code === 'EPIPE') process.exit(0);
+    });
+    process.on('uncaughtException', (e) => console.error('[uncaught]', e));
+    process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+  }
+
   // RPC 模式：stdout 是 JSON-RPC 通道（日志/警告一律走 stderr），常驻读 stdin。客户端经 session/new 驱动。
   if (mode === 'rpc') {
     const { kernel } = buildKernel({ env, cwd, prompt: '', mode });

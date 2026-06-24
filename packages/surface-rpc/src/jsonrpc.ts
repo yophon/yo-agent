@@ -33,8 +33,19 @@ export class JsonRpcPeer {
   private readonly notificationHandlers = new Map<string, NotificationHandler>();
   private readonly pending = new Map<RpcId, Pending>();
 
+  private closed = false;
+
   constructor(private readonly channel: MessageChannel) {
     channel.onMessage((msg) => this.dispatch(msg));
+    channel.onClose(() => this.close());
+  }
+
+  /** 信道断开：reject 所有 pending 请求（否则调用方永久挂起 + Map 泄漏）。 */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const [, p] of this.pending) p.reject(new Error('channel closed'));
+    this.pending.clear();
   }
 
   /** 注册请求处理器（返回值作为 result 回送）。 */
@@ -51,6 +62,7 @@ export class JsonRpcPeer {
   }
 
   request(method: string, params?: unknown): Promise<unknown> {
+    if (this.closed) return Promise.reject(new Error('channel closed'));
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -100,7 +112,11 @@ export class JsonRpcPeer {
       const result = await h(req.params);
       this.channel.send({ jsonrpc: '2.0', id: req.id, result: result ?? null });
     } catch (e) {
-      this.channel.send({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: e instanceof Error ? e.message : String(e) } });
+      // 参数校验失败（ZodError）→ -32602 Invalid params；其余 → -32000 server error。
+      const isValidation = e instanceof Error && e.name === 'ZodError';
+      const code = isValidation ? -32602 : -32000;
+      const message = isValidation ? 'invalid params' : e instanceof Error ? e.message : String(e);
+      this.channel.send({ jsonrpc: '2.0', id: req.id, error: { code, message } });
     }
   }
 }

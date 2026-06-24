@@ -130,6 +130,44 @@ describe('Slice 2B —— resume / reconnect / gap 降级 / 跨进程重建', ()
     expect(dump).toContain('问题二');
   });
 
+  it('跨进程 cursor 对账：在飞 turn 残留 cursor（head>持久 headCursor）→ resume 后续 turn 不抛冲突', async () => {
+    const store = new MemoryEventStore();
+    const k1 = makeKernel(store);
+    k1.provider.script(textTurn('一轮'));
+    const sid = await k1.kernel.startSession({});
+    await k1.kernel.submitInput(sid, 'q1', 'k1'); // 持久 headCursor = N（TurnCompleted）
+    const head = (await store.head(sid))!;
+    // 模拟在飞 turn 崩溃残留：直接往 EventLog append 超出持久 headCursor 的事件
+    await store.append({ sessionId: sid, cursor: head + 1, parentId: null, turnId: null, ts: 0, event: { kind: 'AssistantText', delta: '在飞残留' } });
+    // 新进程 resume + 续 turn：headCursor 须对账到真实 log head，否则下个 emit 的 cursor 与历史重叠 → append 抛错
+    const k2 = makeKernel(store);
+    k2.provider.script(textTurn('二轮'));
+    expect(await k2.kernel.resumeSession(sid)).toBe(true);
+    await expect(k2.kernel.submitInput(sid, 'q2', 'k2')).resolves.toBeDefined();
+  });
+
+  it('resume 重放历史里已决审批 → 不重投 approval/request', async () => {
+    const store = new MemoryEventStore();
+    const calls: unknown[] = [];
+    const { kernel, provider } = makeKernel(store, { interactiveApproval: true, calls });
+    provider.script(toolCallTurn('echo', 'tu1', { m: 1 }));
+    provider.script(textTurn('done'));
+    const c1 = connect(kernel);
+    await c1.started;
+    const { sessionId } = (await c1.client.request('session/new', { project: '/tmp', permissionMode: 'supervised', surfaceKind: 'rpc' })) as { sessionId: string };
+    await c1.client.request('turn/start', { sessionId, prompt: 'go', idemKey: 'k1' });
+    const ar = await c1.waitForApproval();
+    await c1.client.request('approval/decide', { requestId: ar.requestId, decision: 'allow_once' });
+    await c1.waitFor((e) => e.kind === 'TurnCompleted');
+    // 新客户端 resume：历史里的 ApprovalRequested 已决，不应再触发 approval/request
+    const c2 = connect(kernel);
+    await c2.started;
+    await c2.client.request('session/resume', { sessionId, fromCursor: 0 });
+    await tick();
+    expect(c2.events.some((e) => e.kind === 'ApprovalRequested')).toBe(true); // event 仍重放（审计）
+    expect(c2.approvals.length).toBe(0); // 但已决审批不再误弹
+  });
+
   it('审批跨重连存活：turn 挂起等审批时重连 → 审批被重投 → decide 后工具执行', async () => {
     const store = new MemoryEventStore();
     const calls: unknown[] = [];

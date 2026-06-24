@@ -47,6 +47,10 @@ export interface Kernel {
   resumeSession(sessionId: Id): Promise<boolean>;
   /** 实时重连缺口（内存 ring）；null=gap 溢出，调用方走 EventLog 降级。 */
   bufferedSince(sessionId: Id, fromCursor: number): EventEnvelope[] | null;
+  /** 驱逐一次性会话（常驻进程防泄漏）。 */
+  endSession(sessionId: Id): void;
+  /** 审批是否仍挂起（surface 跳过已决审批的 approval/request 重投）。 */
+  isApprovalPending(requestId: Id): boolean;
 }
 
 export interface ContextState {

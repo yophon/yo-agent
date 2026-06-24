@@ -41,7 +41,16 @@
 | `@yo-agent/store` | `SessionRow.messages` + `EventStore.listSessions` | 会话行携带 messages 快照（opaque JSON）；listSessions 给 `resume "last"` / 跨进程发现；SQLite 落盘重开往返 |
 | `@yo-agent/surface-rpc` | **`session/reconnect`** + `session/resume "last"` + cursor 去重 | reconnect 无重放只填缺口（ring 覆盖→推缺口；溢出→EventLog 取显著事件摘要折叠流式）；resume 带历史重放 + 跨进程先 `resumeSession` 重建；push 按 cursor 单调去重使缺口填充与实时订阅可叠加不重发 |
 
-**新增覆盖**（共 **128 测试 / 25 文件**）：surface-rpc resume 4 测试（reconnect 缺口填充只推 fromCursor 之后、gap 溢出走 EventLog 摘要折叠流式、**跨进程重建：新内核共享 store → resume 重放 + 续 turn 且 provider 收到的 messages 含上一轮上下文**、审批跨重连存活）；store sqlite 会话行（含 messages）落盘重开往返。
+**新增覆盖**（共 **133 测试 / 26 文件**）：surface-rpc resume/ordering 测试（reconnect 缺口填充、gap 溢出折叠流式、跨进程重建续 turn、审批跨重连存活、cursor 对账、resume 不重投已决审批、**gap 溢出读期间并发实时事件不丢缺口摘要**、信道关闭 reject pending）；surface-mcp 熔断→isError；store sqlite 会话行 messages 往返。
+
+## 对抗式审查（Phase 2 表面）→ 15 项确认缺陷全部修复
+
+5 维多智能体审查（JSON-RPC 并发 / RpcSurface / resume 跨进程 / MCP / app 接线）→ 17 原始、15 确认、逐条对抗式核验：
+
+- **critical**：`session/reconnect` 溢出分支——异步读 EventLog 的 await 间隙里并发 turn 的实时事件抢先推进 lastCursor，把低 cursor 的 gap 摘要去重静默吞掉（含挂起审批 → 永久挂起）。修复：统一 attach/reconnect 为 **先订阅入临时缓冲 → 填历史/缺口 → flush 缓冲**，不依赖 EventStore.read 是否反映并发 append。
+- **high**：① 信道关闭时 pending 请求永不 reject（挂起+泄漏）→ peer.close() + channel onClose 断连清算；② `JsonlStreamChannel` 写错误（EPIPE）无监听 → 崩进程 → 注册 output 'error'/input end/close、send 断后 no-op；③ attach 在 SQLite 冻结快照下 replay 与 subscribe 间窗口丢实时事件 → 同 critical 的统一修复；④ 跨进程 resume 不与 EventLog head 对账 → 续 turn cursor 冲突 append 抛错 → `headCursor=max(row, logHead)`；⑤ beginTurn 后台 runTurn 兜底 emit 自身抛错 → unhandledRejection 崩进程 → 兜底再包 try/catch；⑥ MCP 一次性会话永不回收 → 内存泄漏 → `kernel.endSession` + runTask finally；⑦ MCP 把 loop_detected/max_turn_steps/interrupted（藏在 TurnCompleted.stopReason）当成功 → 按 stopReason 判 isError。
+- **medium**：`session/resume` 重放已决审批误弹 approval/request → `isApprovalPending` 门控（先登记 pending 再 emit）；rpc/mcp 常驻进程缺 stdout EPIPE / 全局错误兜底 → process 守卫。
+- **low**：JSON-RPC 错误码（ZodError→-32602）；resume 丢 lastCompactCursor（→ headCursor）；MCP 工具计数改 ToolCallCompleted(ok)。（persistState.state 死字段、FakeProvider 演示态多轮静默 2 项已注记，影响极低暂留。）
 
 ## 运行
 

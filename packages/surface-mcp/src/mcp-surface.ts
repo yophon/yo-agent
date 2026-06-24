@@ -61,25 +61,34 @@ export class McpServerSurface implements Surface {
     model: string | undefined,
   ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: boolean }> {
     const text: string[] = [];
-    const toolNames: string[] = [];
+    const toolNameById = new Map<string, string>(); // runTask 局部，避免并发 run 互相污染
+    const okToolIds: string[] = []; // 仅成功完成的工具
+    const errors: string[] = [];
     let failed: string | undefined;
     const sessionId = await kernel.startSession(model ? { model } : {});
     const unsub = kernel.subscribe(sessionId, null, (env) => {
       const e = env.event;
       if (e.kind === 'AssistantText' && e.delta) text.push(e.delta);
-      else if (e.kind === 'ToolCallStarted') toolNames.push(e.name);
-      else if (e.kind === 'TurnFailed') failed = e.error.message;
+      else if (e.kind === 'ToolCallStarted') toolNameById.set(e.id, e.name);
+      else if (e.kind === 'ToolCallCompleted' && e.status === 'ok') okToolIds.push(e.id);
+      else if (e.kind === 'Error') errors.push(e.message);
+      else if (e.kind === 'TurnFailed') failed = failed ?? e.error.message;
+      // 失败语义藏在 TurnCompleted.stopReason（内核对外只暴露 TurnCompleted/TurnFailed）：非 end_turn 即异常终止。
+      else if (e.kind === 'TurnCompleted' && e.stopReason !== 'end_turn') failed = failed ?? e.stopReason;
     });
     try {
       await kernel.submitInput(sessionId, prompt, `mcp-${Date.now()}`);
     } catch (e) {
-      failed = e instanceof Error ? e.message : String(e);
+      failed = failed ?? (e instanceof Error ? e.message : String(e));
     } finally {
       unsub();
+      kernel.endSession(sessionId); // 一次性会话回收，常驻 MCP server 防内存泄漏
     }
-    const used = [...new Set(toolNames)];
-    const summary = used.length ? `\n\n[yo-agent 调用了 ${toolNames.length} 次工具：${used.join(', ')}]` : '';
-    const body = text.join('').trim() || (failed ? `（失败：${failed}）` : '（无输出）');
-    return { content: [{ type: 'text', text: body + summary }], isError: failed !== undefined };
+    const names = okToolIds.map((id) => toolNameById.get(id) ?? id);
+    const used = [...new Set(names)];
+    const summary = used.length ? `\n\n[yo-agent 成功执行 ${names.length} 次工具：${used.join(', ')}]` : '';
+    const errNote = failed ? `\n\n（异常终止：${failed}${errors.length ? '；' + errors.join('；') : ''}）` : '';
+    const body = (text.join('').trim() || (failed ? '' : '（无输出）')) + errNote;
+    return { content: [{ type: 'text', text: (body + summary).trim() || '（无输出）' }], isError: failed !== undefined };
   }
 }

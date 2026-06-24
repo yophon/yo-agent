@@ -74,4 +74,15 @@ describe('McpServerSurface（yo-agent 作 MCP server）', () => {
     const res = await client.callTool({ name: 'no-such', arguments: {} });
     expect((res as { isError?: boolean }).isError).toBe(true);
   });
+
+  it('run 委派触发熔断（TurnCompleted{loop_detected}）→ isError:true（失败语义不被吞）', async () => {
+    const { client, provider } = await setup();
+    // 反复同调用 → HistoryLoopBreaker 第 3 次 break，走 TurnCompleted{loop_detected}（非 TurnFailed）
+    provider.script(toolCallTurn('echo', 'c1', { same: 1 }));
+    provider.script(toolCallTurn('echo', 'c2', { same: 1 }));
+    provider.script(toolCallTurn('echo', 'c3', { same: 1 }));
+    const res = await client.callTool({ name: 'run', arguments: { prompt: '死循环' } });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(res)).toContain('loop_detected');
+  });
 });

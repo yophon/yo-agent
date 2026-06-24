@@ -70,7 +70,9 @@ export class RpcSurface implements Surface {
       permissionMode: p.permissionMode,
     });
     // attach 在返回 response 前完成 → 订阅在客户端能发 turn/start 之前就位，无事件窗口丢失。
-    await this.attach(sessionId, -1);
+    await this.attachFrom(sessionId, -1, async () => {
+      for await (const env of this.kernel.events.read(sessionId)) this.push(env);
+    });
     return { sessionId, workspacePath: p.project };
   }
 
@@ -91,7 +93,12 @@ export class RpcSurface implements Surface {
     }
     const ok = await this.kernel.resumeSession(sessionId);
     if (!ok) throw new Error(`未知会话：${sessionId}`);
-    await this.attach(sessionId, p.fromCursor ?? -1);
+    // 带历史全量重放（fromCursor 之后）。
+    await this.attachFrom(sessionId, p.fromCursor ?? -1, async () => {
+      for await (const env of this.kernel.events.read(sessionId, p.fromCursor === undefined || p.fromCursor < 0 ? undefined : p.fromCursor)) {
+        this.push(env);
+      }
+    });
     return { sessionId };
   }
 
@@ -103,34 +110,40 @@ export class RpcSurface implements Surface {
     const p = SessionReconnectParamsSchema.parse(params);
     const ok = await this.kernel.resumeSession(p.sessionId);
     if (!ok) throw new Error(`未知会话：${p.sessionId}`);
-    this.detach(p.sessionId);
-    this.lastCursor.set(p.sessionId, p.fromCursor);
-    // 先取缺口快照 + 订阅（同步、无 await 间隙 → 缺口与实时无重叠丢失）；push 按 cursor 去重叠加。
-    const gap = this.kernel.bufferedSince(p.sessionId, p.fromCursor);
-    const unsub = this.kernel.subscribe(p.sessionId, null, (env) => this.push(env));
-    this.unsubs.set(p.sessionId, unsub);
-    if (gap !== null) {
-      for (const env of gap) this.push(env);
-    } else {
-      // gap 溢出：全量 EventLog 取显著事件摘要（折叠流式噪声，§6.3）。
-      const all: EventEnvelope[] = [];
-      for await (const env of this.kernel.events.read(p.sessionId, p.fromCursor)) all.push(env);
-      for (const env of gapOverflowSummary(all)) this.push(env);
-    }
+    await this.attachFrom(p.sessionId, p.fromCursor, async () => {
+      const gap = this.kernel.bufferedSince(p.sessionId, p.fromCursor);
+      if (gap !== null) {
+        for (const env of gap) this.push(env);
+      } else {
+        // gap 溢出：全量 EventLog 取显著事件摘要（折叠流式噪声，§6.3）。
+        const all: EventEnvelope[] = [];
+        for await (const env of this.kernel.events.read(p.sessionId, p.fromCursor)) all.push(env);
+        for (const env of gapOverflowSummary(all)) this.push(env);
+      }
+    });
     return { sessionId: p.sessionId };
   }
 
   // ───────────────────────── 事件推送 ─────────────────────────
 
-  private async attach(sessionId: Id, fromCursor: number): Promise<void> {
+  /**
+   * 统一 attach：**先订阅**（实时事件入临时缓冲）→ 填历史/缺口（fill）→ flush 缓冲。
+   * 关键：避免「回放/缺口读的 await 间隙里并发 turn 的实时事件抢先推进 lastCursor、把更早的历史/摘要去重吞掉」
+   * 的丢事件竞态（审查 critical/high；不依赖具体 EventStore.read 是否反映并发 append）。
+   */
+  private async attachFrom(sessionId: Id, fromCursor: number, fill: () => Promise<void>): Promise<void> {
     this.detach(sessionId);
     this.lastCursor.set(sessionId, fromCursor);
-    // 先重放已落库历史（fromCursor 之后），再订阅实时。attach 在 turn 启动前完成，二者无重叠窗口。
-    for await (const env of this.kernel.events.read(sessionId, fromCursor < 0 ? undefined : fromCursor)) {
-      this.push(env);
-    }
-    const unsub = this.kernel.subscribe(sessionId, null, (env) => this.push(env));
+    const queue: EventEnvelope[] = [];
+    let flushing = false;
+    const unsub = this.kernel.subscribe(sessionId, null, (env) => {
+      if (flushing) this.push(env);
+      else queue.push(env); // 填充期间缓冲实时事件
+    });
     this.unsubs.set(sessionId, unsub);
+    await fill(); // 推历史/缺口（升序，push 去重）
+    flushing = true;
+    for (const env of queue) this.push(env); // 补放实时缓冲（cursor 去重跳过与历史重叠的）
   }
 
   private detach(sessionId: Id): void {
@@ -147,8 +160,8 @@ export class RpcSurface implements Surface {
     if (env.cursor <= last) return;
     this.lastCursor.set(env.sessionId, env.cursor);
     this.peer.notify(RpcServerMethod.Event, env);
-    if (env.event.kind === 'ApprovalRequested') {
-      // 专用反向请求通道（客户端阻塞应答的 actionable 审批）。
+    // 专用反向审批通道：仅对**仍挂起**的审批重投（重放历史里已决审批不再误弹，审查 medium）。
+    if (env.event.kind === 'ApprovalRequested' && this.kernel.isApprovalPending(env.event.requestId)) {
       this.peer.notify(RpcServerMethod.ApprovalRequest, {
         requestId: env.event.requestId,
         sessionId: env.sessionId,

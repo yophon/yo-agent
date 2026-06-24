@@ -133,22 +133,37 @@ export class AgentKernel implements Kernel {
     if (this.sessions.has(sessionId)) return true;
     const row = await this.events.getSession(sessionId);
     if (!row) return false;
+    // 与 EventLog 实际 head 对账：在飞 turn 崩溃残留的 cursor 已落库，headCursor 取较大值，
+    // 否则恢复后新 emit 的 cursor 与历史区间重叠 → append 单调校验抛错、会话写不进（审查 high）。
+    const logHead = await this.events.head(sessionId);
+    const headCursor = Math.max(row.headCursor, logHead ?? row.headCursor);
     const s: SessionState = {
       id: sessionId,
       model: row.model,
       cwd: row.workspacePath,
       permissionMode: (row.permissionMode as PermissionMode) ?? 'supervised',
       messages: (row.messages as CanonMessage[]) ?? [],
-      headCursor: row.headCursor,
+      headCursor,
       interrupted: false,
       subscribers: new Set(),
-      lastCompactCursor: 0,
+      // 恢复点之后才是新压缩区间合法起点；置 0 会让下次 ContextCompacted.fromCursor 回退跨越历史边界（审查 low）。
+      lastCompactCursor: headCursor,
       stepsSinceCompact: 0,
       approvalCache: new Map(),
       pendingApprovalIds: new Set(),
     };
     this.sessions.set(sessionId, s);
     return true;
+  }
+
+  /** 驱逐一次性会话（MCP run 等常驻进程防内存无界泄漏）。 */
+  endSession(sessionId: Id): void {
+    this.sessions.delete(sessionId);
+  }
+
+  /** 审批是否仍挂起（surface 重放历史 ApprovalRequested 时据此跳过已决审批的 approval/request 重投）。 */
+  isApprovalPending(requestId: Id): boolean {
+    return this.pendingApprovals.has(requestId);
   }
 
   /** 内存 ring 取 fromCursor 之后的缺口（实时重连）；返回 null 表示 gap 溢出，调用方走 EventLog 降级。 */
@@ -190,7 +205,13 @@ export class AgentKernel implements Kernel {
     await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
     s.messages.push({ role: 'user', content: prompt });
     const done = this.runTurn(s, turnId).catch(async (e) => {
-      await this.emit(s, { kind: 'TurnFailed', error: { message: e instanceof Error ? e.message : String(e) } }, turnId);
+      // 兜底 emit 自身也可能抛（cursor 冲突 / 落库失败）；务必吞掉，否则后台 turn（beginTurn 丢弃 done）
+      // 会成为 unhandledRejection 击垮常驻进程、连带所有会话（审查 high）。
+      try {
+        await this.emit(s, { kind: 'TurnFailed', error: { message: e instanceof Error ? e.message : String(e) } }, turnId);
+      } catch {
+        /* 落库失败也不得崩进程 */
+      }
     });
     return { turnId, done };
   }
@@ -450,28 +471,35 @@ export class AgentKernel implements Kernel {
       { decision: 'reject_once', label: '拒绝一次' },
       { decision: 'reject_always', label: '总是拒绝' },
     ];
-    await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions }, turnId);
-    if (this.d.approvalGate) {
-      return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk: 'unknown' });
-    }
-    // 非交互（headless 无人应答）默认拒绝，保持安全下限。
-    if (!this.d.interactiveApproval) return { decision: 'reject_once' };
-    // 协议化审批（§3.4 / §6.2）：挂起注册 pending，等外部 decideApproval(requestId,...) 唤醒，可选超时默认 deny。
-    // interrupt() 也能解除该挂起（见 interrupt）。
-    s.pendingApprovalIds.add(requestId);
-    try {
-      return await new Promise<{ decision: ApprovalDecision; updatedInput?: unknown }>((resolve) => {
+    // 协议化交互审批（§3.4 / §6.2）：**先登记 pending 再 emit**，使 surface 在 ApprovalRequested 推送时
+    // 即可判定该审批仍挂起、触发 approval/request（否则 emit 早于登记 → isApprovalPending 误判为否）。
+    if (this.d.interactiveApproval && !this.d.approvalGate) {
+      s.pendingApprovalIds.add(requestId);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const decided = new Promise<{ decision: ApprovalDecision; updatedInput?: unknown }>((resolve) => {
         this.pendingApprovals.set(requestId, ({ decision, updatedInput }) => resolve({ decision, updatedInput }));
         const ms = this.d.approvalTimeoutMs;
         if (ms && ms > 0) {
-          setTimeout(() => {
+          timer = setTimeout(() => {
             if (this.pendingApprovals.delete(requestId)) resolve({ decision: 'reject_once' });
           }, ms);
         }
       });
-    } finally {
-      s.pendingApprovalIds.delete(requestId);
+      await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions }, turnId);
+      try {
+        return await decided;
+      } finally {
+        if (timer) clearTimeout(timer);
+        this.pendingApprovals.delete(requestId);
+        s.pendingApprovalIds.delete(requestId);
+      }
     }
+    // gate / 非交互：emit 后由 gate 决定 / headless 默认拒绝。
+    await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions }, turnId);
+    if (this.d.approvalGate) {
+      return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk: 'unknown' });
+    }
+    return { decision: 'reject_once' };
   }
 
   // ───────────────────────── 内部工具 ─────────────────────────
