@@ -9,7 +9,7 @@ import type {
   Id,
   RiskLevel,
 } from '@yo-agent/protocol';
-import type { Provider } from '@yo-agent/provider';
+import type { CanonMessage, Provider } from '@yo-agent/provider';
 import type { ToolRegistry } from '@yo-agent/tools';
 import type { EventStore } from '@yo-agent/store';
 
@@ -34,10 +34,20 @@ export interface ContextState {
   usableTokens: number;
 }
 
-/** 独立可替换的压缩组件（§5.1）：默认 used>=80% usable 触发。 */
+export interface CondenseOpts {
+  /** /compact 手动指令，注入摘要 prompt（§15.5）。 */
+  hint?: string;
+  keepFirst?: number;
+  keepTail?: number;
+}
+
+/**
+ * 独立可替换的压缩组件（§5.1 / ADR-6）：默认 used>=80% usable 触发。
+ * 作用于"送 LLM 的消息窗口"（CanonMessage[]）——原始 EventLog 不删，内核另发 ContextCompacted 落库。
+ */
 export interface Condenser {
   shouldCompact(ctx: ContextState): boolean;
-  condense(events: EventEnvelope[], opts?: { hint?: string }): Promise<EventEnvelope[]>;
+  condense(messages: CanonMessage[], opts?: CondenseOpts): Promise<CanonMessage[]>;
 }
 
 export interface ToolCallRef {
@@ -57,6 +67,11 @@ export interface ApprovalGate {
     input: unknown;
     risk: RiskLevel;
   }): Promise<{ decision: ApprovalDecision; updatedInput?: unknown }>;
+}
+
+/** L3 checkpoint（§3.4，ShadowGitCheckpointer 结构化满足）：edit 类工具成功后快照工作区。 */
+export interface Checkpointer {
+  snapshot(label?: string): Promise<{ checkpointId: Id; ref: string; createdAt: number }>;
 }
 
 export interface SubagentSpawnOpts {
@@ -120,3 +135,4 @@ export * from './kernel';
 export * from './loop-breaker';
 export * from './condenser';
 export * from './context-files';
+export * from './tokens';

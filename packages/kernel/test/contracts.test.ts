@@ -44,7 +44,7 @@ describe('四接口冻结（Provider / Tool / Surface / Condenser）', () => {
   it('Condenser / Surface 可被实现', () => {
     const c = {
       shouldCompact: (ctx) => ctx.usedTokens / ctx.usableTokens >= 0.8,
-      condense: async (e) => e,
+      condense: async (messages) => messages, // 消息级（送 LLM 的窗口，§5.1）
     } satisfies Condenser;
     const s = { kind: 'cli', start: async () => {} } satisfies Surface;
     expect(c.shouldCompact({ usedTokens: 90, usableTokens: 100 })).toBe(true);

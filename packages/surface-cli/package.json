@@ -1,0 +1,24 @@
+{
+  "name": "@yo-agent/surface-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CliSurface：headless（-p / --mode jsonl）+ Ink 差量渲染 TUI + 交互审批 UX（DESIGN §7.2）。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*",
+    "@yo-agent/tools": "workspace:*",
+    "ink": "^5.0.1",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "ink-testing-library": "^4.0.0"
+  }
+}

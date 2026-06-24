@@ -12,6 +12,7 @@
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",
     "@yo-agent/store": "workspace:*",
+    "@yo-agent/surface-cli": "workspace:*",
     "@yo-agent/tools": "workspace:*"
   },
   "devDependencies": {

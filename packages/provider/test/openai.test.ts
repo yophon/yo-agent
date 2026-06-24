@@ -54,4 +54,24 @@ describe('buildOpenAiBody', () => {
     expect(asst.tool_calls[0]).toMatchObject({ id: 'call_1', type: 'function', function: { name: 'read' } });
     expect(messages.find((m) => m.role === 'tool')).toMatchObject({ tool_call_id: 'call_1', content: 'ok' });
   });
+
+  it('内核风格 role:user + tool_result 块 → 独立 role:tool 消息（不被丢弃、不发空 user）', () => {
+    // 内核 observation 以 { role:'user', content:[tool_result...] } 回填（Anthropic 风格）。
+    const body = buildOpenAiBody(
+      {
+        modelId: 'm',
+        messages: [
+          { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'ls', input: {} }] },
+          { role: 'user', content: [{ type: 'tool_result', toolUseId: 'call_1', content: 'a.ts\nb.ts', name: 'ls' }] },
+        ],
+        tools: [],
+      },
+      16_000,
+    );
+    const messages = body.messages as Array<Record<string, unknown>>;
+    const toolMsg = messages.find((m) => m.role === 'tool');
+    expect(toolMsg).toMatchObject({ tool_call_id: 'call_1', content: 'a.ts\nb.ts' }); // 未丢弃
+    // 不应产生承载该 tool_result 的空 user 消息。
+    expect(messages.filter((m) => m.role === 'user' && m.content === null)).toHaveLength(0);
+  });
 });

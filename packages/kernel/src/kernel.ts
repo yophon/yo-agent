@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   AgentEvent,
   ApprovalDecision,
+  ApprovalSuggestion,
   EventEnvelope,
   Id,
   PermissionMode,
@@ -10,7 +11,10 @@ import type {
 import type { CanonMessage, ChatRequest, ContentBlock, Provider, ToolSpec } from '@yo-agent/provider';
 import type { ToolContext, ToolRegistry } from '@yo-agent/tools';
 import type { EventStore } from '@yo-agent/store';
-import type { ApprovalGate, Condenser, Kernel, LoopBreaker } from './index';
+import type { ApprovalGate, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
+import { estimateMessagesTokens } from './tokens';
+
+const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
 
 export interface AgentKernelDeps {
   store: EventStore;
@@ -19,9 +23,19 @@ export interface AgentKernelDeps {
   loopBreaker: LoopBreaker;
   condenser: Condenser;
   approvalGate?: ApprovalGate;
+  /** L3 checkpoint：edit 类工具成功后快照工作区（§3.4），快照引用落 EventStore。 */
+  checkpointer?: Checkpointer;
   model?: string;
   cwd?: string;
   maxStepsPerTurn?: number;
+  /** 压缩触发用的可用上下文窗口（token）；app 从模型目录 contextWindow 注入。默认 200k。 */
+  usableContextTokens?: number;
+  /** 两次压缩之间最少间隔步数（§15.5 防频繁 compact 叠加 cache-miss）。默认 1。 */
+  minStepsBetweenCompact?: number;
+  /** 协议化交互审批：无 approvalGate 时挂起等外部 decideApproval（TUI/RPC）；false 则 headless 默认拒绝。 */
+  interactiveApproval?: boolean;
+  /** 交互审批超时（ms），到时默认 deny（§6.3）。0/缺省=不超时。 */
+  approvalTimeoutMs?: number;
 }
 
 export interface StartSessionOpts {
@@ -41,6 +55,14 @@ interface SessionState {
   headCursor: number;
   interrupted: boolean;
   subscribers: Set<(env: EventEnvelope) => void>;
+  /** 上次压缩后保留窗口对应的最早 cursor（ContextCompacted.fromCursor 起点）。 */
+  lastCompactCursor: number;
+  /** 距上次压缩的步数（min-rounds guard）。 */
+  stepsSinceCompact: number;
+  /** allow_always/reject_always 的会话级缓存（按工具名）。 */
+  approvalCache: Map<string, 'allow' | 'reject'>;
+  /** 本会话挂起中的审批 requestId（interrupt 时需逐一以 deny 解除，防永久挂起 + 泄漏）。 */
+  pendingApprovalIds: Set<Id>;
 }
 
 interface ToolCallAccum {
@@ -78,6 +100,10 @@ export class AgentKernel implements Kernel {
       headCursor: -1,
       interrupted: false,
       subscribers: new Set(),
+      lastCompactCursor: 0,
+      stepsSinceCompact: 0,
+      approvalCache: new Map(),
+      pendingApprovalIds: new Set(),
     };
     this.sessions.set(id, s);
     await this.emit(s, {
@@ -121,7 +147,17 @@ export class AgentKernel implements Kernel {
   }
 
   async interrupt(sessionId: Id): Promise<void> {
-    this.require(sessionId).interrupted = true;
+    const s = this.require(sessionId);
+    s.interrupted = true;
+    // 若当前卡在等待交互审批，逐一以 deny 解除挂起，否则 turn 永不返回 + pending 泄漏。
+    for (const requestId of s.pendingApprovalIds) {
+      const resolve = this.pendingApprovals.get(requestId);
+      if (resolve) {
+        this.pendingApprovals.delete(requestId);
+        resolve({ decision: 'reject_once' });
+      }
+    }
+    s.pendingApprovalIds.clear();
   }
 
   // ───────────────────────── turn 循环 ─────────────────────────
@@ -199,7 +235,7 @@ export class AgentKernel implements Kernel {
       const toolResults: ContentBlock[] = [];
 
       for (const tc of toolCalls) {
-        const input = parseJsonObject(argsById.get(tc.id) ?? '');
+        let input = parseJsonObject(argsById.get(tc.id) ?? '');
         const desc = available.find((d) => d.name === tc.name);
 
         // 熔断（引擎层强制）。
@@ -214,10 +250,28 @@ export class AgentKernel implements Kernel {
 
         // 审批（never 放行；always / risk-based 走 ApprovalGate，无 gate 默认 deny）。
         if (desc && desc.approval !== 'never') {
-          const decision = await this.requestApproval(s, tc.id, tc.name, input, turnId);
+          // allow_always/reject_always 落 session 级缓存，同名工具后续不再重复弹审批（§9.2 会话内升级）。
+          const cached = s.approvalCache.get(tc.name);
+          let decision: ApprovalDecision;
+          let updatedInput: unknown;
+          if (cached) {
+            decision = cached === 'allow' ? 'allow_always' : 'reject_always';
+          } else {
+            const r = await this.requestApproval(s, tc.id, tc.name, input, turnId);
+            decision = r.decision;
+            updatedInput = r.updatedInput;
+            if (decision === 'allow_always') s.approvalCache.set(tc.name, 'allow');
+            else if (decision === 'reject_always') s.approvalCache.set(tc.name, 'reject');
+          }
           if (decision === 'reject_once' || decision === 'reject_always') {
-            toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: '用户拒绝了该工具调用', isError: true });
+            toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: '用户拒绝了该工具调用', isError: true, name: tc.name });
             continue;
+          }
+          // modify：用户改参数后放行 → 用 updatedInput 覆盖（同步回传给 LLM 的 tool_use.input）。
+          if (updatedInput !== undefined) {
+            input = updatedInput;
+            const block = assistantBlocks[assistantBlocks.length - 1];
+            if (block && block.type === 'tool_use') block.input = updatedInput;
           }
         }
 
@@ -230,7 +284,7 @@ export class AgentKernel implements Kernel {
         const exec = this.d.tools.executor(tc.name);
         if (!exec) {
           await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: 'error' }, turnId);
-          toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: `未知工具：${tc.name}`, isError: true });
+          toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: `未知工具：${tc.name}`, isError: true, name: tc.name });
           continue;
         }
 
@@ -248,37 +302,107 @@ export class AgentKernel implements Kernel {
           out = e instanceof Error ? e.message : String(e);
         }
         await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: isError ? 'error' : 'ok' }, turnId);
-        toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: out, isError: isError || undefined });
+        toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: out, isError: isError || undefined, name: tc.name });
+
+        // edit 类工具成功 → 发 FileChanged + L3 checkpoint 快照（§2.2 / §3.4）。
+        if (!isError && desc && MUTATION_KINDS.has(desc.kind)) {
+          await this.afterMutation(s, desc.kind, input, turnId);
+        }
       }
 
       s.messages.push({ role: 'assistant', content: assistantBlocks });
       s.messages.push({ role: 'user', content: toolResults });
-      // ContextManager.maybeCompact() —— Slice A 用 NoopCondenser，恒不压缩。
+      // ContextManager.maybeCompact()：注入 observation 后按 token 阈值触发压缩（§2.1 / §5.1）。
+      await this.maybeCompact(s, turnId);
     }
 
     await this.emit(s, { kind: 'TurnCompleted', stopReason: 'max_turn_steps', usage: zeroUsage() }, turnId);
   }
 
+  /**
+   * 超阈值压缩消息窗口（§5.1）：condense 只改送 LLM 的窗口，原始 EventLog 不删；
+   * 另发 ContextCompacted{fromCursor,toCursor,tokensSaved} 落库（可审计、可逆）。min-rounds guard 防频繁压缩。
+   */
+  private async maybeCompact(s: SessionState, turnId: Id): Promise<void> {
+    s.stepsSinceCompact++;
+    const minSteps = this.d.minStepsBetweenCompact ?? 1;
+    if (s.stepsSinceCompact < minSteps) return;
+    const usableTokens = this.d.usableContextTokens ?? 200_000;
+    const before = estimateMessagesTokens(s.messages);
+    if (!this.d.condenser.shouldCompact({ usedTokens: before, usableTokens })) return;
+
+    const condensed = await this.d.condenser.condense(s.messages);
+    if (condensed === s.messages || condensed.length >= s.messages.length) return; // 没压成，不发事件
+    s.messages = condensed;
+    const after = estimateMessagesTokens(condensed);
+    const toCursor = s.headCursor; // ContextCompacted 自身分配的 cursor 在 toCursor 之后
+    await this.emit(
+      s,
+      { kind: 'ContextCompacted', fromCursor: s.lastCompactCursor, toCursor, tokensSaved: Math.max(0, before - after) },
+      turnId,
+    );
+    s.lastCompactCursor = s.headCursor;
+    s.stepsSinceCompact = 0;
+  }
+
+  /** edit 类工具成功后：发 FileChanged（best-effort，取 input.path）+ L3 checkpoint 快照。 */
+  private async afterMutation(s: SessionState, kind: string, input: unknown, turnId: Id): Promise<void> {
+    const path = typeof (input as { path?: unknown })?.path === 'string' ? (input as { path: string }).path : undefined;
+    if (path) {
+      const changeKind = kind === 'delete' ? 'delete' : kind === 'move' ? 'rename' : 'edit';
+      await this.emit(s, { kind: 'FileChanged', path, changeKind }, turnId);
+    }
+    if (!this.d.checkpointer) return;
+    try {
+      const cp = await this.d.checkpointer.snapshot(`turn ${turnId}`);
+      await this.events.saveCheckpoint({
+        checkpointId: cp.checkpointId,
+        sessionId: s.id,
+        cursor: s.headCursor,
+        shadowGitRef: cp.ref,
+        createdAt: cp.createdAt,
+      });
+    } catch {
+      // checkpoint 失败不阻断 turn（兜底安全网，非关键路径）。
+    }
+  }
+
   private async requestApproval(
     s: SessionState,
-    requestIdForTool: string,
+    _toolCallId: string,
     tool: string,
     input: unknown,
     turnId: Id,
-  ): Promise<ApprovalDecision> {
+  ): Promise<{ decision: ApprovalDecision; updatedInput?: unknown }> {
     const requestId = randomUUID();
-    await this.emit(
-      s,
-      { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions: [] },
-      turnId,
-    );
+    const suggestions: ApprovalSuggestion[] = [
+      { decision: 'allow_once', label: '允许一次' },
+      { decision: 'allow_always', label: '总是允许' },
+      { decision: 'reject_once', label: '拒绝一次' },
+      { decision: 'reject_always', label: '总是拒绝' },
+    ];
+    await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions }, turnId);
     if (this.d.approvalGate) {
-      const r = await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk: 'unknown' });
-      return r.decision;
+      return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk: 'unknown' });
     }
-    // 协议化审批：无进程内 gate 时，等待外部 decideApproval(requestId,...)；headless 默认拒绝。
-    void requestIdForTool;
-    return 'reject_once';
+    // 非交互（headless 无人应答）默认拒绝，保持安全下限。
+    if (!this.d.interactiveApproval) return { decision: 'reject_once' };
+    // 协议化审批（§3.4 / §6.2）：挂起注册 pending，等外部 decideApproval(requestId,...) 唤醒，可选超时默认 deny。
+    // interrupt() 也能解除该挂起（见 interrupt）。
+    s.pendingApprovalIds.add(requestId);
+    try {
+      return await new Promise<{ decision: ApprovalDecision; updatedInput?: unknown }>((resolve) => {
+        this.pendingApprovals.set(requestId, ({ decision, updatedInput }) => resolve({ decision, updatedInput }));
+        const ms = this.d.approvalTimeoutMs;
+        if (ms && ms > 0) {
+          setTimeout(() => {
+            if (this.pendingApprovals.delete(requestId)) resolve({ decision: 'reject_once' });
+          }, ms);
+        }
+      });
+    } finally {
+      s.pendingApprovalIds.delete(requestId);
+    }
   }
 
   // ───────────────────────── 内部工具 ─────────────────────────

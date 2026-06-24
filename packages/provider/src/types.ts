@@ -21,7 +21,8 @@ export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean };
+  // name：工具函数名。Gemini 靠 functionResponse.name（非 id）关联回 functionCall，故必须携带真名（非合成 call id）。
+  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; name?: string };
 
 /** 归一消息（含 tool_result）。 */
 export interface CanonMessage {

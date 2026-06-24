@@ -23,7 +23,8 @@
       "@yo-agent/provider": ["packages/provider/src/index.ts"],
       "@yo-agent/tools": ["packages/tools/src/index.ts"],
       "@yo-agent/store": ["packages/store/src/index.ts"],
-      "@yo-agent/kernel": ["packages/kernel/src/index.ts"]
+      "@yo-agent/kernel": ["packages/kernel/src/index.ts"],
+      "@yo-agent/surface-cli": ["packages/surface-cli/src/index.ts"]
     }
   }
 }

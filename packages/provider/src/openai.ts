@@ -137,17 +137,18 @@ function toOpenAiMessages(messages: CanonMessage[], system?: string): Array<Reco
   if (system) out.push({ role: 'system', content: system });
   for (const m of messages) {
     if (m.role === 'system') continue; // 已合并到顶部 system
-    if (m.role === 'tool') {
-      const blocks = Array.isArray(m.content) ? m.content : [];
-      for (const b of blocks) {
-        if (b.type === 'tool_result') out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content });
-      }
-      continue;
-    }
     if (typeof m.content === 'string') {
       out.push({ role: m.role, content: m.content });
       continue;
     }
+    // tool_result 块（内核以 role:'user' 或 role:'tool' 回填）→ OpenAI 要求独立 role:'tool' 消息。
+    const toolResults = m.content.filter(
+      (b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result',
+    );
+    for (const b of toolResults) out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content });
+
+    if (m.role === 'tool') continue; // tool 消息只承载 tool_result，已处理
+
     const text = m.content
       .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
       .map((b) => b.text)
@@ -155,9 +156,14 @@ function toOpenAiMessages(messages: CanonMessage[], system?: string): Array<Reco
     const toolCalls = m.content
       .filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
       .map((b) => ({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input) } }));
-    const msg: Record<string, unknown> = { role: m.role, content: text || null };
-    if (toolCalls.length > 0) msg.tool_calls = toolCalls;
-    out.push(msg);
+    // 纯 tool_result 的 user 消息（内核 observation）不再额外发空 user 消息。
+    if (text || toolCalls.length > 0) {
+      const msg: Record<string, unknown> = { role: m.role, content: text || null };
+      if (toolCalls.length > 0) msg.tool_calls = toolCalls;
+      out.push(msg);
+    } else if (toolResults.length === 0) {
+      out.push({ role: m.role, content: null });
+    }
   }
   return out;
 }

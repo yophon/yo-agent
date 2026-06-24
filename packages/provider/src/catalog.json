@@ -1,0 +1,107 @@
+[
+  {
+    "id": "claude-opus-4-8",
+    "provider": "anthropic",
+    "displayName": "Claude Opus 4.8",
+    "contextWindow": 1000000,
+    "maxOutput": 128000,
+    "inputPricePerMTok": 5,
+    "outputPricePerMTok": 25,
+    "cacheReadPricePerMTok": 0.5,
+    "cacheWritePricePerMTok": 6.25,
+    "minCacheablePrefixTokens": 4096,
+    "capabilities": { "nativeToolCalling": true, "thinking": true, "effort": true, "promptCache": true }
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "provider": "anthropic",
+    "displayName": "Claude Sonnet 4.6",
+    "contextWindow": 1000000,
+    "maxOutput": 64000,
+    "inputPricePerMTok": 3,
+    "outputPricePerMTok": 15,
+    "cacheReadPricePerMTok": 0.3,
+    "cacheWritePricePerMTok": 3.75,
+    "minCacheablePrefixTokens": 2048,
+    "capabilities": { "nativeToolCalling": true, "thinking": true, "effort": true, "promptCache": true }
+  },
+  {
+    "id": "claude-haiku-4-5",
+    "provider": "anthropic",
+    "displayName": "Claude Haiku 4.5",
+    "contextWindow": 200000,
+    "maxOutput": 64000,
+    "inputPricePerMTok": 1,
+    "outputPricePerMTok": 5,
+    "cacheReadPricePerMTok": 0.1,
+    "cacheWritePricePerMTok": 1.25,
+    "minCacheablePrefixTokens": 4096,
+    "capabilities": { "nativeToolCalling": true, "thinking": true, "effort": false, "promptCache": true }
+  },
+  {
+    "id": "gpt-4o",
+    "provider": "openai",
+    "displayName": "GPT-4o",
+    "contextWindow": 128000,
+    "maxOutput": 16384,
+    "inputPricePerMTok": 2.5,
+    "outputPricePerMTok": 10,
+    "cacheReadPricePerMTok": 1.25,
+    "capabilities": { "nativeToolCalling": true, "thinking": false, "effort": false, "promptCache": true }
+  },
+  {
+    "id": "gpt-4o-mini",
+    "provider": "openai",
+    "displayName": "GPT-4o mini",
+    "contextWindow": 128000,
+    "maxOutput": 16384,
+    "inputPricePerMTok": 0.15,
+    "outputPricePerMTok": 0.6,
+    "cacheReadPricePerMTok": 0.075,
+    "capabilities": { "nativeToolCalling": true, "thinking": false, "effort": false, "promptCache": true }
+  },
+  {
+    "id": "gemini-2.0-flash",
+    "provider": "gemini",
+    "displayName": "Gemini 2.0 Flash",
+    "contextWindow": 1000000,
+    "maxOutput": 8192,
+    "inputPricePerMTok": 0.1,
+    "outputPricePerMTok": 0.4,
+    "cacheReadPricePerMTok": 0.025,
+    "capabilities": { "nativeToolCalling": true, "thinking": false, "effort": false, "promptCache": false }
+  },
+  {
+    "id": "gemini-1.5-pro",
+    "provider": "gemini",
+    "displayName": "Gemini 1.5 Pro",
+    "contextWindow": 2000000,
+    "maxOutput": 8192,
+    "inputPricePerMTok": 1.25,
+    "outputPricePerMTok": 5,
+    "cacheReadPricePerMTok": 0.3125,
+    "capabilities": { "nativeToolCalling": true, "thinking": false, "effort": false, "promptCache": false }
+  },
+  {
+    "id": "deepseek-chat",
+    "provider": "deepseek",
+    "displayName": "DeepSeek V3",
+    "contextWindow": 64000,
+    "maxOutput": 8192,
+    "inputPricePerMTok": 0.27,
+    "outputPricePerMTok": 1.1,
+    "cacheReadPricePerMTok": 0.07,
+    "capabilities": { "nativeToolCalling": true, "thinking": false, "effort": false, "promptCache": true }
+  },
+  {
+    "id": "deepseek-reasoner",
+    "provider": "deepseek",
+    "displayName": "DeepSeek R1",
+    "contextWindow": 64000,
+    "maxOutput": 8192,
+    "inputPricePerMTok": 0.55,
+    "outputPricePerMTok": 2.19,
+    "cacheReadPricePerMTok": 0.14,
+    "capabilities": { "nativeToolCalling": true, "thinking": true, "effort": false, "promptCache": true }
+  }
+]

@@ -8,6 +8,8 @@ import { EVENTLOG_SCHEMA_VERSION } from '@yo-agent/protocol';
 export { EVENTLOG_SCHEMA_VERSION };
 export * from './memory';
 export * from './sqlite';
+export * from './checkpoint';
+export * from './resume';
 
 export interface Checkpoint {
   checkpointId: Id;

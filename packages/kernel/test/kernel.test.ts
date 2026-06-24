@@ -125,6 +125,126 @@ describe('AgentKernel turn 循环', () => {
     expect(events.find((e) => e.kind === 'TurnCompleted')).toBeDefined();
   });
 
+  it('交互审批：内核挂起等外部 decideApproval 唤醒 → 工具执行', async () => {
+    const h = harness();
+    // 直接重建一个 interactiveApproval 内核（harness 默认无此项）。
+    const kernel = new AgentKernel({
+      store: h.store,
+      provider: h.provider,
+      tools: h.tools,
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+      interactiveApproval: true,
+    });
+    h.tools.register(h.echoTool('always'));
+    h.provider.script(toolCallTurn('echo', 'tu1', { m: 9 }));
+    h.provider.script(textTurn('ok'));
+    const events: AgentEvent[] = [];
+    const sessionId = await kernel.startSession({ model: 'fake-model', cwd: '/tmp' });
+    kernel.subscribe(sessionId, null, (env: EventEnvelope) => {
+      events.push(env.event);
+      if (env.event.kind === 'ApprovalRequested') {
+        const requestId = env.event.requestId;
+        // 延后到 pending 注册完成后再裁决（真实 UI 也是异步应答）。
+        setTimeout(() => kernel.decideApproval(requestId, 'allow_once'), 0);
+      }
+    });
+    await kernel.submitInput(sessionId, 'go', 'k1');
+    expect(h.calls).toEqual([{ m: 9 }]);
+    expect(events.find((e) => e.kind === 'TurnCompleted')).toBeDefined();
+  });
+
+  it('交互审批超时：到时默认 deny → 工具不执行', async () => {
+    const h = harness();
+    const kernel = new AgentKernel({
+      store: h.store,
+      provider: h.provider,
+      tools: h.tools,
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+      interactiveApproval: true,
+      approvalTimeoutMs: 10,
+    });
+    h.tools.register(h.echoTool('always'));
+    h.provider.script(toolCallTurn('echo', 'tu1', { m: 1 }));
+    h.provider.script(textTurn('ok'));
+    const sessionId = await kernel.startSession({ model: 'fake-model', cwd: '/tmp' });
+    await kernel.submitInput(sessionId, 'go', 'k1'); // 无人应答，10ms 后超时 deny
+    expect(h.calls).toEqual([]);
+  });
+
+  it('交互审批：interrupt 解除挂起 → turn 返回（不永久挂起），工具不执行', async () => {
+    const h = harness();
+    const kernel = new AgentKernel({
+      store: h.store,
+      provider: h.provider,
+      tools: h.tools,
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+      interactiveApproval: true, // 无超时：仅靠 interrupt 解除
+    });
+    h.tools.register(h.echoTool('always'));
+    h.provider.script(toolCallTurn('echo', 'tu1', { m: 1 }));
+    h.provider.script(textTurn('ok'));
+    const sessionId = await kernel.startSession({ model: 'fake-model', cwd: '/tmp' });
+    kernel.subscribe(sessionId, null, (env: EventEnvelope) => {
+      if (env.event.kind === 'ApprovalRequested') setTimeout(() => kernel.interrupt(sessionId), 0);
+    });
+    await kernel.submitInput(sessionId, 'go', 'k1'); // 若 interrupt 不解除 pending 会永久挂起、此处 await 不返回
+    expect(h.calls).toEqual([]);
+  });
+
+  it('always 审批缓存：reject_always 后同名工具不再二次弹审批', async () => {
+    let asks = 0;
+    const gate: ApprovalGate = { async request() { asks++; return { decision: 'reject_always' }; } };
+    const h = harness({ approvalGate: gate });
+    h.tools.register(h.echoTool('always'));
+    h.provider.script(toolCallTurn('echo', 'a', { i: 1 }));
+    h.provider.script(toolCallTurn('echo', 'b', { i: 2 })); // 第二次同名调用
+    h.provider.script(textTurn('done'));
+    await drive(h);
+    expect(asks).toBe(1); // 只问一次，第二次命中缓存直接拒绝
+    expect(h.calls).toEqual([]);
+  });
+
+  it('updatedInput：审批改参后放行 → 用新参数执行', async () => {
+    const gate: ApprovalGate = { async request() { return { decision: 'allow_once', updatedInput: { i: 99 } }; } };
+    const h = harness({ approvalGate: gate });
+    h.tools.register(h.echoTool('always'));
+    h.provider.script(toolCallTurn('echo', 'a', { i: 1 }));
+    h.provider.script(textTurn('done'));
+    await drive(h);
+    expect(h.calls).toEqual([{ i: 99 }]); // 用 updatedInput 而非原始 {i:1}
+  });
+
+  it('edit 类工具成功 → 发 FileChanged + 调 checkpointer.snapshot + saveCheckpoint', async () => {
+    const store = new MemoryEventStore();
+    const provider = new FakeProvider();
+    const tools = new InMemoryToolRegistry();
+    const snapshots: string[] = [];
+    const saved: string[] = [];
+    const origSave = store.saveCheckpoint.bind(store);
+    store.saveCheckpoint = async (cp) => { saved.push(cp.shadowGitRef); return origSave(cp); };
+    const editTool: RegisteredTool = {
+      descriptor: { name: 'write', kind: 'edit', description: 'w', inputSchema: { type: 'object' }, owner: 'core', availability: { always: true }, approval: 'never' },
+      executor: { async *execute() { yield { kind: 'output', chunk: 'ok' }; } },
+    };
+    tools.register(editTool);
+    const checkpointer = { async snapshot(label?: string) { snapshots.push(label ?? ''); return { checkpointId: 'cp1', ref: 'deadbeef', createdAt: 1 }; } };
+    const kernel = new AgentKernel({ store, provider, tools, loopBreaker: new HistoryLoopBreaker(), condenser: new NoopCondenser(), checkpointer });
+    provider.script(toolCallTurn('write', 'w1', { path: 'src/a.ts', content: 'x' }));
+    provider.script(textTurn('done'));
+    const events: AgentEvent[] = [];
+    const sessionId = await kernel.startSession();
+    kernel.subscribe(sessionId, null, (env: EventEnvelope) => events.push(env.event));
+    await kernel.submitInput(sessionId, 'go', 'k1');
+    const fc = events.find((e) => e.kind === 'FileChanged');
+    expect(fc && 'path' in fc ? fc.path : null).toBe('src/a.ts');
+    expect(fc && 'changeKind' in fc ? fc.changeKind : null).toBe('edit');
+    expect(snapshots).toHaveLength(1);
+    expect(saved).toEqual(['deadbeef']);
+  });
+
   it('resume：事件持久化、cursor 单调、可从 cursor 之后重放', async () => {
     const h = harness();
     h.provider.script(textTurn('a'));
