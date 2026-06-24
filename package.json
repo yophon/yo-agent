@@ -1,0 +1,25 @@
+{
+  "name": "yo-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "通用 agent 引擎（TypeScript/Node）—— Phase 0：协议与接口骨架",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gen:schema": "tsx packages/protocol/scripts/gen-schema.ts",
+    "check": "pnpm run typecheck && pnpm run gen:schema && pnpm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.0.5"
+  }
+}

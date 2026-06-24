@@ -1,0 +1,30 @@
+{
+  "$ref": "#/definitions/rpc.approval_decide",
+  "definitions": {
+    "rpc.approval_decide": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "allow_once",
+            "allow_always",
+            "reject_once",
+            "reject_always"
+          ]
+        },
+        "updatedInput": {}
+      },
+      "required": [
+        "requestId",
+        "decision"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

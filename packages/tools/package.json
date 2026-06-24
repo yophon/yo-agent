@@ -1,0 +1,14 @@
+{
+  "name": "@yo-agent/tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "工具系统（冻结接口）：声明/执行分离 + 多源统一注册 + availability 动态显隐。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/protocol": "workspace:*"
+  }
+}

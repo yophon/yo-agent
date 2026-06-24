@@ -1,0 +1,14 @@
+{
+  "name": "@yo-agent/provider",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider 抽象（冻结接口）：BYOK 多 provider 归一 + 双轨 tool-calling + 模型目录。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/protocol": "workspace:*"
+  }
+}

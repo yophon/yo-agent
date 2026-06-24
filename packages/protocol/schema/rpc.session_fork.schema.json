@@ -1,0 +1,24 @@
+{
+  "$ref": "#/definitions/rpc.session_fork",
+  "definitions": {
+    "rpc.session_fork": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "atCursor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "sessionId",
+        "atCursor"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

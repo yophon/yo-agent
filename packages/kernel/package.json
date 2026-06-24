@@ -1,0 +1,17 @@
+{
+  "name": "@yo-agent/kernel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "内核与接入层契约（冻结接口）：Kernel / Condenser / LoopBreaker / ApprovalGate / SubagentManager / Surface。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*",
+    "@yo-agent/tools": "workspace:*"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$ref": "#/definitions/rpc.session_new",
+  "definitions": {
+    "rpc.session_new": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "agentProfile": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "permissionMode": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "supervised",
+            "accept-edits",
+            "autonomous",
+            "ci",
+            "bypass"
+          ]
+        },
+        "allowedTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "surfaceKind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project",
+        "permissionMode",
+        "surfaceKind"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

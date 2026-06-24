@@ -1,0 +1,41 @@
+{
+  "$ref": "#/definitions/rpc.turn_start",
+  "definitions": {
+    "rpc.turn_start": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "idemKey": {
+          "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {}
+        },
+        "effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "prompt",
+        "idemKey"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

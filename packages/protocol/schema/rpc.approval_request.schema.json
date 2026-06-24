@@ -1,0 +1,63 @@
+{
+  "$ref": "#/definitions/rpc.approval_request",
+  "definitions": {
+    "rpc.approval_request": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "$ref": "#/definitions/rpc.approval_request/properties/requestId"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "input": {},
+        "risk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "unknown"
+          ]
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "decision": {
+                "type": "string",
+                "enum": [
+                  "allow_once",
+                  "allow_always",
+                  "reject_once",
+                  "reject_always"
+                ]
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "decision"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "requestId",
+        "sessionId",
+        "tool",
+        "risk",
+        "suggestions"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,0 +1,658 @@
+{
+  "$ref": "#/definitions/AgentEvent",
+  "definitions": {
+    "AgentEvent": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "SessionStarted"
+            },
+            "externalId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "workspacePath": {
+              "type": "string"
+            },
+            "permissionMode": {
+              "type": "string",
+              "enum": [
+                "read-only",
+                "supervised",
+                "accept-edits",
+                "autonomous",
+                "ci",
+                "bypass"
+              ]
+            },
+            "profile": {
+              "type": "string"
+            },
+            "gitRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "externalId",
+            "model",
+            "tools",
+            "workspacePath",
+            "permissionMode",
+            "profile"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "TurnStarted"
+            },
+            "turnId": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "promptIdemKey": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "turnId",
+            "promptIdemKey"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "AssistantText"
+            },
+            "delta": {
+              "type": "string"
+            },
+            "full": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Reasoning"
+            },
+            "delta": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ToolCallStarted"
+            },
+            "id": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "name": {
+              "type": "string"
+            },
+            "toolKind": {
+              "type": "string",
+              "enum": [
+                "read",
+                "edit",
+                "delete",
+                "move",
+                "search",
+                "execute",
+                "think",
+                "fetch",
+                "other"
+              ]
+            },
+            "summary": {
+              "type": "string"
+            },
+            "input": {}
+          },
+          "required": [
+            "kind",
+            "id",
+            "name",
+            "toolKind",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ToolCallOutput"
+            },
+            "id": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "chunk": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "chunk"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ToolCallCompleted"
+            },
+            "id": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "error"
+              ]
+            },
+            "truncatedToPath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "FileChanged"
+            },
+            "path": {
+              "type": "string"
+            },
+            "changeKind": {
+              "type": "string",
+              "enum": [
+                "create",
+                "edit",
+                "delete",
+                "rename"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "changeKind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Todo"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed"
+                    ]
+                  }
+                },
+                "required": [
+                  "text",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Plan"
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "$ref": "#/definitions/AgentEvent/anyOf/8/properties/items/items/properties/status"
+                  }
+                },
+                "required": [
+                  "text",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "steps"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ApprovalRequested"
+            },
+            "requestId": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "input": {},
+            "risk": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "unknown"
+              ]
+            },
+            "suggestions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "allow_once",
+                      "allow_always",
+                      "reject_once",
+                      "reject_always"
+                    ]
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "tool",
+            "risk",
+            "suggestions"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "SubagentStarted"
+            },
+            "childSessionId": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "label": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "childSessionId",
+            "label",
+            "model"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "SubagentResult"
+            },
+            "childSessionId": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "childSessionId",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ContextCompacted"
+            },
+            "fromCursor": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toCursor": {
+              "$ref": "#/definitions/AgentEvent/anyOf/13/properties/fromCursor"
+            },
+            "tokensSaved": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "fromCursor",
+            "toCursor",
+            "tokensSaved"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ApiRetry"
+            },
+            "attempt": {
+              "type": "integer"
+            },
+            "maxRetries": {
+              "type": "integer"
+            },
+            "delayMs": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "attempt",
+            "maxRetries"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "BackgroundProcess"
+            },
+            "procId": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
+            "label": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "running",
+                "exited"
+              ]
+            },
+            "exitCode": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "procId",
+            "label",
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "UsageUpdate"
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheReadTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheCreationTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "thinkingTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "costUsd": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "inputTokens",
+            "outputTokens",
+            "cacheReadTokens"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "TurnCompleted"
+            },
+            "stopReason": {
+              "type": "string",
+              "enum": [
+                "end_turn",
+                "max_tokens",
+                "max_turn_steps",
+                "tool_budget_exceeded",
+                "loop_detected",
+                "interrupted",
+                "refusal",
+                "pause_turn",
+                "error"
+              ]
+            },
+            "usage": {
+              "type": "object",
+              "properties": {
+                "inputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheReadTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheCreationTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "thinkingTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "costUsd": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "inputTokens",
+                "outputTokens",
+                "cacheReadTokens"
+              ],
+              "additionalProperties": false
+            },
+            "costUsd": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "stopReason",
+            "usage"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "TurnFailed"
+            },
+            "error": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Error"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
