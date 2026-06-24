@@ -4,6 +4,7 @@
  *   pnpm --filter @yo-agent/cli start -- --tui -p "提问"        # Ink TUI（交互审批）
  *   pnpm --filter @yo-agent/cli start -- --mode jsonl -p "提问"  # 结构化 JSONL 单次
  *   pnpm --filter @yo-agent/cli start -- rpc                     # JSON-RPC over stdin/stdout（通用远端驱动，常驻）
+ *   pnpm --filter @yo-agent/cli start -- mcp-server             # MCP server over stdio（被 Claude Code/Cursor 调用，常驻）
  *
  * Provider：ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY（OPENAI_MODE=responses，YO_TOOL_SHIM=1 双轨）；
  * 否则 FakeProvider 演示。YO_DB=路径 → SQLite 持久化。YO_COMPACT=1 → 启用 Condenser。自动加载 cwd 链上 yo.md/AGENTS.md。
@@ -23,9 +24,11 @@ import {
   usableContextTokens,
 } from '@yo-agent/surface-cli';
 import { JsonlStreamChannel, RpcSurface } from '@yo-agent/surface-rpc';
+import { McpServerSurface, autoApproveGate, createStdioTransport } from '@yo-agent/surface-mcp';
+import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
-type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc';
+type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server';
 
 interface Args {
   prompt: string;
@@ -37,6 +40,7 @@ function parseArgs(argv: string[]): Args {
   let wantJsonl = false;
   let wantTui = false;
   let wantRpc = false;
+  let wantMcp = false;
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -63,11 +67,15 @@ function parseArgs(argv: string[]): Args {
       wantRpc = true;
       continue;
     }
+    if (a === 'mcp-server' || a === '--mcp-server') {
+      wantMcp = true;
+      continue;
+    }
     if (a.startsWith('-')) continue; // 未知 flag 跳过
     positional.push(a);
   }
   if (!prompt) prompt = positional.join(' ');
-  const mode: Mode = wantRpc ? 'rpc' : wantJsonl ? 'jsonl' : wantTui ? 'tui' : 'headless';
+  const mode: Mode = wantMcp ? 'mcp-server' : wantRpc ? 'rpc' : wantJsonl ? 'jsonl' : wantTui ? 'tui' : 'headless';
   return { prompt, mode };
 }
 
@@ -93,6 +101,8 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
   const tools = new InMemoryToolRegistry();
   for (const t of builtinTools) tools.register(t);
   const interactive = opts.mode === 'tui' || opts.mode === 'rpc';
+  // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
+  const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
   const kernel = new AgentKernel({
     store: buildStore(),
     provider,
@@ -100,6 +110,7 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     loopBreaker: new HistoryLoopBreaker(),
     condenser: buildCondenser(opts.env, provider, model),
     checkpointer: opts.env.YO_CHECKPOINT === '1' ? new ShadowGitCheckpointer({ dir: opts.cwd }) : undefined,
+    approvalGate,
     model,
     cwd: opts.cwd,
     usableContextTokens: usableContextTokens(model, catalog),
@@ -123,8 +134,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  // MCP server 模式：stdout 是 MCP 协议通道（日志走 stderr），常驻；被 Claude Code/Cursor 当节点调用。
+  if (mode === 'mcp-server') {
+    const { kernel } = buildKernel({ env, cwd, prompt: '', mode });
+    await new McpServerSurface({ transport: createStdioTransport() }).start(kernel as Kernel);
+    await new Promise<void>(() => {}); // 永不 resolve：进程常驻
+    return;
+  }
+
   if (!prompt) {
-    console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc]');
+    console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server]');
     process.exit(2);
   }
   const system = (await loadConventionFiles(cwd)) || undefined;

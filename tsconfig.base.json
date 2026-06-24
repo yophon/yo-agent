@@ -25,7 +25,8 @@
       "@yo-agent/store": ["packages/store/src/index.ts"],
       "@yo-agent/kernel": ["packages/kernel/src/index.ts"],
       "@yo-agent/surface-cli": ["packages/surface-cli/src/index.ts"],
-      "@yo-agent/surface-rpc": ["packages/surface-rpc/src/index.ts"]
+      "@yo-agent/surface-rpc": ["packages/surface-rpc/src/index.ts"],
+      "@yo-agent/surface-mcp": ["packages/surface-mcp/src/index.ts"]
     }
   }
 }
