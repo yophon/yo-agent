@@ -955,3 +955,79 @@ yo-agent/
 - **理由**：yo-context 硬约束（TS/Node 单栈）；避开 OpenClaw 300+ 文件碎片化、opencode Bun/Effect-TS 强绑、Claude Code 闭源不可改 loop 三个反例。
 - **对比**：pi primitives-not-features（采纳）vs OpenClaw 规模（取模式不取规模）vs opencode Bun 强绑（避开）。
 - **被否**：Bun/Deno runtime（生态强绑）；内核内置一切 feature（维护成本高）。
+
+---
+
+## 15. 实现硬细节补遗（claudeLearning 31 篇 + claude-api 权威核查）
+
+> 本节是把 Claude Code / Agent SDK / Anthropic API 的**承重实现细节**收进设计的"已采纳决策"清单。每条都对应一个上面的章节号。完整 ~70 条 findings 与出处见 [`docs/research/_SUPPLEMENT-from-claudeLearning.md`](research/_SUPPLEMENT-from-claudeLearning.md)。**§15.4 / §15.10 的 API 形态已用 claude-api skill 权威核查**（截至 2026-06），优先级高于 2026-05 学习笔记。
+
+### 15.1 内核（补 §2）
+- **`stop_reason='max_tokens'` 自动续传**：TurnLoop 遇到 `Stop{reason:'max_tokens'}` 时追加 `{role:'user', content:'请继续'}` 继续循环，**不 `emit(TurnFailed)`**（话未说完≠错误）。`StopReason` / `ProviderEvent.Stop.reason` 补 `'pause_turn'`（server-tool / extended-thinking 暂停），遇到时 `continue`。
+- **同 step 多 tool_use 必须 `Promise.all` 并发**，所有结果**合并为单条 user 消息**内的多个 `tool_result` 回填（Anthropic 硬约束：一条 user 消息含全部 tool_result）。顺序 for 会把 5×200ms 退化成 1s。
+- **streaming 只在 `finalMessage()` 后写 EventLog 的 assistant turn**；partial+Error（§2.4）不构成合法 turn、不触发 tool。ContextAssembler 可选用 `count_tokens` 预检：预估 > 0.9×窗口先触发 Condenser。
+- **LoopBreaker `warn` 注入 tool_result 级提醒**给 LLM（"你已连续 N 次同操作…换思路"），而非仅内部记录。
+- **子 agent 底层 = fork 新 Agent Loop + 复制父 options + 子 final text 作 tool_result 注入**（主循环无需特殊分支）。`spawn` opts 与 recipe 补 `maxTurns / isolation('none'|'worktree'|'container') / memory / skipContextFiles / outputMaxTokens`；background 子 agent 的 `ApprovalRequested` 经 `parentSessionId` 浮现到父 surface；`spawnBatch(tasks,{parallel:true})` + recipe 模板显式指示并行。
+
+### 15.2 工具系统（补 §3.1/§3.2/§3.4）
+- `ToolContext` 明确字段：`session_id / cwd / user_id / transcript_path`（RBAC / audit / 路径限制基座）。
+- tool `description` 三段式（功能 / **TRIGGER 何时调** / **不返回什么**）；`inputSchema` 多用 `enum/minimum/maximum/pattern`（Gemini 降级时按 §4.2 剥除不支持字段）。
+- **工具出错必须 `ToolCallCompleted{status:'error'}`**（MCP `isError:true` 映射至此），不可包在 `'ok'`+错误文本里致 LLM 幻觉串联。
+- 列表型工具超阈值**截断 + `[截断，还有 N 行]` 提示**，约定 `limit`(默认 50/最大 200)/`offset`；与"大输出写盘只回路径"互补。
+- 高危内置工具（bash/write）`inputSchema` 增 `confirm`（默认 dry_run）—— 与 ApprovalGate 形成纵深防御。
+- **Permission matcher 采用 Claude Code 语法** `<工具>(<pattern>)`，如 `Bash(npm test:*)`；优先级 **deny > ask > allow > 默认**，**deny 跨层取并集**（任意层 deny 即拒，不可被上层 allow 覆盖）。
+- 内置工具集补：`MultiEdit / EnterPlanMode / ExitPlanMode / ToolSearch / WaitForMcpServers / AskUserQuestion`（结构化多选，IM 渲染按钮）；`LSP` 标 Phase N。
+
+### 15.3 MCP（补 §3.3）
+- MCP 工具注入时 `name` 强制 **`mcp__{server}__{tool}`**，支撑权限通配 `mcp__github__*`；白名单字段 `enabledMcpServers`。
+- **三层配置** `~/.yo-agent/mcp.json`(user) / `.yo-agent/mcp.json`(project，**默认不激活，需 opt-in 信任**，防供应链) / local；`${VAR}` 走 `process.env` 展开，不写盘不入日志。
+- **内部 MCP server（McpServerSurface）三铁律**：破坏性 tool 须 `confirm`(默认 dry_run) + **每用户每分钟限流** + **stdio 日志写 stderr**（污染 stdout 即破坏 JSON-RPC，pino 配 `destination: stderr`）。
+- **MCP Sampling**：实现 host 端 `sampling/createMessage`（路由到当前会话 Provider + 限流），让 server 反向借调 Host LLM（成本计入 user 配额）。
+- `list_resources` + `subscribe`(心跳超时清理) + 多 mime；MCP Prompts 映射 `/mcp__<server>__<prompt>`（内置 skill/recipe 包装为 Prompt 暴露给宿主 UI）；progress notifications ↔ `ToolCallOutput` delta；>20 tool 启 ToolSearch 懒加载。
+- **WebSocket 传输不支持 OAuth**（退化为静态 Bearer）——MCP server 配 OAuth 时**必须用 Streamable HTTP**（见 §15.10 C4）。
+
+### 15.4 Provider / API 形态（补 §4 —— ✅ claude-api 权威核查）
+- **推理力度 = `output_config: {effort}`**，取值 `low|medium|high|xhigh|max`，**GA、无 beta header**，默认 `high`；`xhigh`(Opus 4.7 新增)是 Claude Code 默认、编程/agentic 最佳。支持 Opus 4.5/4.6/4.7/4.8、Sonnet 4.6、Fable 5；Sonnet 4.5/Haiku 4.5 会 400。→ **§4.1 `ChatRequest.effort` 枚举补 `'xhigh'`**。
+- **adaptive thinking = `thinking: {type:'adaptive'}`**（4.6+）；`display:'summarized'` 才回摘要（4.7/4.8/Fable 默认 `omitted`，否则前端是"空 thinking + 长暂停"）。同模型续接须**原样回传 thinking 块**（含空块）；跨模型自动丢弃、不计费。
+- **`budget_tokens` 仅旧模型**（Sonnet 4.5 及更早）：在 4.7/4.8/Fable 上发送 → **400（已移除）**，4.6/Sonnet 4.6 上 deprecated。**因此 AnthropicProvider 的 `effort` 翻译走 `output_config.effort`，不是 `thinking.budget_tokens`** —— §4.2 原措辞正确，**笔记 C2 的"译为 budget_tokens"是过时结论，已被推翻（见 §15.10 C2）**。
+- **`temperature/top_p/top_k` 在 4.7/4.8/Fable 上 → 400（已移除）**；`ProviderCapabilities` 必须按模型过滤、**丢弃不接受的参数而非盲传**（与 §4.4 一致）。
+- **prompt cache 最小可缓存前缀按模型不同**：Opus 4.8/4.7/4.6/4.5、Haiku 4.5 = **4096** token；Fable 5、Sonnet 4.6 = 2048；Sonnet 4.5 = 1024（**笔记"~1024"对 Opus 4.8 不准**，ContextAssembler 按目标模型取阈值，低于则不打 `cache_control` 以免误判 UsageUpdate）。最多 **4 个 breakpoint**；render order **tools → system → messages**；`cache_control` 打在 **tools 数组末元素 / system 末块**；`usage` 必须落 `cache_creation_input_tokens`（写缓存加价 1.25×/2×）+ `cache_read_input_tokens`(0.1×) + `thinking_tokens`，否则成本低估 25%~100%。`ttl` 两档 5m/1h（批处理 recipe 用 1h）。
+- **cache 失效分层**：改 tools/model → 全失效；改 system → system+messages 失效；改 message → 仅 messages（`tool_choice`/`thinking` 开关**不破** tools+system cache）。→ MCP 动态 `tools/list_changed` 走显式重建、不在 turn 中途热换（§3.3）；`resolveAvailable()` 工具顺序稳定（内置按注册序、MCP 按 server+name 字典序）防 cache miss。
+- **Opus 4.8 mid-conversation `role:"system"` 消息**：把算子指令作为 `{role:'system'}` **追加进 messages**（不改顶层 system），**不破缓存前缀**且是**抗 prompt-injection 的算子权威通道**。→ 强化 §5.2/§9.5：yo.md 群级硬规范在 Opus 4.8 走 message-role=system，旧模型回退 user-turn 的 `<system-reminder>` 文本块。
+- 服务端 compaction(beta `compact-2026-01-12`) 与 context-editing(`clear_tool_uses`) 是两套独立能力，作 Provider 层**可选** flag；yo-agent 默认自管 `Condenser`（§5.1）以跨 provider 一致。`stop_details` 仅在 `stop_reason=='refusal'` 时非空，读前必判空（§2.4 refusal 处理）。双轨 tool-calling 累积：Anthropic `input_json_delta.partial_json` / OpenAI `tool_calls[].arguments` **拼完才 `JSON.parse`**。
+
+### 15.5 上下文与记忆（补 §5）
+- **compact 后 prompt cache 必失效** → `shouldCompact()` 增"距上次 compact 轮次/时间"guard，防频繁手动 compact 叠加 cache-miss；ADR-6 补此成本后果 + 每日 compact 次数告警。压缩流程末**重设 cache breakpoint**（summary 之后），`condense(events,{hint?})` 把 `/compact` 指令注入 Handoff 摘要 prompt。
+- auto-memory 两级懒加载：`MEMORY.md` 索引（启动加载前 200 行/25KB cap）+ per-topic 文件按需 `read`；subagent 用独立 `agent-memory/`。`@import` 路径**相对导入文件位置**（非 cwd），与 skill `@-reference` 共用 resolver。
+- yo.md 质量清单：≤200 行/写事实非愿望/禁 secrets/禁过时/无临时 TODO；分 topic 规则放 `.yo-agent/rules/<glob>.md` 懒加载。长任务范式：`.yo-agent/<task>/plan.md`(目标/阶段/checkpoint) + session 分段 + git checkpoint + subagent 隔离（§13 Phase 4）。
+
+### 15.6 Skills / subagent / recipe（补 §8）
+- **Skill 渐进披露**：ContextAssembler 每轮 `SkillRegistry.listSummaries()` 把 `{name,description}` 摘要目录（近零 token）追加到 system 尾；LLM 识别后 `skill_activate(name)` 拉全文（压缩时受保护）。`SKILL.md.description` 用 **核心场景 + TRIGGER 关键词 + SKIP 条件** 三段（决定 ~95% 自动激活精度）。
+- **`SKILL.md` 的 `tools?` 是 yo-agent 扩展**（Claude Code 原生 frontmatter 仅 `name + description`，工具约束归 recipe/subagent）——文档显式标注，避免误以为是 CC 标准（§15.10 C 系列）。SkillLoader 加载时展开 `@checklist.md` 等多文件引用。
+- recipe / subagent frontmatter 完整字段：**`description`(最关键，决定主 agent 是否调用)** / `tools`(参数级 `Bash(gh pr diff:*)`) / `disallowedTools`(黑名单优先) / `model` / `permissionMode` / `isolation` / `memory` / `maxTurns` / `parameters`。
+- §8 补**扩展机制选型决策矩阵**：确定性强制→Hook；知识/规范→yo.md/skill；自主行为→skill；独立子任务→subagent（反模式："commit 前跑测试"写 yo.md 会 ~5% 漏，应 PreToolUse hook）。project 级 `.yo-agent/skills/` 提交 git 即全队共享（一等协作特性）；配 `.yo-agent/evals/<skill>/case-N.md` + CI 评测门（§13 Phase 4/5 退出）。
+
+### 15.7 安全（补 §9）
+- `ConfirmationPolicy.decide()` 标 **async**（可查 RBAC/风控/DB），返回 `deny/allow/ask_user`——SaaS 多用户核心扩展点；ApprovalGate 增 per-session 计数（`maxCallsPerSession`）。
+- permission mode 枚举扩展：`read-only(=plan) / supervised(=default) / accept-edits / autonomous / ci(dontAsk) / bypass(仅容器)`，Shift+Tab 三档循环。
+- **Protected Paths 硬编码枚举**（`.git`/`.yo-agent`/`yo.md`/`.ssh`/`*.pem`/`*.key`/shell rc/.npmrc），非 bypass 模式 **allow 规则不可覆盖**。fetch 类工具 SSRF 白名单（默认 block `169.254.0.0/16`/localhost/`10/8`）；`ToolCallOutput` 注入前经 PostToolUse `OutputSanitizer` hook 做 PII 脱敏（企业硬需求）。
+
+### 15.8 持久化与可观测（补 §10）
+- `usage` 表 / OTel span 补 `cache_creation_tokens / thinking_tokens / task_type / is_batch`。新增核心 metric+告警：`compact.frequency`、`cache.hit_rate`(=cache_read/(cache_read+cache_creation+input)，target >70%)、`compact.token_reduction_rate`、日成本 >3× 基线、单用户单日配额；CLI `--show-cost` 显示实时命中率。可选 Batch API（离线 50% 折扣，Batch×Cache ≈ 原价 5%）作 `submitBatch()` + `batch_jobs` 表，用于批量抽取/评估集。
+
+### 15.9 配置 / slash / hooks（补 §11）
+- **Hook stdio JSON 协议**：stdin 固定字段 `{session_id, transcript_path, cwd, hook_event_name, tool_name, tool_input(+tool_response/prompt/stop_hook_active)}`；**exit code 三义**：0=通过(stdout 进 transcript)、2=阻断(stderr 回灌 LLM)、其他非零=报错不阻断；JSON 输出 `decision / reason / continue / stopReason / suppressOutput`。HookHandler 补 `reason/suppressOutput`。
+- HookEvent 设为**可扩展 union**，补关键事件：`PostToolBatch / StopFailure / PermissionRequest / UserPromptExpansion / InstructionsLoaded / FileChanged / Worktree* / Task* / McpElicitation`；实现类型补 `prompt`(结果追加给 LLM) 与 `agent`(spawn 子 agent) 两种；§11.3 加"已收录/暂缓/永不收录"决策表。
+- **配置跨层合并语义**：hooks **叠加执行**（非覆盖）；**deny 跨层并集**；其他项 project>global 覆盖；临时配置放 `config.local.toml`(gitignore)。补第五层 enterprise/managed policy（优先级 enterprise>user>project>local>CLI）；config 预留 `kernel.bashTimeoutMs / maxThinkingTokens / obs.telemetry`；`provider.keyHelper` 脚本化密钥（接 Vault/1Password，支持轮换）。
+- slash frontmatter：`description / argument-hint / allowed-tools(执行期覆盖，IM 端 /allow_once 锁死) / model / disable-model-invocation`；发现路径 `commands/<name>.md` + 子目录命名空间；`!`cmd`` / `@file` 受 allowed-tools 约束，**IM Surface 禁用 `!` 或锁 allowed-tools**（注入风险）。
+- **Plan Mode 作内核可选机制**（跨章节）：内置 `EnterPlanMode/ExitPlanMode`；plan 态工具白名单强制只读（Edit/Write 全禁、有副作用 Bash 禁）；`ExitPlanMode` 触发 ApprovalGate；加对应 hook 事件。
+
+### 15.10 需核实冲突点 —— 结论
+| # | 冲突 | 结论（采纳） |
+|---|---|---|
+| **C1** | compaction 阈值 80% vs 85% vs 95% vs 60% | 三值对应不同层/路径，不矛盾。**默认 `0.80`，可配至 0.85**(`condenser.thresholdRatio`)；区分自动触发(80%) vs `/compact` 手动(help 写"建议 60-70%")；保留 95% 作紧急兜底。 |
+| **C2** | effort 译为 `output_config.effort` 还是 `thinking.budget_tokens` | ✅ **claude-api 核查：`output_config.effort` 正确且是原生 GA 字段**（low/medium/high/xhigh/max）。`budget_tokens` 在 4.7/4.8/Fable 已**移除**(400)，仅旧模型用。**§4.2 保持 output_config.effort，推翻笔记 C2。** |
+| **C3** | 内置 subagent 数量 3/4/5 | 以 claude-code.md 为准：**5 个**（Explore[Haiku,跳过约定文件]/Plan/general-purpose/statusline-setup/claude-code-guide）；yo-agent recipe 默认值参考其模型选择（explore 用便宜模型）。 |
+| **C4** | WebSocket 是否支持 OAuth | 以 claude-code.md 为准：**WS 不支持 OAuth**（退化静态 header）；OAuth 必走 Streamable HTTP（§15.3）。 |
+| **C5** | 子 agent `permissionMode` 在 auto 下的处理 | §2.5 `deriveSubagentPolicy` **显式定义**：父为 `autonomous`/auto 时，子自声明 permissionMode 的尊重/收紧优先级规则（不留空）。 |
+| **C6** | §5.2 软约束 ↔ §9.5 硬约束缺交叉引用 | 连贯性缺口（非错误）：§5.2 注"（硬约束须写 PreToolUse hook、非 yo.md，才抗注入，见 §9.5）"，§9.5 反向指回。开放 IM 频道的群级 yo.md 尤其需要。 |
