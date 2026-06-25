@@ -31,11 +31,15 @@ describe('四接口冻结（Provider / Tool / Surface / Condenser）', () => {
   it('ToolRegistry 可被实现', () => {
     const reg = {
       register(_tool) {},
+      unregister(_name) {},
       resolveAvailable(_ctx) {
         return [];
       },
       executor(_name) {
         return undefined;
+      },
+      toolsetVersion() {
+        return 0;
       },
     } satisfies ToolRegistry;
     expect(reg.resolveAvailable({ sessionId: 's', cwd: '/' })).toEqual([]);

@@ -42,7 +42,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 
 ---
 
-## 3A — 工具集稳定性底座 + 内核共享接缝（无外部连接）
+## 3A — 工具集稳定性底座 + 内核共享接缝（无外部连接） ✅ 已交付
 
 **目标**：在引入任何 MCP 连接代码前，把「外部工具会触发的所有危险」防住，且全部纯本地可单测。同时把 MCP 与 ACP **共享的内核接缝**（`signal`、`risk`、ContextCompacted 字段、工具排序）一次性打底，避免后续片反复改 `kernel.ts`、避免「先写 `callTool(ctx.signal)` 后接线」的悬空。
 
@@ -67,6 +67,13 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - `interrupt()` 触发 `toolCtx.signal` abort（hang stub executor 验证）；per-call 超时同样 abort。
 - `edit`/`execute`/Protected-Path 工具的 `ApprovalRequested.risk` 非 `'unknown'`。
 - 现有 145 测试全绿。
+
+**交付状态**：tools 护栏（撞名/`unregister`/版本化/两段排序/`configFlag` 谓词/MCP 命名+schema 清洗纯函数）+ kernel signal 接缝（turn `AbortController`/per-call 超时/turn 内 **desc 与 executor 双 snapshot**）+ `assessRisk` 评估器。验证门 **172 测试（30 文件）** 全绿。经 5 维对抗式审查（24 agents，19 findings → 9 确认）全部修复：
+- **SNAP-1/2**（核心）：executor 与 desc 同源 snapshot（`execMap`）——mid-turn `unregister` 不影响本 turn 执行；snapshot 外工具（`desc===undefined`）拒绝执行、不绕审批/risk。
+- **CONC-2**：`interrupt` 后工具循环早退，不回填中断 observation、不 compact（防 resume 上下文污染）。
+- **RISK-01/02/05**：`riskProbeText` 补 `file_path`/`paths`/`files`；危险命令补 `--recursive`/`--force` 长选项；`sanitizeMcpInputSchema` 改路径栈语义（不误判共享 `$defs` 为循环）。
+- **SNAP-4 / TST-3/4**：前瞻注释 + snapshot 不变性 + 撞名不污染断言。
+> **TST-5 登记（3B 必补）**：MCP 注入链端到端——`owner:'mcp'` 工具经 `clampMcpApproval`（`never`→`risk-based`）后 kernel 必走 `ApprovalGate`；`sanitize` 后 schema 进 `ToolSpec`。纯函数已单测，端到端衔接待 3B。
 
 ---
 

@@ -6,13 +6,15 @@ import type {
   EventEnvelope,
   Id,
   PermissionMode,
+  RiskLevel,
   Usage,
 } from '@yo-agent/protocol';
 import type { CanonMessage, ChatRequest, ContentBlock, Provider, ToolSpec } from '@yo-agent/provider';
-import type { ToolContext, ToolRegistry } from '@yo-agent/tools';
+import type { ToolContext, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
 import { ResumeBuffer } from '@yo-agent/store';
 import type { ApprovalGate, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
+import { assessRisk } from './risk';
 import { estimateMessagesTokens } from './tokens';
 
 const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
@@ -39,6 +41,10 @@ export interface AgentKernelDeps {
   approvalTimeoutMs?: number;
   /** ResumeBuffer 容量（最近 N 帧，服务实时重连缺口）。默认 512。 */
   resumeBufferCapacity?: number;
+  /** 单次工具调用超时（ms），到时 abort signal（§3.4，挂死的远端 MCP 调用不阻塞整 turn）。0/缺省=不超时。 */
+  toolTimeoutMs?: number;
+  /** availability configFlag 谓词数据源（如 MCP 连接健康标志，3C 熔断 → 工具显隐）；每次 toolCtx 求值。 */
+  toolFlags?: () => Iterable<string>;
 }
 
 export interface StartSessionOpts {
@@ -66,6 +72,8 @@ interface SessionState {
   approvalCache: Map<string, 'allow' | 'reject'>;
   /** 本会话挂起中的审批 requestId（interrupt 时需逐一以 deny 解除，防永久挂起 + 泄漏）。 */
   pendingApprovalIds: Set<Id>;
+  /** 当前 turn 的取消控制器（interrupt → abort，取消 in-flight 工具调用）；turn 外为 undefined。 */
+  turnAbort?: AbortController;
 }
 
 interface ToolCallAccum {
@@ -239,6 +247,8 @@ export class AgentKernel implements Kernel {
   async interrupt(sessionId: Id): Promise<void> {
     const s = this.require(sessionId);
     s.interrupted = true;
+    // 取消 in-flight 工具调用（响应 signal 者，如 MCP callTool）；不响应 signal 的内置工具在 step 间被拦。
+    s.turnAbort?.abort(new Error('turn interrupted'));
     // 若当前卡在等待交互审批，逐一以 deny 解除挂起，否则 turn 永不返回 + pending 泄漏。
     for (const requestId of s.pendingApprovalIds) {
       const resolve = this.pendingApprovals.get(requestId);
@@ -253,14 +263,39 @@ export class AgentKernel implements Kernel {
   // ───────────────────────── turn 循环 ─────────────────────────
 
   private async runTurn(s: SessionState, turnId: Id): Promise<void> {
+    // turn 级取消控制器：interrupt() → abort 取消 in-flight 工具调用（响应 signal 的 MCP callTool 等）。
+    s.turnAbort = new AbortController();
+    try {
+      await this.runTurnInner(s, turnId);
+    } finally {
+      s.turnAbort = undefined;
+    }
+  }
+
+  private async runTurnInner(s: SessionState, turnId: Id): Promise<void> {
     const maxSteps = this.d.maxStepsPerTurn ?? 64;
+    // turn 内工具集 snapshot（§15.4）：起点求值一次、整个 turn 固定——
+    // MCP 工具中途增删（3C TTL/熔断）不漂移本 turn 的 prompt 工具前缀、不破 prompt cache。
+    const toolset = this.d.tools.resolveAvailable(this.toolCtx(s));
+    const toolSpecs: ToolSpec[] = toolset.map((d) => ({
+      name: d.name,
+      description: d.description,
+      jsonSchema: d.inputSchema,
+    }));
+    // executor 与 desc 同源同时刻 snapshot（审查 SNAP-1/2）：mid-turn registry 增删（3C TTL/熔断）对本 turn 不可见——
+    // snapshot 内工具即便被 unregister 仍可执行（execMap 持引用）；snapshot 外工具不在 execMap → 拒绝执行，不绕审批。
+    const execMap = new Map<string, ToolExecutorRef>();
+    for (const d of toolset) {
+      const ex = this.d.tools.executor(d.name);
+      if (ex) execMap.set(d.name, ex);
+    }
     for (let step = 0; step < maxSteps; step++) {
       if (s.interrupted) {
         await this.emit(s, { kind: 'TurnCompleted', stopReason: 'interrupted', usage: zeroUsage() }, turnId);
         return;
       }
 
-      const req: ChatRequest = { modelId: s.model, messages: s.messages, tools: this.toolSpecs(s) };
+      const req: ChatRequest = { modelId: s.model, messages: s.messages, tools: toolSpecs };
       let text = '';
       const toolCalls: ToolCallAccum[] = [];
       const argsById = new Map<string, string>();
@@ -318,13 +353,14 @@ export class AgentKernel implements Kernel {
         return;
       }
 
-      // 有工具调用：执行 0..N 个，结果合并为单条 user 消息回填（§15.1）。
-      const available = this.d.tools.resolveAvailable(this.toolCtx(s));
+      // 有工具调用：执行 0..N 个，结果合并为单条 user 消息回填（§15.1）。用 turn 内 snapshot（不重新求值，§15.4）。
+      const available = toolset;
       const assistantBlocks: ContentBlock[] = [];
       if (text) assistantBlocks.push({ type: 'text', text });
       const toolResults: ContentBlock[] = [];
 
       for (const tc of toolCalls) {
+        if (s.interrupted) break; // 中断：停止处理后续工具，不回填本轮 observation、不 compact（审查 CONC-2）
         let input = parseJsonObject(argsById.get(tc.id) ?? '');
         const desc = available.find((d) => d.name === tc.name);
 
@@ -347,7 +383,7 @@ export class AgentKernel implements Kernel {
           if (cached) {
             decision = cached === 'allow' ? 'allow_always' : 'reject_always';
           } else {
-            const r = await this.requestApproval(s, tc.id, tc.name, input, turnId);
+            const r = await this.requestApproval(s, tc.id, tc.name, input, assessRisk(desc, input), turnId);
             decision = r.decision;
             updatedInput = r.updatedInput;
             if (decision === 'allow_always') s.approvalCache.set(tc.name, 'allow');
@@ -371,17 +407,18 @@ export class AgentKernel implements Kernel {
           turnId,
         );
 
-        const exec = this.d.tools.executor(tc.name);
+        const exec = execMap.get(tc.name);
         if (!exec) {
           await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: 'error' }, turnId);
-          toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: `未知工具：${tc.name}`, isError: true, name: tc.name });
+          toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: `工具不在本 turn 可见集：${tc.name}`, isError: true, name: tc.name });
           continue;
         }
 
         let out = '';
         let isError = false;
+        const call = this.callSignal(s); // turn 取消 + per-call 超时组合 signal
         try {
-          for await (const te of exec.execute(input, this.toolCtx(s))) {
+          for await (const te of exec.execute(input, this.toolCtx(s, call.signal))) {
             if (te.kind === 'output') {
               out += te.chunk;
               await this.emit(s, { kind: 'ToolCallOutput', id: tc.id, chunk: te.chunk, exitCode: te.exitCode }, turnId);
@@ -390,6 +427,8 @@ export class AgentKernel implements Kernel {
         } catch (e) {
           isError = true;
           out = e instanceof Error ? e.message : String(e);
+        } finally {
+          call.dispose();
         }
         await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: isError ? 'error' : 'ok' }, turnId);
         toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: out, isError: isError || undefined, name: tc.name });
@@ -400,6 +439,11 @@ export class AgentKernel implements Kernel {
         }
       }
 
+      // 中断：不回填本轮 observation（含被中断工具的 error）、不 compact，直接收尾（审查 CONC-2，防污染 resume 上下文 + 多余压缩）。
+      if (s.interrupted) {
+        await this.emit(s, { kind: 'TurnCompleted', stopReason: 'interrupted', usage: usage ?? zeroUsage() }, turnId);
+        return;
+      }
       s.messages.push({ role: 'assistant', content: assistantBlocks });
       s.messages.push({ role: 'user', content: toolResults });
       // ContextManager.maybeCompact()：注入 observation 后按 token 阈值触发压缩（§2.1 / §5.1）。
@@ -462,6 +506,7 @@ export class AgentKernel implements Kernel {
     _toolCallId: string,
     tool: string,
     input: unknown,
+    risk: RiskLevel,
     turnId: Id,
   ): Promise<{ decision: ApprovalDecision; updatedInput?: unknown }> {
     const requestId = randomUUID();
@@ -485,7 +530,7 @@ export class AgentKernel implements Kernel {
           }, ms);
         }
       });
-      await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions }, turnId);
+      await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk, suggestions }, turnId);
       try {
         return await decided;
       } finally {
@@ -495,9 +540,9 @@ export class AgentKernel implements Kernel {
       }
     }
     // gate / 非交互：emit 后由 gate 决定 / headless 默认拒绝。
-    await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk: 'unknown', suggestions }, turnId);
+    await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk, suggestions }, turnId);
     if (this.d.approvalGate) {
-      return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk: 'unknown' });
+      return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk });
     }
     return { decision: 'reject_once' };
   }
@@ -547,14 +592,32 @@ export class AgentKernel implements Kernel {
     return s;
   }
 
-  private toolCtx(s: SessionState): ToolContext {
-    return { sessionId: s.id, cwd: s.cwd };
+  private toolCtx(s: SessionState, signal?: AbortSignal): ToolContext {
+    // 注：flags 每次现取 toolFlags()，execute 时与 turn 起点 snapshot 时可能不同源（审查 SNAP-4）——
+    // 当前 flags 仅参与 resolveAvailable 的工具显隐（turn 内只在起点求值），execute 时仅透传给 executor，不破 prompt 前缀。
+    const flags = this.d.toolFlags ? new Set(this.d.toolFlags()) : undefined;
+    return { sessionId: s.id, cwd: s.cwd, signal: signal ?? s.turnAbort?.signal, flags };
   }
 
-  private toolSpecs(s: SessionState): ToolSpec[] {
-    return this.d.tools
-      .resolveAvailable(this.toolCtx(s))
-      .map((d) => ({ name: d.name, description: d.description, jsonSchema: d.inputSchema }));
+  /** 组合 turn 取消 signal 与 per-call 超时；dispose 清 timer + 解监听防泄漏（不依赖 AbortSignal.any，兼容 Node 20.0）。 */
+  private callSignal(s: SessionState): { signal: AbortSignal | undefined; dispose: () => void } {
+    const turnSignal = s.turnAbort?.signal;
+    const ms = this.d.toolTimeoutMs;
+    if (!ms || ms <= 0) return { signal: turnSignal, dispose: () => {} };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error(`工具调用超时（${ms}ms）`)), ms);
+    const onTurnAbort = () => ctrl.abort(turnSignal?.reason);
+    if (turnSignal) {
+      if (turnSignal.aborted) ctrl.abort(turnSignal.reason);
+      else turnSignal.addEventListener('abort', onTurnAbort, { once: true });
+    }
+    return {
+      signal: ctrl.signal,
+      dispose: () => {
+        clearTimeout(timer);
+        turnSignal?.removeEventListener('abort', onTurnAbort);
+      },
+    };
   }
 
   private toolNames(s: SessionState): string[] {
