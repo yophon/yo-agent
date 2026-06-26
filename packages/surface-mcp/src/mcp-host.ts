@@ -65,9 +65,61 @@ export function mcpExecutor(client: Client, remoteName: string): ToolExecutorRef
       if (res.isError) {
         throw new Error(chunks.join('\n') || `MCP 工具 ${remoteName} 返回错误（无内容）`);
       }
-      for (const c of chunks) yield { kind: 'output', chunk: c };
+      // content 为空但有 structuredContent（带 outputSchema 的工具，content[] 仅 SHOULD）→ 回退结构化全文，
+      // 否则 LLM 拿到空观测（审查 protocol-correctness）。成功路径与 isError 同用 join('\n') 保块边界一致。
+      if (chunks.length === 0 && res.structuredContent !== undefined) {
+        yield { kind: 'output', chunk: JSON.stringify(res.structuredContent) };
+        return;
+      }
+      const text = chunks.join('\n');
+      if (text) yield { kind: 'output', chunk: text };
     },
   };
+}
+
+/** tools/list 单项的最小结构（外部 server 返回，字段不可信）。 */
+export interface RawMcpTool {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
+/** listTools 的最小结构接口（便于离线单测分页，无需起真实 server）。 */
+export interface ToolLister {
+  listTools(params?: { cursor?: string }): Promise<{ tools: RawMcpTool[]; nextCursor?: string }>;
+}
+
+/** 游标分页全量拉取 tools/list（首页之后的工具不丢，审查 protocol-correctness）。 */
+export async function listAllTools(client: ToolLister): Promise<RawMcpTool[]> {
+  const all: RawMcpTool[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await client.listTools(cursor ? { cursor } : undefined);
+    all.push(...page.tools);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return all;
+}
+
+/**
+ * 原始工具列表 → RegisteredTool[]，per-tool 隔离：单个非法工具名（toolDescriptorFromMcp 抛错）只跳过该工具，
+ * 不让整台 server 的工具一起消失（审查 completeness：throw 曾在 per-tool try/catch 之外）。
+ */
+export function mapDiscoveredTools(
+  server: string,
+  client: Client,
+  rawTools: RawMcpTool[],
+  log?: (m: string) => void,
+): RegisteredTool[] {
+  const out: RegisteredTool[] = [];
+  for (const t of rawTools) {
+    try {
+      out.push({ descriptor: toolDescriptorFromMcp(server, t), executor: mcpExecutor(client, t.name) });
+    } catch (e) {
+      log?.(`[mcp] 跳过 ${server} 的非法工具「${t.name}」：${errMsg(e)}`);
+    }
+  }
+  return out;
 }
 
 type ContentBlock = { type: string; [k: string]: unknown };
@@ -123,13 +175,14 @@ export class McpConnection {
     await this.client.connect(this.transport);
   }
 
-  /** tools/list 发现 → 经 3A 护栏映射为 RegisteredTool[]（不注册，交 manager 集中处理撞名）。 */
+  /**
+   * tools/list 发现 → 经 3A 护栏映射为 RegisteredTool[]（不注册，交 manager 集中处理撞名）。
+   * 游标分页全量拉取（首页之后的工具不丢）；per-tool 构造隔离——单个非法工具名只跳过该工具，
+   * 不让 toolDescriptorFromMcp 抛错拖垮整台 server（审查 protocol-correctness / completeness）。
+   */
   async discoverTools(): Promise<RegisteredTool[]> {
-    const { tools } = await this.client.listTools();
-    return tools.map((t) => ({
-      descriptor: toolDescriptorFromMcp(this.server, t),
-      executor: mcpExecutor(this.client, t.name),
-    }));
+    const raw = await listAllTools(this.client);
+    return mapDiscoveredTools(this.server, this.client, raw, this.log);
   }
 
   rememberRegistered(name: string): void {
@@ -176,6 +229,12 @@ export class McpHostManager {
 
   async addServer(server: ResolvedMcpServer): Promise<McpConnection> {
     if (this.conns.has(server.name)) throw new Error(`MCP server「${server.name}」已连接`);
+    // 规范化名撞名守卫：两条原始名不同但 sanitize 后相同（github / GitHub）会共享工具前缀+健康标志，
+    // 第二台必全工具撞名空载、白白 spawn 子进程。连接前（spawn 前）拦截（审查 completeness）。
+    const flag = mcpHealthFlag(server.name);
+    if (this.healthy.has(flag)) {
+      throw new Error(`MCP server 规范化名「${sanitizeMcpServerName(server.name)}」与已连接 server 冲突，跳过`);
+    }
     const conn = new McpConnection(server.name, this.opts.transportFor(server), this.opts.log);
     try {
       await conn.connect();

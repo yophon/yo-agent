@@ -97,10 +97,15 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - host 工具默认 `risk-based`，无 gate 时被 deny（不静默执行、不绕审批）。
 - 现有测试全绿。
 
-**交付状态**：`mcp-config.ts`（三层配置解析 + opt-in 信任门 + `${VAR}` 展开，纯函数 + fs 薄包）+ `mcp-host.ts`（`McpConnection`/`McpHostManager`/`createStdioClientTransport`/`toolDescriptorFromMcp`/`mcpExecutor` + 健康标志喂 `toolFlags`）+ `main.ts` 引导（`bootstrapMcpHost`，rpc/headless/tui 用真实 `ApprovalGate`，**mcp-server 模式不引导**防 autoApprove 放行外部工具）。验证门 **190 测试（32 文件）** 全绿（+18）。
+**交付状态**：`mcp-config.ts`（三层配置解析 + opt-in 信任门 + `${VAR}` 展开，纯函数 + fs 薄包）+ `mcp-host.ts`（`McpConnection`/`McpHostManager`/`createStdioClientTransport`/`toolDescriptorFromMcp`/`mcpExecutor`/`listAllTools`/`mapDiscoveredTools` + 健康标志喂 `toolFlags`）+ `main.ts` 引导（`bootstrapMcpHost` + `installShutdown`，rpc/headless/tui 用真实 `ApprovalGate`，**mcp-server 模式不引导**防 autoApprove 放行外部工具）。验证门 **202 测试（32 文件）** 全绿。
 - **TST-5 兑现**：端到端 `owner:'mcp'` 工具经 `clampMcpApproval` 必走 `ApprovalGate`、`risk='medium'`（非 unknown）、`allow→callTool` 输出回流；无 gate→默认 deny。
-- 退出标准全覆盖：stub server（`InMemoryTransport`）连接后 `mcp__stub__{add,boom,echo}` 命名正确、外部段字典序稳定；project 未 opt-in 不进 registry、信任后出现；`${VAR}` 展开且磁盘配置未改写、缺变量报错；`availability` 绑健康标志（无 flag 不可见，3C 熔断接缝）。
-> 自审（ultracode off，多 agent 对抗式审查待 opt-in）：错误路径一次性 throw（不丢 yield）、连接失败 close client 防子进程泄漏、headless 末 `closeAll` 回收子进程——均已覆盖。已知取舍：`command` 不展开 `${VAR}`（仅 args/env）。
+- 退出标准全覆盖：stub server（`InMemoryTransport`）连接后 `mcp__stub__{add,boom,echo}` 命名正确、外部段字典序稳定；project/local 未 opt-in 不进 registry、信任后出现；`${VAR}` 展开且磁盘配置未改写、缺变量 per-server 跳过；`availability` 绑健康标志（无 flag 不可见，3C 熔断接缝）。
+
+**对抗式审查（5 维 + 完备性批判，64 agents）**：23 候选 → 18 确认（含跨维去重后 11 真问题）全部修复：
+- **HIGH ×2**：① local 层（仓库内、无法保证 gitignore）曾无条件最高优先级合并 → 绕过信任门；现 **local 同 project 一律 opt-in 信任门**（仅 user 自动激活）。② 单个非法远端工具名（`toolDescriptorFromMcp` 在 `.map` 内抛错、在 per-tool try/catch 之外）曾拖垮整台 server；现抽 `mapDiscoveredTools` **per-tool 隔离** + `mcpToolName` 清洗 tool 段（字符集白名单 + 64 长度上限 + 稳定哈希后缀）。
+- **MEDIUM ×4**：③ 单 server 缺 `${VAR}`/单层文件损坏曾连累全部 server → **per-server 展开隔离 + per-layer 读隔离**（与 `host.start` 容错口径一致）。④ rpc 常驻/异常路径不回收子进程 → `installShutdown`（SIGINT/SIGTERM/EPIPE）+ headless/tui try/finally `closeAll`。⑤ `listTools` 忽略 `nextCursor` 丢分页工具 → `listAllTools` 游标循环。⑥ 丢 `structuredContent`（outputSchema 工具空观测）→ 空 content 时回退 `JSON.stringify`。
+- **LOW ×4**：信任清单 `JSON.parse` 无保护 + null 顶层 `TypeError`（fail-closed 守卫）；`command` 不展开但文档自相矛盾（parse 阶段拒 `${`）；成功/错误路径块拼接不一致（统一 `join('\n')`）；规范化名撞名空载子进程（spawn 前守卫）。
+> **DEFER**：信任仅按 server 名 pin、不绑 `command` 指纹（TOCTOU 硬化）——需先有写信任记录的 opt-in CLI 才能落哈希，手写信任文件无法附指纹，记为后续硬化项。已知取舍：MCP 非文本内容（image/audio/resource）仍有损降级为占位串（Phase N）。
 
 ---
 

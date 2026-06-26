@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   mcpToolName,
   sanitizeMcpServerName,
+  sanitizeMcpToolName,
   isMcpToolName,
   clampMcpApproval,
   sanitizeMcpInputSchema,
@@ -26,6 +27,27 @@ describe('MCP host 命名护栏（§15.3）', () => {
 
   it('空 tool 名抛错', () => {
     expect(() => mcpToolName('s', '')).toThrow();
+  });
+
+  it('tool 段清洗：非法字符→_、折叠去边（防外部 server 工具名投毒）', () => {
+    expect(sanitizeMcpToolName('do/it!now')).toBe('do_it_now');
+    expect(sanitizeMcpToolName('__a..b__')).toBe('a_b');
+    expect(mcpToolName('s', 'a b/c')).toBe('mcp__s__a_b_c');
+  });
+
+  it('tool 段清洗后为空 → 抛错（调用方 per-tool 跳过）', () => {
+    expect(() => mcpToolName('s', '%%%')).toThrow(/清洗后为空/);
+  });
+
+  it('超长全名截断 + 稳定哈希后缀（不破 provider 64 上限，确定性）', () => {
+    const long = 'x'.repeat(200);
+    const n1 = mcpToolName('srv', long);
+    const n2 = mcpToolName('srv', long);
+    expect(n1.length).toBeLessThanOrEqual(64);
+    expect(n1).toBe(n2); // 确定性
+    expect(n1.startsWith('mcp__srv__')).toBe(true);
+    // 不同 tool 名 → 不同哈希后缀（不撞名）
+    expect(mcpToolName('srv', 'y'.repeat(200))).not.toBe(n1);
   });
 });
 

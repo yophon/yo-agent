@@ -182,16 +182,31 @@ async function bootstrapMcpHost(mcpHost: McpHostManager, cwd: string, env: NodeJ
   await mcpHost.start(servers);
 }
 
+/**
+ * 进程退出前回收 MCP host 子进程（审查 lifecycle/wiring：常驻 rpc 与异常路径会泄漏 stdio 子 server）。
+ * 覆盖 SIGINT/SIGTERM/EPIPE 三条退出路径——closeAll 逐个向 transport 发 SIGTERM 杀子进程。幂等。
+ */
+function installShutdown(mcpHost: McpHostManager): void {
+  let closing = false;
+  const shutdown = (code: number): void => {
+    if (closing) return;
+    closing = true;
+    void mcpHost.closeAll().finally(() => process.exit(code));
+  };
+  process.on('SIGINT', () => shutdown(130));
+  process.on('SIGTERM', () => shutdown(143));
+  process.stdout.on('error', (e: NodeJS.ErrnoException) => {
+    if (e.code === 'EPIPE') shutdown(0);
+  });
+}
+
 async function main(): Promise<void> {
   const { prompt, mode, listenPort } = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
   const env = process.env;
 
-  // 常驻服务（rpc/mcp）兜底：管道断开/写错误降级为受控退出，后台 turn 异常不崩进程（审查 high/medium）。
+  // 常驻服务（rpc/mcp）兜底：后台 turn 异常不崩进程。管道断开/退出信号经各分支 installShutdown 回收子进程。
   if (mode === 'rpc' || mode === 'mcp-server') {
-    process.stdout.on('error', (e: NodeJS.ErrnoException) => {
-      if (e.code === 'EPIPE') process.exit(0);
-    });
     process.on('uncaughtException', (e) => console.error('[uncaught]', e));
     process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
   }
@@ -200,6 +215,7 @@ async function main(): Promise<void> {
   if (mode === 'rpc') {
     const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
     await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
+    installShutdown(mcpHost); // 常驻进程：SIGINT/SIGTERM/EPIPE 退出前回收子进程
     if (listenPort !== undefined) {
       // WS server：每连接先过 ed25519 + 配对码 + nonce 挑战握手，再交给 RpcSurface。
       const gate = new PairingGate();
@@ -228,7 +244,8 @@ async function main(): Promise<void> {
 
   // MCP server 模式：stdout 是 MCP 协议通道（日志走 stderr），常驻；被 Claude Code/Cursor 当节点调用。
   if (mode === 'mcp-server') {
-    const { kernel } = buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
+    installShutdown(mcpHost); // 本模式不 bootstrap host（closeAll 为空 no-op），仍统一 EPIPE→受控退出
     await new McpServerSurface({ transport: createStdioTransport() }).start(kernel as Kernel);
     await new Promise<void>(() => {}); // 永不 resolve：进程常驻
     return;
@@ -244,21 +261,24 @@ async function main(): Promise<void> {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');
   }
   await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（首轮前完成发现/注册）
+  installShutdown(mcpHost); // SIGINT/SIGTERM 中断也回收子进程
 
   const sessionId = await kernel.startSession({ system, model });
 
-  if (mode === 'tui') {
-    await runTui({ kernel, sessionId, prompt });
-    await mcpHost.closeAll(); // 回收外部 server 子进程
-    return;
+  // try/finally：turn 抛错（走 main().catch→exit(1)）也回收子进程，不只 happy-path（审查 lifecycle）。
+  try {
+    if (mode === 'tui') {
+      await runTui({ kernel, sessionId, prompt });
+      return;
+    }
+    const renderer = mode === 'jsonl' ? new JsonlRenderer() : new HeadlessRenderer();
+    // 先重放已落库的历史（SessionStarted=cursor 0，承载初始化元数据），再订阅实时——否则结构化消费者丢首条 SessionStarted。
+    for await (const e of kernel.events.read(sessionId)) renderer.render(e);
+    kernel.subscribe(sessionId, null, (env2: EventEnvelope) => renderer.render(env2));
+    await kernel.submitInput(sessionId, prompt, `cli-${Date.now()}`);
+  } finally {
+    await mcpHost.closeAll(); // 一次性会话结束 / 异常 → 回收外部 server 子进程
   }
-
-  const renderer = mode === 'jsonl' ? new JsonlRenderer() : new HeadlessRenderer();
-  // 先重放已落库的历史（SessionStarted=cursor 0，承载初始化元数据），再订阅实时——否则结构化消费者丢首条 SessionStarted。
-  for await (const e of kernel.events.read(sessionId)) renderer.render(e);
-  kernel.subscribe(sessionId, null, (env2: EventEnvelope) => renderer.render(env2));
-  await kernel.submitInput(sessionId, prompt, `cli-${Date.now()}`);
-  await mcpHost.closeAll(); // 一次性会话结束 → 回收外部 server 子进程
 }
 
 main().catch((e: unknown) => {

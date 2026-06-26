@@ -74,12 +74,23 @@ describe('mcp-config —— 三层加载 + 信任门（fs）', () => {
     expect(trusted[0]!.source).toBe('project');
   });
 
-  it('user 层激活；local 覆盖 user（后覆盖前）', async () => {
+  it('local 层默认 inactive 需 opt-in（不假定 gitignore，防随仓库带入绕过信任）', async () => {
     await writeCfg(home, 'mcp.json', { mcpServers: { fs: { command: 'user-cmd' } } });
     await writeCfg(project, 'mcp.local.json', { mcpServers: { fs: { command: 'local-cmd' } } });
-    const servers = await loadMcpServers({ homeDir: home, projectDir: project, processEnv: {} });
-    expect(servers).toHaveLength(1);
-    expect(servers[0]).toMatchObject({ name: 'fs', source: 'local', command: 'local-cmd' });
+
+    // local 未信任 → 被跳过，仅 user 层生效（不被仓库内 local 覆盖）
+    const untrusted = await loadMcpServers({ homeDir: home, projectDir: project, processEnv: {} });
+    expect(untrusted).toHaveLength(1);
+    expect(untrusted[0]).toMatchObject({ name: 'fs', source: 'user', command: 'user-cmd' });
+
+    // local opt-in 信任后 → 覆盖 user（后覆盖前）
+    const trusted = await loadMcpServers({
+      homeDir: home,
+      projectDir: project,
+      processEnv: {},
+      isProjectServerTrusted: (n) => n === 'fs',
+    });
+    expect(trusted[0]).toMatchObject({ name: 'fs', source: 'local', command: 'local-cmd' });
   });
 
   it('${VAR} 展开走 process.env，配置文件不被改写', async () => {
@@ -93,9 +104,41 @@ describe('mcp-config —— 三层加载 + 信任门（fs）', () => {
     expect(await readFile(cfgPath, 'utf8')).toContain('${SECRET}');
   });
 
-  it('缺失 env 变量 → 加载报错（不静默连错 server）', async () => {
-    await writeCfg(home, 'mcp.json', { mcpServers: { fs: { command: 'c', env: { K: '${NOPE}' } } } });
-    await expect(loadMcpServers({ homeDir: home, projectDir: project, processEnv: {} })).rejects.toThrow(/NOPE/);
+  it('缺失 env 的 server 被 per-server 跳过并记错，不连累同层其余 server（隔离）', async () => {
+    await writeCfg(home, 'mcp.json', {
+      mcpServers: { bad: { command: 'c', env: { K: '${NOPE}' } }, good: { command: 'ok' } },
+    });
+    const logs: string[] = [];
+    const servers = await loadMcpServers({
+      homeDir: home,
+      projectDir: project,
+      processEnv: {},
+      log: (m) => logs.push(m),
+    });
+    expect(servers.map((s) => s.name)).toEqual(['good']); // good 照常，bad 被跳过
+    expect(logs.some((l) => l.includes('bad') && l.includes('NOPE'))).toBe(true); // 错误可见，非静默
+  });
+
+  it('单层文件损坏只跳过该层，不连累其余层（per-layer 隔离）', async () => {
+    await writeFile(join(project, '.yo-agent', 'mcp.json'), '{ broken json');
+    await writeCfg(home, 'mcp.json', { mcpServers: { fs: { command: 'ok' } } });
+    const logs: string[] = [];
+    const servers = await loadMcpServers({ homeDir: home, projectDir: project, processEnv: {}, log: (m) => logs.push(m) });
+    expect(servers.map((s) => s.name)).toEqual(['fs']); // user 层照常
+    expect(logs.some((l) => l.includes('project') && l.includes('跳过该层'))).toBe(true);
+  });
+
+  it('command 含 ${VAR} → parse 报错（command 不展开，避免静默 spawn 失败）', () => {
+    expect(() => parseMcpConfig({ mcpServers: { x: { command: '${HOME}/bin/s' } } }, 'user')).toThrow(/command 不支持/);
+  });
+
+  it('信任清单坏 JSON / null 顶层 → fail-closed 不崩（返回空信任集或带 path 报错）', async () => {
+    // null 顶层：不抛 TypeError，返回空集
+    await writeFile(join(home, '.yo-agent', 'mcp-trust.json'), 'null');
+    expect(await loadTrustedProjectServers(home, project)).toEqual(new Set());
+    // 坏 JSON：抛带 path 的清晰错误
+    await writeFile(join(home, '.yo-agent', 'mcp-trust.json'), '{bad');
+    await expect(loadTrustedProjectServers(home, project)).rejects.toThrow(/信任清单解析失败/);
   });
 
   it('loadTrustedProjectServers 按 project 路径读信任清单', async () => {

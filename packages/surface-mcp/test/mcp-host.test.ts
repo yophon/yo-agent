@@ -9,8 +9,15 @@ import { MemoryEventStore } from '@yo-agent/store';
 import { InMemoryToolRegistry } from '@yo-agent/tools';
 import type { ToolContext } from '@yo-agent/tools';
 import { FakeProvider, textTurn, toolCallTurn } from '@yo-agent/provider';
-import { McpHostManager, mcpHealthFlag } from '@yo-agent/surface-mcp';
-import type { ResolvedMcpServer } from '@yo-agent/surface-mcp';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import {
+  McpHostManager,
+  listAllTools,
+  mapDiscoveredTools,
+  mcpExecutor,
+  mcpHealthFlag,
+} from '@yo-agent/surface-mcp';
+import type { RawMcpTool, ResolvedMcpServer, ToolLister } from '@yo-agent/surface-mcp';
 
 /** 同进程 stub MCP server（echo/add/big/boom）→ 返回 client 端 transport。 */
 async function startStubServer(): Promise<Transport> {
@@ -75,6 +82,25 @@ describe('McpHostManager —— 发现 / 命名 / availability', () => {
     expect(registry.resolveAvailable({ sessionId: 's', cwd: '/tmp', flags: new Set() })).toEqual([]);
     expect(registry.executor('mcp__stub__echo')).toBeUndefined();
   });
+
+  it('规范化名撞名守卫：第二台 server 在 spawn 前被拦（防空载子进程 + 共享健康标志）', async () => {
+    const registry = new InMemoryToolRegistry();
+    const clientT = await startStubServer();
+    let transportCalls = 0;
+    const host = new McpHostManager({
+      registry,
+      transportFor: () => {
+        transportCalls++;
+        return clientT;
+      },
+    });
+    await host.addServer({ name: 'stub', source: 'user', command: '', args: [], env: {} });
+    // 'STUB' sanitize 后与 'stub' 同 → 应在造 transport（spawn）前抛错
+    await expect(
+      host.addServer({ name: 'STUB', source: 'user', command: '', args: [], env: {} }),
+    ).rejects.toThrow(/规范化名.*冲突/);
+    expect(transportCalls).toBe(1); // 第二台未造 transport
+  });
 });
 
 describe('mcpExecutor —— callTool 归一', () => {
@@ -94,6 +120,54 @@ describe('mcpExecutor —— callTool 归一', () => {
         for await (const _e of ex.execute({}, ctx)) void _e;
       })(),
     ).rejects.toThrow(/kaboom/);
+  });
+
+  // 用 fake client 精确驱动归一分支（真实 McpServer 难以构造空 content / 多块 / structuredContent）。
+  const fakeClient = (result: unknown): Client => ({ async callTool() { return result; } }) as unknown as Client;
+  const drain = async (ex: ReturnType<typeof mcpExecutor>, input: unknown): Promise<string> => {
+    let out = '';
+    for await (const e of ex.execute(input, { sessionId: 's', cwd: '/tmp' })) if (e.kind === 'output') out += e.chunk;
+    return out;
+  };
+
+  it('多 text 块成功路径按 \\n 拼接，与 isError 路径一致', async () => {
+    const ex = mcpExecutor(fakeClient({ content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }), 't');
+    expect(await drain(ex, {})).toBe('a\nb');
+  });
+
+  it('content 空但有 structuredContent → 回退 JSON（不丢 outputSchema 工具结果）', async () => {
+    const ex = mcpExecutor(fakeClient({ content: [], structuredContent: { sum: 3 } }), 't');
+    expect(await drain(ex, {})).toBe('{"sum":3}');
+  });
+
+  it('image 块有损降级为占位串（非文本承载推迟）', async () => {
+    const ex = mcpExecutor(fakeClient({ content: [{ type: 'image', mimeType: 'image/png', data: 'AAAA' }] }), 't');
+    expect(await drain(ex, {})).toMatch(/image image\/png.*base64 已省略/);
+  });
+});
+
+describe('发现逻辑纯函数 —— 分页 / per-tool 隔离', () => {
+  it('listAllTools 游标循环全量拉取（首页之后不丢）', async () => {
+    const pages: Record<string, { tools: RawMcpTool[]; nextCursor?: string }> = {
+      '': { tools: [{ name: 't1' }], nextCursor: 'c1' },
+      c1: { tools: [{ name: 't2' }], nextCursor: 'c2' },
+      c2: { tools: [{ name: 't3' }] },
+    };
+    const lister: ToolLister = { async listTools(p) { return pages[p?.cursor ?? '']!; } };
+    expect((await listAllTools(lister)).map((t) => t.name)).toEqual(['t1', 't2', 't3']);
+  });
+
+  it('mapDiscoveredTools per-tool 隔离：非法/空工具名只跳过自身，不拖垮其余', () => {
+    const client = {} as unknown as Client; // executor 构造时不调用 client
+    const logs: string[] = [];
+    const tools = mapDiscoveredTools(
+      'stub',
+      client,
+      [{ name: 'good' }, { name: '%%%' }, { name: '' }, { name: 'also_good' }],
+      (m) => logs.push(m),
+    );
+    expect(tools.map((t) => t.descriptor.name)).toEqual(['mcp__stub__good', 'mcp__stub__also_good']);
+    expect(logs.length).toBe(2); // 两个非法名各记一条跳过
   });
 });
 

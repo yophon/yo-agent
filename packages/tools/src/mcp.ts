@@ -15,10 +15,40 @@ export function sanitizeMcpServerName(server: string): string {
   return s;
 }
 
-/** 生成强制命名 mcp__{server}__{tool}（§15.3，撑权限通配 mcp__github__* + 防与内置/跨 server 撞名）。 */
+/** 工具名上限（对齐 Anthropic/OpenAI tool name ≤64；超长会被 provider 拒）。 */
+const MAX_TOOL_NAME_LEN = 64;
+
+/** tool 段清洗：仅留 [a-zA-Z0-9_-]，其余→_，折叠重复 _、去首尾 _（外部 server 返回不可信，防投毒）。 */
+export function sanitizeMcpToolName(tool: string): string {
+  return tool
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/** 确定性短哈希（djb2，8 位 hex）——超长 tool 名截断时保唯一与稳定，不引入随机性。 */
+function djb2Hex(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+  return (h >>> 0).toString(16).padStart(8, '0').slice(0, 8);
+}
+
+/**
+ * 生成强制命名 mcp__{server}__{tool}（§15.3，撑权限通配 mcp__github__* + 防与内置/跨 server 撞名）。
+ * server/tool 两段均清洗（外部不可信）；超长附稳定哈希后缀，避免击穿 provider 工具名长度限制。
+ * 清洗后为空 → 抛错（调用方 per-tool 跳过，不污染整个工具集）。
+ */
 export function mcpToolName(server: string, tool: string): string {
   if (!tool) throw new Error(`非法 MCP 工具名（空）：server=${server}`);
-  return `mcp__${sanitizeMcpServerName(server)}__${tool}`;
+  const srv = sanitizeMcpServerName(server);
+  const t = sanitizeMcpToolName(tool);
+  if (!t) throw new Error(`非法 MCP 工具名（清洗后为空）：server=${server} tool=「${tool}」`);
+  const prefix = `mcp__${srv}__`;
+  const name = `${prefix}${t}`;
+  if (name.length <= MAX_TOOL_NAME_LEN) return name;
+  // 超长：截断 tool 段 + 稳定哈希后缀（_xxxxxxxx），保确定性与唯一性。
+  const budget = Math.max(8, MAX_TOOL_NAME_LEN - prefix.length - 9);
+  return `${prefix}${t.slice(0, budget)}_${djb2Hex(t)}`;
 }
 
 /** 判定是否 MCP 工具名（kernel 路由 / 权限通配用）。 */
