@@ -30,8 +30,8 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 
 | 片 | 标题 | 服务退出标准 | 依赖 | 新建包 | 离线可验证 |
 |---|---|---|---|---|---|
-| **3A** | 工具集稳定性底座 + 内核共享接缝（**无外部连接**） | ①② 前置 | — | — | ✅ |
-| **3B** | MCP host 连接层 + 三层信任配置（stdio，opt-in 防供应链） | ① | 3A | — | ✅ |
+| **3A** | 工具集稳定性底座 + 内核共享接缝（**无外部连接**） | ①② 前置 | — | — | ✅ 已交付 |
+| **3B** | MCP host 连接层 + 三层信任配置（stdio，opt-in 防供应链） | ① | 3A | — | ✅ 已交付 |
 | **3C** | MCP host 韧性（懒加载/TTL/熔断/取消超时/跨进程重连/连接状态） + **真机冒烟①** | ① | 3B | — | ✅(+真机) |
 | **3D** | Condenser 结构化 Handoff + 标识符保真（**增量改造**） | 打磨 | — | — | ✅ |
 | **3E** | 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import） | 打磨 | (3D 蒸馏子项) | — | ✅ |
@@ -77,7 +77,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 
 ---
 
-## 3B — MCP host 连接层 + 三层信任配置（stdio，opt-in 防供应链）
+## 3B — MCP host 连接层 + 三层信任配置（stdio，opt-in 防供应链） ✅ 已交付
 
 **目标**：实现 outbound MCP client：连接 → `tools/list` 发现 → 经 3A 护栏映射注册 → `tools/call` 包成 `ToolExecutorRef`。核心风险是**供应链**：project 配置默认不激活，必须显式 opt-in 信任。
 
@@ -96,6 +96,11 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - `${VAR}` 展开成功且配置文件未被改写；缺失 env 报错。
 - host 工具默认 `risk-based`，无 gate 时被 deny（不静默执行、不绕审批）。
 - 现有测试全绿。
+
+**交付状态**：`mcp-config.ts`（三层配置解析 + opt-in 信任门 + `${VAR}` 展开，纯函数 + fs 薄包）+ `mcp-host.ts`（`McpConnection`/`McpHostManager`/`createStdioClientTransport`/`toolDescriptorFromMcp`/`mcpExecutor` + 健康标志喂 `toolFlags`）+ `main.ts` 引导（`bootstrapMcpHost`，rpc/headless/tui 用真实 `ApprovalGate`，**mcp-server 模式不引导**防 autoApprove 放行外部工具）。验证门 **190 测试（32 文件）** 全绿（+18）。
+- **TST-5 兑现**：端到端 `owner:'mcp'` 工具经 `clampMcpApproval` 必走 `ApprovalGate`、`risk='medium'`（非 unknown）、`allow→callTool` 输出回流；无 gate→默认 deny。
+- 退出标准全覆盖：stub server（`InMemoryTransport`）连接后 `mcp__stub__{add,boom,echo}` 命名正确、外部段字典序稳定；project 未 opt-in 不进 registry、信任后出现；`${VAR}` 展开且磁盘配置未改写、缺变量报错；`availability` 绑健康标志（无 flag 不可见，3C 熔断接缝）。
+> 自审（ultracode off，多 agent 对抗式审查待 opt-in）：错误路径一次性 throw（不丢 yield）、连接失败 close client 防子进程泄漏、headless 末 `closeAll` 回收子进程——均已覆盖。已知取舍：`command` 不展开 `${VAR}`（仅 args/env）。
 
 ---
 

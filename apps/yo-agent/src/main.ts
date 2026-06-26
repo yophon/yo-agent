@@ -25,8 +25,17 @@ import {
   usableContextTokens,
 } from '@yo-agent/surface-cli';
 import { JsonlStreamChannel, RpcSurface, serveWebSocket } from '@yo-agent/surface-rpc';
-import { McpServerSurface, autoApproveGate, createStdioTransport } from '@yo-agent/surface-mcp';
+import {
+  McpHostManager,
+  McpServerSurface,
+  autoApproveGate,
+  createStdioClientTransport,
+  createStdioTransport,
+  loadMcpServers,
+  loadTrustedProjectServers,
+} from '@yo-agent/surface-mcp';
 import { PairingGate } from '@yo-agent/auth';
+import { homedir } from 'node:os';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
@@ -108,11 +117,19 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
   kernel: AgentKernel;
   model: string;
   demo: boolean;
+  mcpHost: McpHostManager;
 } {
   const { provider, model, demo } = selectProvider(opts.env, opts.prompt);
   const catalog = ModelCatalog.bundled();
   const tools = new InMemoryToolRegistry();
   for (const t of builtinTools) tools.register(t);
+  // MCP host：外部 server 工具经 3A 护栏注册进同一 registry；连接健康标志喂 kernel.toolFlags
+  //（熔断/未连接 → 工具经 availability configFlag 从 resolveAvailable 消失）。连接在 main() 引导。
+  const mcpHost = new McpHostManager({
+    registry: tools,
+    transportFor: createStdioClientTransport,
+    log: (m) => console.error(m),
+  });
   const interactive = opts.mode === 'tui' || opts.mode === 'rpc';
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
   const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
@@ -124,13 +141,45 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     condenser: buildCondenser(opts.env, provider, model),
     checkpointer: opts.env.YO_CHECKPOINT === '1' ? new ShadowGitCheckpointer({ dir: opts.cwd }) : undefined,
     approvalGate,
+    toolFlags: () => mcpHost.flags(),
     model,
     cwd: opts.cwd,
     usableContextTokens: usableContextTokens(model, catalog),
     interactiveApproval: interactive,
     approvalTimeoutMs: interactive ? 5 * 60_000 : undefined, // 5 分钟默认 deny（§6.3）
   });
-  return { kernel, model, demo };
+  return { kernel, model, demo, mcpHost };
+}
+
+/**
+ * 引导 MCP host：加载三层信任配置 → 连接外部 server → 经 3A 护栏注册工具。
+ * 非致命：任何加载/连接失败只记日志、不崩主流程（外部 server 不可信，不应阻断本机 agent）。
+ * **不在 mcp-server 模式引导**——那里是 autoApproveGate，外部工具会被无审批放行（安全灾难，§15.3）。
+ */
+async function bootstrapMcpHost(mcpHost: McpHostManager, cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const home = homedir();
+  let trusted: Set<string>;
+  try {
+    trusted = await loadTrustedProjectServers(home, cwd);
+  } catch (e) {
+    console.error(`[mcp] 信任清单读取失败，project server 全部按未信任处理：${e instanceof Error ? e.message : String(e)}`);
+    trusted = new Set();
+  }
+  let servers;
+  try {
+    servers = await loadMcpServers({
+      homeDir: home,
+      projectDir: cwd,
+      processEnv: env,
+      isProjectServerTrusted: (name) => trusted.has(name),
+      log: (m) => console.error(m),
+    });
+  } catch (e) {
+    console.error(`[mcp] 配置加载失败，跳过 MCP host：${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (servers.length === 0) return;
+  await mcpHost.start(servers);
 }
 
 async function main(): Promise<void> {
@@ -149,7 +198,8 @@ async function main(): Promise<void> {
 
   // RPC 模式：--listen <port> → WS server（带设备鉴权），否则 stdio JSONL。日志一律走 stderr，进程常驻。
   if (mode === 'rpc') {
-    const { kernel } = buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
+    await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
     if (listenPort !== undefined) {
       // WS server：每连接先过 ed25519 + 配对码 + nonce 挑战握手，再交给 RpcSurface。
       const gate = new PairingGate();
@@ -189,15 +239,17 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const system = (await loadConventionFiles(cwd)) || undefined;
-  const { kernel, model, demo } = buildKernel({ env, cwd, prompt, mode });
+  const { kernel, model, demo, mcpHost } = buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');
   }
+  await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（首轮前完成发现/注册）
 
   const sessionId = await kernel.startSession({ system, model });
 
   if (mode === 'tui') {
     await runTui({ kernel, sessionId, prompt });
+    await mcpHost.closeAll(); // 回收外部 server 子进程
     return;
   }
 
@@ -206,6 +258,7 @@ async function main(): Promise<void> {
   for await (const e of kernel.events.read(sessionId)) renderer.render(e);
   kernel.subscribe(sessionId, null, (env2: EventEnvelope) => renderer.render(env2));
   await kernel.submitInput(sessionId, prompt, `cli-${Date.now()}`);
+  await mcpHost.closeAll(); // 一次性会话结束 → 回收外部 server 子进程
 }
 
 main().catch((e: unknown) => {
