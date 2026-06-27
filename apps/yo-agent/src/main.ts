@@ -18,10 +18,13 @@ import {
   createInProcessRunner,
   findWorkspaceRoot,
   loadConventionFiles,
+  loadRecipes,
+  loadSkills,
   memoryKeyFor,
   parseRememberDirective,
+  renderSkillSummaries,
 } from '@yo-agent/kernel';
-import type { Kernel } from '@yo-agent/kernel';
+import type { Kernel, Recipe, Skill } from '@yo-agent/kernel';
 import {
   InMemoryMemoryStore,
   MemoryEventStore,
@@ -31,7 +34,7 @@ import {
 } from '@yo-agent/store';
 import type { MemoryStore } from '@yo-agent/store';
 import type { EventStore } from '@yo-agent/store';
-import { InMemoryToolRegistry, builtinTools, makeSubagentSpawnTool } from '@yo-agent/tools';
+import { InMemoryToolRegistry, builtinTools, makeSkillActivateTool, makeSubagentSpawnTool } from '@yo-agent/tools';
 import { ModelCatalog } from '@yo-agent/provider';
 import {
   HeadlessRenderer,
@@ -56,6 +59,7 @@ import {
 } from '@yo-agent/surface-mcp';
 import { PairingGate } from '@yo-agent/auth';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
@@ -152,16 +156,31 @@ function buildStore(): EventStore {
   return new MemoryEventStore();
 }
 
-function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string; mode: Mode }): {
+async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string; mode: Mode }): Promise<{
   kernel: AgentKernel;
   model: string;
   demo: boolean;
   mcpHost: McpHostManager;
-} {
+}> {
   const { provider, model, demo } = selectProvider(opts.env, opts.prompt);
   const catalog = ModelCatalog.bundled();
   const tools = new InMemoryToolRegistry();
   for (const t of builtinTools) tools.register(t);
+
+  // 声明式扩展（4D）：从 ~/.yo-agent 与 workspace/.yo-agent 加载 skills（懒加载）+ recipes（子 agent 画像）。
+  // global 在前、project 在后（project 同名覆盖）。提交 git 即全队共享。
+  const wsRoot = findWorkspaceRoot(opts.cwd);
+  const home = homedir();
+  const skills: Skill[] = await loadSkills([
+    { dir: join(home, '.yo-agent', 'skills'), source: 'global' },
+    { dir: join(wsRoot, '.yo-agent', 'skills'), source: 'project' },
+  ]);
+  const recipes: Map<string, Recipe> = await loadRecipes([
+    { dir: join(home, '.yo-agent', 'agents'), source: 'global' },
+    { dir: join(wsRoot, '.yo-agent', 'agents'), source: 'project' },
+  ]);
+  const skillByName = new Map(skills.map((s) => [s.name, s]));
+  if (skills.length > 0) tools.register(makeSkillActivateTool((n) => skillByName.get(n), () => [...skillByName.keys()]));
   // MCP host：外部 server 工具经 3A 护栏注册进同一 registry；连接健康标志喂 kernel.toolFlags
   //（熔断/未连接 → 工具经 availability configFlag 从 resolveAvailable 消失）。连接在 main() 引导。
   const mcpHost = new McpHostManager({
@@ -192,6 +211,7 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     usableContextTokens: usableContextTokens(model, catalog),
     interactiveApproval: interactive,
     approvalTimeoutMs: interactive ? 5 * 60_000 : undefined, // 5 分钟默认 deny（§6.3）
+    systemSuffix: renderSkillSummaries(skills) || undefined, // 技能摘要常驻 system（4D，跨 surface 统一）
   });
   // 子 agent（4C / ADR-17）：host=本内核（仍是唯一 AgentEvent 写入者）；in-process 档跑独立 childSessionId 子内核。
   // deriveSubagentPolicy 收紧基准 = 父会话当前可见工具 + 权限模式；递归经 deriveSubagentPolicy 剥离 spawn + maxDepth 双防护。
@@ -209,6 +229,7 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     parentModeOf: (sid) => kernel.listSessions().find((s) => s.sessionId === sid)?.permissionMode ?? 'supervised',
     cwdOf: () => opts.cwd,
     defaultModel: model,
+    recipeFor: (profile) => recipes.get(profile), // 4D：子 agent 画像（工具/权限/model/prompt 请求，仍经 deriveSubagentPolicy 收紧）
   });
   tools.register(makeSubagentSpawnTool(subagents));
   return { kernel, model, demo, mcpHost };
@@ -277,7 +298,7 @@ async function main(): Promise<void> {
   // ACP 模式：stdin/stdout 是 ACP（JSON-RPC over ndjson）协议通道，被 Zed/JetBrains 接管为编程 agent 后端。
   // 日志走 stderr，进程常驻。审批经 ACP 反向 requestPermission（interactiveApproval）。
   if (mode === 'acp') {
-    const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost } = await buildKernel({ env, cwd, prompt: '', mode });
     await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
     installShutdown(mcpHost);
     setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
@@ -292,7 +313,7 @@ async function main(): Promise<void> {
 
   // RPC 模式：--listen <port> → WS server（带设备鉴权），否则 stdio JSONL。日志一律走 stderr，进程常驻。
   if (mode === 'rpc') {
-    const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost } = await buildKernel({ env, cwd, prompt: '', mode });
     await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
     installShutdown(mcpHost); // 常驻进程：SIGINT/SIGTERM/EPIPE 退出前回收子进程
     // 常驻进程才需空闲 TTL 清理：周期扫描断开长闲连接回收子进程（in-flight 守卫在 sweepIdle 内）。
@@ -326,7 +347,7 @@ async function main(): Promise<void> {
 
   // MCP server 模式：stdout 是 MCP 协议通道（日志走 stderr），常驻；被 Claude Code/Cursor 当节点调用。
   if (mode === 'mcp-server') {
-    const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost } = await buildKernel({ env, cwd, prompt: '', mode });
     installShutdown(mcpHost); // 本模式不 bootstrap host（closeAll 为空 no-op），仍统一 EPIPE→受控退出
     await new McpServerSurface({ transport: createStdioTransport() }).start(kernel as Kernel);
     await new Promise<void>(() => {}); // 永不 resolve：进程常驻
@@ -356,7 +377,7 @@ async function main(): Promise<void> {
   }
 
   const system = (await loadConventionFiles(cwd, { workspaceRoot })) || undefined;
-  const { kernel, model, demo, mcpHost } = buildKernel({ env, cwd, prompt, mode });
+  const { kernel, model, demo, mcpHost } = await buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');
   }

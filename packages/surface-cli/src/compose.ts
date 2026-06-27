@@ -14,6 +14,7 @@ import {
 } from '@yo-agent/provider';
 import type { Provider } from '@yo-agent/provider';
 import { NoopCondenser, SummarizingCondenser, makeProviderSummarizer } from '@yo-agent/kernel';
+import { SKILL_ACTIVATE_TOOL } from '@yo-agent/tools';
 import type { Condenser } from '@yo-agent/kernel';
 
 export interface ProviderChoice {
@@ -59,5 +60,9 @@ export function usableContextTokens(model: string, catalog: ModelCatalog = Model
 export function buildCondenser(env: NodeJS.ProcessEnv, provider: Provider, model: string): Condenser {
   if (env.YO_COMPACT !== '1') return new NoopCondenser();
   const summaryModel = env.YO_COMPACT_MODEL ?? model;
-  return new SummarizingCondenser({ summarize: makeProviderSummarizer(provider, summaryModel) });
+  return new SummarizingCondenser({
+    summarize: makeProviderSummarizer(provider, summaryModel),
+    // 4D：激活的技能全文（skill_activate tool_result）压缩时受保护不被截断。
+    protectedToolNames: new Set([SKILL_ACTIVATE_TOOL]),
+  });
 }

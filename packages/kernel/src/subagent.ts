@@ -7,6 +7,7 @@ import { AllowlistToolRegistry, SUBAGENT_SPAWN_TOOL } from '@yo-agent/tools';
 import type { EventStore } from '@yo-agent/store';
 import { AgentKernel } from './kernel';
 import type { Condenser, LoopBreaker, SubagentManager, SubagentSpawnOpts } from './index';
+import type { Recipe } from './recipes';
 
 /**
  * 子 agent（DESIGN §2.5 / ADR-17）：派生独立上下文的探索型 agent，**只回 SubagentResult{summary}** 防主上下文污染，
@@ -32,6 +33,8 @@ export interface SubagentRunSpec {
   /** 递归深度（顶层 spawn=1）；递归防护硬上限判据。 */
   depth: number;
   outputMaxTokens?: number;
+  /** 子 agent system prompt（4D：由 recipe.prompt 解析；可序列化喂 worker）。 */
+  systemPrompt?: string;
 }
 
 export interface SubagentRunResult {
@@ -125,6 +128,8 @@ export interface SubagentManagerOpts {
   defaultModel?: string;
   /** 子 agent 缺省 maxTurns。 */
   defaultMaxTurns?: number;
+  /** profile → recipe（4D）：提供工具白名单/权限模式/model/prompt 请求，仍经 deriveSubagentPolicy 收紧。 */
+  recipeFor?: (profile: string) => Recipe | undefined;
 }
 
 /**
@@ -181,8 +186,15 @@ export class DefaultSubagentManager implements SubagentManager {
     this.depthOf.set(childSessionId, depth);
     const parentMode = this.o.parentModeOf?.(opts.parentSessionId) ?? 'supervised';
     const parentTools = this.o.parentToolsOf?.(opts.parentSessionId) ?? [];
-    const derived = deriveSubagentPolicy({ parentMode, parentTools });
-    const model = opts.model ?? this.o.defaultModel ?? 'fake-model';
+    // recipe（4D）：请求工具白名单/权限模式/model/prompt —— 仍经 deriveSubagentPolicy 与 parent 取交集/更严者（只收紧）。
+    const recipe = this.o.recipeFor?.(opts.profile);
+    const derived = deriveSubagentPolicy({
+      parentMode,
+      parentTools,
+      ...(recipe?.permissionMode ? { requestedMode: recipe.permissionMode } : {}),
+      ...(recipe?.tools ? { requestedTools: recipe.tools } : {}),
+    });
+    const model = opts.model ?? recipe?.model ?? this.o.defaultModel ?? 'fake-model';
     const spec: SubagentRunSpec = {
       childSessionId,
       parentSessionId: opts.parentSessionId,
@@ -195,6 +207,7 @@ export class DefaultSubagentManager implements SubagentManager {
       cwd: this.o.cwdOf?.(opts.parentSessionId) ?? process.cwd(),
       depth,
       ...(opts.outputMaxTokens != null ? { outputMaxTokens: opts.outputMaxTokens } : {}),
+      ...(recipe?.prompt ? { systemPrompt: recipe.prompt } : {}),
     };
     const label = opts.profile || 'subagent';
     const background = opts.mode === 'background';
@@ -288,7 +301,7 @@ export async function runChildAgent(
     // 子 agent 无人审批：非交互（ask 档默认拒），保证派生权限不被「无人值守」放大成静默放行。
     interactiveApproval: false,
   });
-  const system = deps.systemFor?.(spec.profile);
+  const system = spec.systemPrompt ?? deps.systemFor?.(spec.profile);
   await kernel.startSession({
     sessionId: spec.childSessionId,
     model: spec.model,

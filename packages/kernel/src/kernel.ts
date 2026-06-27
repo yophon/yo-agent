@@ -63,6 +63,8 @@ export interface AgentKernelDeps {
   policyEngine?: PolicyEngine;
   /** 生命周期 Hook 总线（4A / §11）：app 也可经 kernel.registerHook 注册。缺省空总线（无 hook）。 */
   hookBus?: HookBus;
+  /** 追加进每个新会话 system 消息的固定后缀（4D：技能摘要常驻上下文，跨 surface 统一注入）。 */
+  systemSuffix?: string;
 }
 
 export interface StartSessionOpts {
@@ -145,12 +147,14 @@ export class AgentKernel implements Kernel, SubagentHost {
 
   async startSession(opts: StartSessionOpts = {}): Promise<Id> {
     const id = opts.sessionId ?? randomUUID();
+    // system = 传入 system + 固定后缀（4D 技能摘要）；二者任一存在即落 system 消息。
+    const systemText = [opts.system, this.d.systemSuffix].filter((x): x is string => !!x).join('\n\n');
     const s: SessionState = {
       id,
       model: opts.model ?? this.d.model ?? 'fake-model',
       cwd: opts.cwd ?? this.d.cwd ?? process.cwd(),
       permissionMode: opts.permissionMode ?? 'supervised',
-      messages: opts.system ? [{ role: 'system', content: opts.system }] : [],
+      messages: systemText ? [{ role: 'system', content: systemText }] : [],
       headCursor: -1,
       interrupted: false,
       subscribers: new Set(),

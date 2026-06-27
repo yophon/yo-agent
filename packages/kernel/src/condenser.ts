@@ -33,6 +33,12 @@ export interface SummarizingCondenserOpts {
   keepTail?: number;
   /** 标识符缺失时对便宜模型的重试次数（默认 1，§15.10）。重试仍缺则确定性回填。 */
   maxIdentifierRetries?: number;
+  /**
+   * 压缩保护工具名集合（4D / DESIGN §5.4，opencode PRUNE_PROTECTED_TOOLS）：
+   * 中段里含这些工具的 tool_use/tool_result 的消息对**逐字保留不进摘要**（如 skill_activate 激活的技能全文，
+   * 压缩时不被截断）。缺省空集 → 行为同既有（整段中段摘要）。
+   */
+  protectedToolNames?: ReadonlySet<string>;
 }
 
 const SUMMARY_SYSTEM = [
@@ -48,6 +54,7 @@ export class SummarizingCondenser implements Condenser {
   private readonly keepFirst: number;
   private readonly keepTail: number;
   private readonly maxIdentifierRetries: number;
+  private readonly protectedToolNames: ReadonlySet<string>;
 
   constructor(opts: SummarizingCondenserOpts) {
     this.summarize = opts.summarize;
@@ -55,6 +62,7 @@ export class SummarizingCondenser implements Condenser {
     this.keepFirst = opts.keepFirst ?? 2;
     this.keepTail = opts.keepTail ?? 6;
     this.maxIdentifierRetries = opts.maxIdentifierRetries ?? 1;
+    this.protectedToolNames = opts.protectedToolNames ?? new Set();
   }
 
   shouldCompact(ctx: ContextState): boolean {
@@ -78,8 +86,12 @@ export class SummarizingCondenser implements Condenser {
     if (tailStart <= keepFirst) return messages;
 
     const head = messages.slice(0, keepFirst);
-    const middle = messages.slice(keepFirst, tailStart);
+    const middleAll = messages.slice(keepFirst, tailStart);
     const tail = messages.slice(tailStart);
+
+    // 压缩保护（4D）：把含 protectedToolNames 工具的消息对（tool_use+tool_result）逐字摘出，仅摘要其余中段。
+    const { protectedMsgs, toSummarize: middle } = partitionProtected(middleAll, this.protectedToolNames);
+    if (middle.length === 0) return messages; // 中段全受保护 → 压不动，不发事件
 
     const middleText = renderForSummary(middle);
     // 标识符保真：压缩前抽取中段不透明标识符集合（UUID/path/hash/URL/error-code）。
@@ -111,9 +123,45 @@ export class SummarizingCondenser implements Condenser {
       role: 'user',
       content: finalText,
     };
-    // 合并相邻 user 消息：摘要(user) 与 head 末/tail 首的 user 相邻会破坏 Anthropic 严格 user/assistant 交替（400）。
-    return mergeAdjacentUser([...head, summaryMsg, ...tail]);
+    // 合并相邻 user 消息：摘要(user) 与 head 末/tail 首/受保护段相邻的 user 会破坏 Anthropic 严格交替（400）。
+    // 受保护段（逐字保留的技能全文等）插在摘要之后、tail 之前，保持其内部 tool_use/tool_result 配对完整。
+    return mergeAdjacentUser([...head, summaryMsg, ...protectedMsgs, ...tail]);
   }
+}
+
+/**
+ * 中段压缩保护分区（4D）：把含 protectedToolNames 工具（tool_use/tool_result）的消息逐字摘出，其余进摘要。
+ * 配对完整性：受保护的 tool_use → 连带其后续 tool_result 消息；受保护的 tool_result → 连带其前置 tool_use 消息。
+ * 空保护集 / 无命中 → 全部进摘要（行为同既有）。
+ */
+function partitionProtected(
+  middle: CanonMessage[],
+  protectedSet: ReadonlySet<string>,
+): { protectedMsgs: CanonMessage[]; toSummarize: CanonMessage[] } {
+  if (protectedSet.size === 0) return { protectedMsgs: [], toSummarize: middle };
+  const mask = middle.map((m) => messageTouchesProtected(m, protectedSet));
+  if (!mask.some(Boolean)) return { protectedMsgs: [], toSummarize: middle };
+  // 配对扩展：每个受保护锚点连带其配对消息（assistant tool_use ↔ 紧随的 user tool_result）。
+  for (let i = 0; i < middle.length; i++) {
+    if (!mask[i]) continue;
+    const m = middle[i]!;
+    if (hasToolUse(m) && i + 1 < middle.length) mask[i + 1] = true;
+    if (hasToolResult(m) && i - 1 >= 0) mask[i - 1] = true;
+  }
+  const protectedMsgs: CanonMessage[] = [];
+  const toSummarize: CanonMessage[] = [];
+  middle.forEach((m, i) => (mask[i] ? protectedMsgs : toSummarize).push(m));
+  return { protectedMsgs, toSummarize };
+}
+
+/** 消息是否含受保护工具名的 tool_use 或 tool_result 块。 */
+function messageTouchesProtected(m: CanonMessage, protectedSet: ReadonlySet<string>): boolean {
+  if (!Array.isArray(m.content)) return false;
+  return m.content.some(
+    (b) =>
+      (b.type === 'tool_use' && protectedSet.has(b.name)) ||
+      (b.type === 'tool_result' && b.name !== undefined && protectedSet.has(b.name)),
+  );
 }
 
 /** 重试 hint：在原 hint 后追加"必须逐字保留以下标识符"指令。 */

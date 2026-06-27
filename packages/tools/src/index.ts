@@ -70,3 +70,4 @@ export * from './exec';
 export * from './exec-local';
 export * from './bash';
 export * from './subagent-tool';
+export * from './skill-tool';
