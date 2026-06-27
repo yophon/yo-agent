@@ -35,8 +35,8 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 | **3C** | MCP host 韧性（懒加载/TTL/熔断/取消超时/跨进程重连/连接状态） + **真机冒烟①** | ① | 3B | — | ✅ 已交付(+真机) |
 | **3D** | Condenser 结构化 Handoff + 标识符保真（**增量改造**） | 打磨 | — | — | ✅ 已交付 |
 | **3E** | 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import） | 打磨 | (3D 蒸馏子项) | — | ✅ 已交付 |
-| **3F** | AcpSurface（复用 RpcSurface 骨架 + 事件翻译 + request_permission + fs/*） | ② | 3A | `surface-acp` | ✅ |
-| **3G** | MCP 进阶通道（resources/prompts/sampling/progress） + Streamable HTTP/OAuth | ① 增强 | 3B,3C | — | ✅(OAuth mock) |
+| **3F** | AcpSurface（ACP `AgentSideConnection` + 事件翻译 + request_permission + fs/*） | ② | 3A | `surface-acp` | ✅ 已交付 |
+| **3G** | MCP 进阶通道（resources/prompts/sampling/progress） + Streamable HTTP/OAuth | ① 增强 | 3B,3C | — | ✅ 已交付 |
 
 > 3A 是 3B/3C/3F 的共享前置（`signal`/`risk`/工具排序均跨 MCP 与 ACP）。3D/3E 与 MCP/ACP 全正交，可与 3B-3C 并行推进提高吞吐。3G 隔离出最依赖外网/OAuth、最可能 WIP 拖延的部分，不阻塞退出标准①（本地 server 在 3B/3C 已达成）。
 
@@ -196,7 +196,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 
 ---
 
-## 3F — AcpSurface（复用 RpcSurface 骨架 + 事件翻译 + request_permission + fs/*）
+## 3F — AcpSurface（复用 RpcSurface 骨架 + 事件翻译 + request_permission + fs/*） ✅ 已交付
 
 **目标**：被 ACP client 接管跑通编程对话（退出标准②）。最大化复用 surface-rpc 的 `JsonRpcPeer`/`MessageChannel`/`JsonlStreamChannel` 骨架与 kernel 审批/订阅接口；ACP 自己的 schema 与「EventEnvelope→session/update」翻译表是主要工作量。
 
@@ -226,9 +226,14 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - **退出标准② 达成口径**：ACP client 离线对驱跑通含审批+fs 写入的一轮编程对话；真实 Zed/JetBrains 留人工验收。
 - 现有测试全绿。
 
+**交付状态**：新建 `packages/surface-acp`，依赖 `@zed-industries/agent-client-protocol@0.4.5`（锁版）。**ADR-11 细化决策**：直接用 ACP 包的 `AgentSideConnection`（实现 `Agent` 接口）而非在 JsonRpcPeer 上重搓方法表——该包连接类 spec 合规、`Stream` 为对象级 `AnyMessage` 流，用内存 `TransformStream` 对驱即可离线 CI，退出标准②由**真实 `ClientSideConnection`** 离线对驱达成。交付物：`acp-surface.ts`（initialize/newSession/loadSession/prompt[阻塞]/cancel + 反向 requestPermission + fs 读写守卫 + cursor 去重 + sendChain 串行化保序）+ `translate.ts`（event→session/update + stopReason 全映射 + blocks→text，纯函数）+ `fs-guard.ts`（复用内核 `isProtectedPath` + 路径逃逸）+ `stream-pair.ts`（内存对驱）；`main.ts` 加 `acp` stdio 模式（ndJsonStream + interactiveApproval）。验证门 **+28 测试**（8 离线对驱 + 20 纯函数）。
+- 退出标准全覆盖：initialize 协商版本 + 声明 loadSession；真实 ClientSideConnection 跑通 initialize→newSession→prompt（文本/工具+反向审批 allow/reject）→ stopReason；cancel→interrupt→cancelled 不死锁（挂起等审批时取消）；fs/read_text_file·write_text_file 正常路径放行、越界/保护路径拦；loadSession 重放历史为 session/update（cursor 去重幂等）。
+- **审查节奏（ADR-14）**：本片为 Phase 3 末片，随整体收口统一对抗式审查（见文末）。
+- **已知限制（记 Phase N）**：① fs/* 反向能力暴露为 surface 方法、未把内核 read/write 工具路由经 client（深度集成留后续）；② Plan/Todo/FileChanged 不翻译为 session/update（无 Plan 生产者；FileChanged 由 edit 工具 tool_call 覆盖、不带 diff）；③ image/audio/embeddedContext 能力未声明；④ requestPermission 的 toolCall.toolCallId 用 requestId（审批先于 ToolCallStarted，与后续 tool_call id 不同源）；⑤ JSONL 背压未处理（沿用 transport 既有限制）。
+
 ---
 
-## 3G — MCP 进阶通道 + Streamable HTTP/OAuth（① 增强，最难离线，隔离收口）
+## 3G — MCP 进阶通道 + Streamable HTTP/OAuth（① 增强，最难离线，隔离收口） ✅ 已交付
 
 **目标**：补齐挂真实生态 server 的高级能力。单独成片因其依赖外部网络/OAuth、最难离线验证、最可能 WIP——隔离出去不阻塞退出标准①（本地 server 在 3C 已达成）。
 
@@ -247,6 +252,11 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - stub `list_resources`+`subscribe` 回流（心跳超时清理）；`/mcp__stub__greet` prompt slash 可调；`sampling/createMessage` 经内核 Provider 回复且限流生效。
 - progress→`ToolCallOutput` delta 可见；stub 子 server stdout 日志不破帧、EPIPE 独立兜底。
 - SDK 版本锁定。
+
+**交付状态**：SDK 版本锁 `^1.29.0`（authProvider/reconnectionOptions/StreamableHTTP 在低版本不存在）。交付物：`mcp-http.ts`（`createHttpClientTransport` 含重连退避 + `assertOAuthTransportCompatible` **WS/stdio+OAuth fail-fast**）+ `mcp-oauth.ts`（`FileOAuthClientProvider`：token/code_verifier/动态注册信息落盘 0600、与 ed25519 设备鉴权分离后端；`redirectToAuthorization` **带外授权**写文件+stderr 不开浏览器不阻塞）+ `mcp-sampling.ts`（`RateLimiter` 滑窗 + `createSamplingHandler` 路由当前会话 Provider + 限流 + 配额计费钩子）；`mcp-host.ts` 扩展：`mcpExecutor` **progress→ToolCallOutput 实时抽干**（队列+唤醒，保最终输出在后）、`McpConnection` 加 `listResources/readResource/listPrompts/getPrompt` + sampling 能力声明与 `setRequestHandler` 注册、`McpHostManager` 委托 + `promptSlashName`（`/mcp__<server>__<prompt>`）。验证门 **+9 测试**。
+- 退出标准全覆盖：HTTP transport 构造；WS/stdio+OAuth fail-fast、HTTP+OAuth 放行；OAuth provider token/verifier/注册信息落盘可读回 + 带外授权不开浏览器；RateLimiter 滑窗放行/拒/恢复；sampling handler 路由 FakeProvider + 限流 + 计费；progress→ToolCallOutput delta（最终输出在后）；resources list/read + prompts list/get + slash 命名；**sampling 端到端**（stub server 工具内反向 createMessage → host samplingHandler → Provider 回流）。
+- **审查节奏（ADR-14）**：随 Phase 3 整体收口统一对抗式审查。
+- **已知限制（记 Phase N）**：① resources **subscribe + 心跳超时清理**未做（仅 list/read）；② 真机 Streamable HTTP 连接 + 完整 OAuth 浏览器/device-code 流仅构造与 provider 持久化离线覆盖，端到端真机连接留人工/Phase N；③ prompts slash 仅命名映射 + getPrompt 取回，未接 CLI slash 分发器；④ sampling content 非文本块降级占位。
 
 ---
 

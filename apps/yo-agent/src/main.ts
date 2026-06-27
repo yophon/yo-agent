@@ -40,6 +40,9 @@ import {
   usableContextTokens,
 } from '@yo-agent/surface-cli';
 import { JsonlStreamChannel, RpcSurface, serveWebSocket } from '@yo-agent/surface-rpc';
+import { AcpSurface } from '@yo-agent/surface-acp';
+import { ndJsonStream } from '@zed-industries/agent-client-protocol';
+import { Readable, Writable } from 'node:stream';
 import {
   McpHostManager,
   McpServerSurface,
@@ -54,7 +57,7 @@ import { homedir } from 'node:os';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
-type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server';
+type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server' | 'acp';
 
 interface Args {
   prompt: string;
@@ -69,6 +72,7 @@ function parseArgs(argv: string[]): Args {
   let wantTui = false;
   let wantRpc = false;
   let wantMcp = false;
+  let wantAcp = false;
   let listenPort: number | undefined;
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -93,6 +97,10 @@ function parseArgs(argv: string[]): Args {
     if (a === '--mode') {
       const v = argv[i + 1];
       if (v === 'jsonl') wantJsonl = true;
+      if (v === 'rpc') wantRpc = true;
+      if (v === 'mcp-server') wantMcp = true;
+      if (v === 'acp') wantAcp = true;
+      if (v === 'tui') wantTui = true;
       if (v !== undefined && !v.startsWith('-')) i++; // 消费其 value，勿泄漏进 positional
       continue;
     }
@@ -108,11 +116,25 @@ function parseArgs(argv: string[]): Args {
       wantMcp = true;
       continue;
     }
+    if (a === 'acp' || a === '--acp') {
+      wantAcp = true;
+      continue;
+    }
     if (a.startsWith('-')) continue; // 未知 flag 跳过
     positional.push(a);
   }
   if (!prompt) prompt = positional.join(' ');
-  const mode: Mode = wantMcp ? 'mcp-server' : wantRpc ? 'rpc' : wantJsonl ? 'jsonl' : wantTui ? 'tui' : 'headless';
+  const mode: Mode = wantAcp
+    ? 'acp'
+    : wantMcp
+      ? 'mcp-server'
+      : wantRpc
+        ? 'rpc'
+        : wantJsonl
+          ? 'jsonl'
+          : wantTui
+            ? 'tui'
+            : 'headless';
   return { prompt, mode, listenPort };
 }
 
@@ -148,7 +170,7 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     onStatus: (st) =>
       console.error(`[mcp] ${st.server} → ${st.status}${st.toolCount !== undefined ? `（${st.toolCount} 工具）` : ''}`),
   });
-  const interactive = opts.mode === 'tui' || opts.mode === 'rpc';
+  const interactive = opts.mode === 'tui' || opts.mode === 'rpc' || opts.mode === 'acp';
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
   const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
   const kernel = new AgentKernel({
@@ -225,10 +247,26 @@ async function main(): Promise<void> {
   const cwd = process.cwd();
   const env = process.env;
 
-  // 常驻服务（rpc/mcp）兜底：后台 turn 异常不崩进程。管道断开/退出信号经各分支 installShutdown 回收子进程。
-  if (mode === 'rpc' || mode === 'mcp-server') {
+  // 常驻服务（rpc/mcp/acp）兜底：后台 turn 异常不崩进程。管道断开/退出信号经各分支 installShutdown 回收子进程。
+  if (mode === 'rpc' || mode === 'mcp-server' || mode === 'acp') {
     process.on('uncaughtException', (e) => console.error('[uncaught]', e));
     process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+  }
+
+  // ACP 模式：stdin/stdout 是 ACP（JSON-RPC over ndjson）协议通道，被 Zed/JetBrains 接管为编程 agent 后端。
+  // 日志走 stderr，进程常驻。审批经 ACP 反向 requestPermission（interactiveApproval）。
+  if (mode === 'acp') {
+    const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
+    await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
+    installShutdown(mcpHost);
+    setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
+    const acpStream = ndJsonStream(
+      Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+      Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>,
+    );
+    await new AcpSurface(acpStream).start(kernel as Kernel);
+    await new Promise<void>(() => {}); // 永不 resolve：进程常驻
+    return;
   }
 
   // RPC 模式：--listen <port> → WS server（带设备鉴权），否则 stdio JSONL。日志一律走 stderr，进程常驻。
@@ -275,7 +313,7 @@ async function main(): Promise<void> {
   }
 
   if (!prompt) {
-    console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server]');
+    console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server | acp]');
     process.exit(2);
   }
   const workspaceRoot = findWorkspaceRoot(cwd);

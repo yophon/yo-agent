@@ -13,13 +13,13 @@
 
 ## 当前状态
 
-✅ **Phase 0-2 全部交付** ｜ 🏗️ **Phase 3 进行中：3A-3E 已交付**（MCP host 连接/信任/韧性 + 真机冒烟① + 结构化 Handoff/标识符保真 + 动态 auto-memory），3F（ACP）/3G（MCP 进阶通道）待推进 —— 见 [`docs/PHASE-3.md`](docs/PHASE-3.md)。
-验证门全绿：`pnpm run check` = typecheck + gen:schema + **264 测试（34 文件，1 真机冒烟门控跳过）**。
+✅ **Phase 0-2 全部交付** ｜ ✅ **Phase 3 七片（3A-3G）功能全部交付**：MCP host 连接/三层信任/韧性 + 真机冒烟①、结构化 Handoff/标识符保真、动态 auto-memory、**AcpSurface（被 Zed/JetBrains 经 ACP 接管，退出标准②离线对驱达成）**、MCP 进阶通道（resources/prompts/sampling/progress + Streamable HTTP/OAuth）—— 见 [`docs/PHASE-3.md`](docs/PHASE-3.md)；整体收口对抗式审查见文末。
+验证门全绿：`pnpm run check` = typecheck + gen:schema + **301 测试（37 文件，1 真机冒烟门控跳过）**。
 
 - **Phase 0**（[`PHASE-0.md`](docs/PHASE-0.md)）协议单一事实源 `@yo-agent/protocol` 冻结：`AgentEvent`（20 变体）+ JSON-RPC 方法表 + cursor/resume，zod 定义、导出 JSON Schema（可 gen 多语言 binding 给任意客户端）；四接口冻结。
 - **Phase 1**（[`PHASE-1.md`](docs/PHASE-1.md)）内核 + 编程 CLI MVP：`AgentKernel` turn 循环（infer→tool→observe）+ 事件溯源 + 熔断 + `max_tokens` 续传 + 审批；**5 provider**（Anthropic / OpenAI Responses+Chat / Gemini / 兼容含 DeepSeek/Ollama）+ 双轨 tool-calling + 模型目录；内置工具 + L3 checkpoint（shadow-git）；`SummarizingCondenser`；CLI 三态（TUI / `--mode jsonl` / headless）+ yo.md 加载。**真机已验证**。
 - **Phase 2**（[`PHASE-2.md`](docs/PHASE-2.md)）协议化暴露：`RpcSurface`（JSON-RPC over JSONL/WS，通用远端驱动）+ resume/reconnect（cursor 缺口填充 + gap 溢出降级 + 审批跨重连存活）+ `McpServerSurface`（被 Claude Code/Cursor 当节点调用）+ **ed25519 + 配对码 + nonce 设备鉴权**。经 5 维对抗式审查加固。
-- **Phase 3**（[`PHASE-3.md`](docs/PHASE-3.md)，进行中）MCP **host**（挂外部 MCP server 用其工具）+ `AcpSurface`（被 Zed/JetBrains 经 ACP 接管）+ 结构化 Handoff / 标识符保真 / 动态 auto-memory。7 切片「护栏底座先行」。**已交付 3A-3E**：工具集稳定性底座 + MCP host 连接/三层信任/韧性（熔断/TTL/重连/连接状态）+ **真机冒烟①达成**（真实 `server-filesystem`，LLM 调其 `read_file`）+ Condenser 结构化交接/标识符保真机制 + 独立 `MemoryStore`/workspace 隔离/@import 防逃逸。审查节奏：3B/3C（接外部连接，高危）已逐片对抗式审查，3D/3E（纯本地打磨）按 ADR-14 随 Phase 3 整体收口统一审查。
+- **Phase 3**（[`PHASE-3.md`](docs/PHASE-3.md)，**七片全交付**）MCP **host**（挂外部 MCP server 用其工具）+ `AcpSurface`（被 Zed/JetBrains 经 ACP 接管）+ 结构化 Handoff / 标识符保真 / 动态 auto-memory。7 切片「护栏底座先行」：3A 工具集稳定性底座 + 3B/3C MCP host 连接/三层信任/韧性（熔断/TTL/重连/连接状态）+ **真机冒烟①达成**（真实 `server-filesystem`，LLM 调其 `read_file`）+ 3D Condenser 结构化交接/标识符保真机制 + 3E 独立 `MemoryStore`/workspace 隔离/@import 防逃逸 + 3F **AcpSurface**（真实 `ClientSideConnection` 离线对驱跑通含审批+fs 的一轮编程对话，退出标准②）+ 3G MCP 进阶通道（resources/prompts/sampling/progress + Streamable HTTP/OAuth）。审查节奏（ADR-14）：3B/3C（接外部连接，高危）已逐片对抗式审查；3D-3G 随 Phase 3 整体收口统一审查。
 
 竞品调研 15 份 + 横向综述见 [`docs/research/`](docs/research/)；全面设计见 [`docs/DESIGN.md`](docs/DESIGN.md)（14 章 + §15 实现补遗 + ADR）。
 

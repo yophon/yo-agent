@@ -39,6 +39,11 @@ export function assessRisk(desc: ToolDescriptor | undefined, input: unknown): Ri
   }
 }
 
+/** 是否命中 Protected Paths（§15.7）。供 ACP fs/* 反向能力等复用同一保护路径定义。 */
+export function isProtectedPath(path: string): boolean {
+  return PROTECTED_PATH_RE.test(path);
+}
+
 /** 从工具 input 抽取风险探测文本（路径 / 命令维度；不含 content 以免文档正文误报）。 */
 function riskProbeText(input: unknown): string {
   if (typeof input === 'string') return input;

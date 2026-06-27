@@ -18,8 +18,9 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CreateMessageRequestSchema, ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { SamplingHandler } from './mcp-sampling';
 import type { McpServerStatus, McpServerStatusInfo } from '@yo-agent/protocol';
 import type { RegisteredTool, ToolDescriptor, ToolEvent, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
 import { clampMcpApproval, mcpToolName, sanitizeMcpInputSchema, sanitizeMcpServerName } from '@yo-agent/tools';
@@ -155,11 +156,44 @@ export function mcpExecutor(
     async *execute(input, ctx): AsyncIterable<ToolEvent> {
       hooks?.onCallStart?.();
       const t = makeCallSignal(ctx.signal, callTimeoutMs);
-      let res: Awaited<ReturnType<Client['callTool']>>;
-      try {
-        res = await client.callTool({ name: remoteName, arguments: toArgs(input) }, undefined, {
-          signal: t.signal, // turn interrupt + per-call 超时透传到远端调用
+      // progress notifications → ToolCallOutput delta（3G）：onprogress 推队列，循环实时抽干。
+      const progressQ: string[] = [];
+      let wake: (() => void) | null = null;
+      const onprogress = (p: { progress: number; total?: number; message?: string }) => {
+        progressQ.push(formatProgress(p));
+        const w = wake;
+        wake = null;
+        w?.();
+      };
+      let settled = false;
+      let result: Awaited<ReturnType<Client['callTool']>> | undefined;
+      let failure: unknown;
+      const callP = client
+        .callTool({ name: remoteName, arguments: toArgs(input) }, undefined, { signal: t.signal, onprogress })
+        .then(
+          (r) => {
+            result = r;
+          },
+          (e) => {
+            failure = e;
+          },
+        )
+        .finally(() => {
+          settled = true;
+          const w = wake;
+          wake = null;
+          w?.();
         });
+      try {
+        for (;;) {
+          while (progressQ.length > 0) yield { kind: 'output', chunk: progressQ.shift()! };
+          if (settled) break;
+          await new Promise<void>((r) => {
+            wake = r;
+          });
+        }
+        await callP; // 已 settle；仅为满足 lint（promise 已被消费）
+        if (failure) throw failure;
         hooks?.onTransportOk?.(); // 收到响应（即便 isError）= 连接健康
       } catch (e) {
         // 失败归因（§15.3 熔断）：传输错 / 本地超时 / kernel 超时(reason.name==='TimeoutError') 均计入熔断（server 挂死或不可达）；
@@ -171,6 +205,7 @@ export function mcpExecutor(
         t.dispose();
         hooks?.onCallEnd?.();
       }
+      const res = result!;
       const chunks = (Array.isArray(res.content) ? res.content : [])
         .map((b) => normalizeBlock(b as ContentBlock))
         .filter((c) => c.length > 0);
@@ -244,6 +279,12 @@ export function mapDiscoveredTools(
 type ContentBlock = { type: string; [k: string]: unknown };
 
 /** MCP 入参恒为 object schema；非对象入参兜底包一层（防 SDK 校验拒）。 */
+/** progress 通知 → 人读进度文本（3G）。 */
+function formatProgress(p: { progress: number; total?: number; message?: string }): string {
+  if (p.message) return p.message;
+  return p.total !== undefined ? `进度 ${p.progress}/${p.total}` : `进度 ${p.progress}`;
+}
+
 function toArgs(input: unknown): Record<string, unknown> | undefined {
   if (input === undefined || input === null) return undefined;
   if (typeof input === 'object' && !Array.isArray(input)) return input as Record<string, unknown>;
@@ -287,6 +328,8 @@ export interface McpConnectionOptions {
   onStatusChange?: (status: McpServerStatus) => void;
   /** 收到 tools/list_changed 通知（manager 据此重建工具集，非热换）。 */
   onListChanged?: () => void;
+  /** sampling 处理器（3G）：提供则声明 client sampling 能力并注册 createMessage 处理器（限流/计费在 handler 内）。 */
+  samplingHandler?: SamplingHandler;
 }
 
 /** 单个 MCP server 连接：封装 SDK Client + Transport + 生命周期 + 熔断/in-flight/空闲时钟 + 已注册工具名。 */
@@ -307,7 +350,11 @@ export class McpConnection {
     private readonly transport: Transport,
     private readonly opts: McpConnectionOptions = {},
   ) {
-    this.client = new Client({ name: 'yo-agent', version: '0.1.0' });
+    // 提供 samplingHandler → 声明 sampling 能力，server 方可反向 createMessage（3G）。
+    this.client = new Client(
+      { name: 'yo-agent', version: '0.1.0' },
+      opts.samplingHandler ? { capabilities: { sampling: {} } } : undefined,
+    );
     this.now = opts.now ?? (() => Date.now());
     this.callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_MCP_CALL_TIMEOUT_MS;
     this.breaker = new CircuitBreaker(opts.breaker);
@@ -336,7 +383,28 @@ export class McpConnection {
     this.client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
       this.opts.onListChanged?.();
     });
+    // 3G：sampling 反向请求路由到注入的处理器（限流/配额计费在 handler 内）。须在 connect 前注册。
+    if (this.opts.samplingHandler) {
+      const handler = this.opts.samplingHandler;
+      this.client.setRequestHandler(CreateMessageRequestSchema, (req) => handler(req));
+    }
     await this.client.connect(this.transport);
+  }
+
+  /** 3G — MCP resources：列资源 / 读资源（远端须声明 resources 能力，否则 SDK 抛错）。 */
+  async listResources(): ReturnType<Client['listResources']> {
+    return this.client.listResources();
+  }
+  async readResource(uri: string): ReturnType<Client['readResource']> {
+    return this.client.readResource({ uri });
+  }
+
+  /** 3G — MCP prompts：列 prompt / 取 prompt（映射 /mcp__<server>__<prompt> slash）。 */
+  async listPrompts(): ReturnType<Client['listPrompts']> {
+    return this.client.listPrompts();
+  }
+  async getPrompt(name: string, args?: Record<string, string>): ReturnType<Client['getPrompt']> {
+    return this.client.getPrompt({ name, arguments: args });
   }
 
   /**
@@ -405,6 +473,8 @@ export interface McpHostOptions {
   onStatus?: (status: McpServerStatusInfo) => void;
   /** 工具集重建后回调（list_changed 触发），供测试 await 重建完成。 */
   onToolsChanged?: (server: string) => void;
+  /** sampling 处理器（3G）：提供则各连接声明 sampling 能力，server 反向 createMessage 路由到此（限流/计费在内）。 */
+  samplingHandler?: SamplingHandler;
 }
 
 /** 多 server 编排：连接 → 发现 → 注册到 registry；维护连接健康标志集喂 kernel.toolFlags；3C 韧性回路。 */
@@ -452,6 +522,35 @@ export class McpHostManager {
     return this.conns.get(name);
   }
 
+  // ───────────────────────── 3G 进阶通道：resources / prompts ─────────────────────────
+
+  private requireConn(server: string): McpConnection {
+    const c = this.conns.get(server);
+    if (!c) throw new Error(`MCP server 未连接：${server}`);
+    return c;
+  }
+
+  /** 列某 server 资源（远端须声明 resources 能力）。 */
+  async listResources(server: string): ReturnType<McpConnection['listResources']> {
+    return this.requireConn(server).listResources();
+  }
+  /** 读某 server 资源。 */
+  async readResource(server: string, uri: string): ReturnType<McpConnection['readResource']> {
+    return this.requireConn(server).readResource(uri);
+  }
+  /** 列某 server prompts。 */
+  async listPrompts(server: string): ReturnType<McpConnection['listPrompts']> {
+    return this.requireConn(server).listPrompts();
+  }
+  /** 取某 server prompt（slash 命令展开）。 */
+  async getPrompt(server: string, name: string, args?: Record<string, string>): ReturnType<McpConnection['getPrompt']> {
+    return this.requireConn(server).getPrompt(name, args);
+  }
+  /** prompt → slash 命令名：/mcp__<server>__<prompt>（§15.3）。 */
+  promptSlashName(server: string, prompt: string): string {
+    return `/mcp__${sanitizeMcpServerName(server)}__${prompt}`;
+  }
+
   /** 连接状态快照（供 kernel diff 落 EventLog）：在册 server → connected/failed；已断连者不在册（kernel diff 出 disconnected）。 */
   statusSnapshot(): McpServerStatusInfo[] {
     const now = this.now();
@@ -494,6 +593,7 @@ export class McpHostManager {
       onStatusChange: (status) =>
         this.opts.onStatus?.({ server: server.name, status, toolCount: conn.registeredNames().length }),
       onListChanged: () => void this.rebuild(server.name),
+      samplingHandler: this.opts.samplingHandler,
     });
     try {
       await conn.connect();

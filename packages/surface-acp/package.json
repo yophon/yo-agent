@@ -1,0 +1,17 @@
+{
+  "name": "@yo-agent/surface-acp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AcpSurface：被 Zed/JetBrains 经 ACP（agent-client-protocol）接管为编程 agent 后端（DESIGN §6 / Phase 3F）。复用 surface-rpc 的 JSON-RPC/transport 骨架，隔离 ACP schema 与阻塞语义。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/surface-rpc": "workspace:*",
+    "@zed-industries/agent-client-protocol": "0.4.5"
+  }
+}

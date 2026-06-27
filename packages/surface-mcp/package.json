@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "McpServerSurface：把 yo-agent 暴露为 MCP server，被 Claude Code/Cursor 当可编排执行节点（DESIGN §3.3）。",
+  "description": "McpServerSurface（yo-agent 作 MCP server）+ MCP host（挂外部 server）+ 3G 进阶通道（resources/prompts/sampling/progress + Streamable HTTP/OAuth）（DESIGN §3.3）。",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -13,7 +13,7 @@
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",
     "@yo-agent/tools": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.23.8"
   }
 }

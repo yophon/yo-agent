@@ -13,10 +13,12 @@
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",
     "@yo-agent/store": "workspace:*",
+    "@yo-agent/surface-acp": "workspace:*",
     "@yo-agent/surface-cli": "workspace:*",
     "@yo-agent/surface-mcp": "workspace:*",
     "@yo-agent/surface-rpc": "workspace:*",
-    "@yo-agent/tools": "workspace:*"
+    "@yo-agent/tools": "workspace:*",
+    "@zed-industries/agent-client-protocol": "0.4.5"
   },
   "devDependencies": {
     "tsx": "^4.19.2"
