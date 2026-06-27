@@ -12,8 +12,10 @@
  */
 import {
   AgentKernel,
+  DefaultSubagentManager,
   HistoryLoopBreaker,
   appendMemoryLine,
+  createInProcessRunner,
   findWorkspaceRoot,
   loadConventionFiles,
   memoryKeyFor,
@@ -29,7 +31,7 @@ import {
 } from '@yo-agent/store';
 import type { MemoryStore } from '@yo-agent/store';
 import type { EventStore } from '@yo-agent/store';
-import { InMemoryToolRegistry, builtinTools } from '@yo-agent/tools';
+import { InMemoryToolRegistry, builtinTools, makeSubagentSpawnTool } from '@yo-agent/tools';
 import { ModelCatalog } from '@yo-agent/provider';
 import {
   HeadlessRenderer,
@@ -173,8 +175,9 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
   const interactive = opts.mode === 'tui' || opts.mode === 'rpc' || opts.mode === 'acp';
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
   const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
+  const store = buildStore();
   const kernel = new AgentKernel({
-    store: buildStore(),
+    store,
     provider,
     tools,
     loopBreaker: new HistoryLoopBreaker(),
@@ -190,6 +193,24 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     interactiveApproval: interactive,
     approvalTimeoutMs: interactive ? 5 * 60_000 : undefined, // 5 分钟默认 deny（§6.3）
   });
+  // 子 agent（4C / ADR-17）：host=本内核（仍是唯一 AgentEvent 写入者）；in-process 档跑独立 childSessionId 子内核。
+  // deriveSubagentPolicy 收紧基准 = 父会话当前可见工具 + 权限模式；递归经 deriveSubagentPolicy 剥离 spawn + maxDepth 双防护。
+  const subagents = new DefaultSubagentManager({
+    host: kernel,
+    runner: createInProcessRunner({
+      store,
+      provider,
+      registry: tools,
+      loopBreaker: () => new HistoryLoopBreaker(),
+      condenser: () => buildCondenser(opts.env, provider, model),
+      usableContextTokens: usableContextTokens(model, catalog),
+    }),
+    parentToolsOf: (sid) => tools.resolveAvailable({ sessionId: sid, cwd: opts.cwd, flags: new Set(mcpHost.flags()) }).map((d) => d.name),
+    parentModeOf: (sid) => kernel.listSessions().find((s) => s.sessionId === sid)?.permissionMode ?? 'supervised',
+    cwdOf: () => opts.cwd,
+    defaultModel: model,
+  });
+  tools.register(makeSubagentSpawnTool(subagents));
   return { kernel, model, demo, mcpHost };
 }
 

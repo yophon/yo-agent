@@ -52,6 +52,43 @@ export class InMemoryToolRegistry implements ToolRegistry {
 }
 
 /**
+ * 子 agent 工具收紧包装（4C / DESIGN §2.5）：只读视图，把内层注册表收紧到 allowlist。
+ * deriveSubagentPolicy「只收紧」的落点——子 agent 的内核拿到的可见工具集 ⊆ allowlist：
+ *   - resolveAvailable 过滤掉非 allowlist 工具（prompt 前缀不含它们）；
+ *   - executor(name) 对非 allowlist 工具返回 undefined（即便 LLM 越界点名也会被内核「不在可见集」拒，不绕审批）。
+ * register/unregister 禁用（子 agent 不得改父注册表）。toolsetVersion 透传内层（snapshot 边界判定）。
+ */
+export class AllowlistToolRegistry implements ToolRegistry {
+  private readonly allow: ReadonlySet<string>;
+  constructor(
+    private readonly inner: ToolRegistry,
+    allow: Iterable<string>,
+  ) {
+    this.allow = new Set(allow);
+  }
+
+  register(): void {
+    throw new Error('AllowlistToolRegistry 只读：子 agent 不得修改父注册表');
+  }
+
+  unregister(): void {
+    /* 只读：no-op（不抛，便于复用调用路径） */
+  }
+
+  resolveAvailable(ctx: ToolContext): ToolDescriptor[] {
+    return this.inner.resolveAvailable(ctx).filter((d) => this.allow.has(d.name));
+  }
+
+  executor(name: string): ToolExecutorRef | undefined {
+    return this.allow.has(name) ? this.inner.executor(name) : undefined;
+  }
+
+  toolsetVersion(): number {
+    return this.inner.toolsetVersion();
+  }
+}
+
+/**
  * 声明式 availability 求值（DESIGN §3.1）。
  * configFlag 读 ctx.flags（如 MCP 连接健康标志，3C 熔断时移除 → 该工具从 resolveAvailable 消失）；
  * surface/profileHasTool 谓词留后续阶段接 ctx，当前默认放行。

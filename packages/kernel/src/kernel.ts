@@ -24,6 +24,7 @@ import { DefaultPolicyEngine } from './policy';
 import type { PolicyEngine } from './policy';
 import { HookBus } from './hooks';
 import type { HookContext, HookErrorSink, Hooks } from './hooks';
+import type { SubagentHost } from './subagent';
 import { estimateMessagesTokens } from './tokens';
 
 const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
@@ -93,6 +94,15 @@ interface SessionState {
   turnAbort?: AbortController;
   /** 上次已落库的 MCP 连接状态 + 世代号（按 server），用于 diff 出连接/断连/熔断变化 + 重建（3C 可观测 + rug-pull 防护）。 */
   lastMcpStatus: Map<string, { status: McpServerStatus; epoch: number }>;
+  /**
+   * 每会话 emit 串行链（4C）：把所有 emit 排成单链，使**后台子 agent 完成回调**对父会话的 emit
+   * 与正在跑的 turn 自身 emit 不交错——否则两路并发 emit 抢 headCursor → append 单调校验抛错（审查 high）。
+   */
+  emitChain: Promise<void>;
+  /** 异步 steering 队列（4C）：后台子 agent 结果待在 parent 下一 step 注入消息窗口（§2.5），不在回调中直改 messages。 */
+  pendingSteering: string[];
+  /** 当前在跑 turn 的 id（4C）：供后台子 agent 的离带 emit（SubagentResult）打 turn 标签；turn 外为 undefined。 */
+  currentTurnId?: Id;
 }
 
 interface ToolCallAccum {
@@ -105,7 +115,7 @@ interface ToolCallAccum {
  * 单循环 ReAct：组装上下文 → 调 provider → 执行工具 → 审批 → 注入 observation → 熔断/续传。
  * 每个 emit 分配单调 cursor、append 进 EventStore、fan-out 给订阅者（事件溯源，§2.1）。
  */
-export class AgentKernel implements Kernel {
+export class AgentKernel implements Kernel, SubagentHost {
   readonly events: EventStore;
   private readonly d: AgentKernelDeps;
   private readonly sessions = new Map<Id, SessionState>();
@@ -149,6 +159,8 @@ export class AgentKernel implements Kernel {
       approvalCache: new Map(),
       pendingApprovalIds: new Set(),
       lastMcpStatus: new Map(),
+      emitChain: Promise.resolve(),
+      pendingSteering: [],
     };
     this.sessions.set(id, s);
     await this.emit(s, {
@@ -193,6 +205,8 @@ export class AgentKernel implements Kernel {
       approvalCache: new Map(),
       pendingApprovalIds: new Set(),
       lastMcpStatus: new Map(),
+      emitChain: Promise.resolve(),
+      pendingSteering: [],
     };
     this.sessions.set(sessionId, s);
     return true;
@@ -300,10 +314,12 @@ export class AgentKernel implements Kernel {
   private async runTurn(s: SessionState, turnId: Id): Promise<void> {
     // turn 级取消控制器：interrupt() → abort 取消 in-flight 工具调用（响应 signal 的 MCP callTool 等）。
     s.turnAbort = new AbortController();
+    s.currentTurnId = turnId; // 后台子 agent 离带 emit 打 turn 标签用
     try {
       await this.runTurnInner(s, turnId);
     } finally {
       s.turnAbort = undefined;
+      s.currentTurnId = undefined;
     }
   }
 
@@ -337,6 +353,8 @@ export class AgentKernel implements Kernel {
         await this.completeTurn(s, 'interrupted', zeroUsage(), turnId);
         return;
       }
+      // 异步 steering 注入（4C）：把已完成的后台子 agent 结果并入下一次推理的消息窗口（§2.5），不阻塞主 turn。
+      this.drainSteering(s);
 
       const req: ChatRequest = { modelId: s.model, messages: s.messages, tools: toolSpecs };
       let text = '';
@@ -713,7 +731,22 @@ export class AgentKernel implements Kernel {
 
   // ───────────────────────── 内部工具 ─────────────────────────
 
-  private async emit(s: SessionState, event: AgentEvent, turnId?: Id): Promise<void> {
+  /**
+   * emit 串行化（4C）：每会话所有 emit 排成单链，杜绝「正在跑的 turn 自身 emit」与「后台子 agent 完成回调
+   * 对父会话的 emit」并发抢 headCursor → append 单调校验抛错。turn 内 emit 本就顺序 await（prev 已 resolve，
+   * 零额外开销）；仅后台离带 emit 受此保护。doEmit 抛错仍向调用方传播（行为不变），但不毒化链（chain 自吞）。
+   */
+  private emit(s: SessionState, event: AgentEvent, turnId?: Id): Promise<void> {
+    const prev = s.emitChain;
+    const run = (async () => {
+      await prev;
+      await this.doEmit(s, event, turnId);
+    })();
+    s.emitChain = run.catch(() => {});
+    return run;
+  }
+
+  private async doEmit(s: SessionState, event: AgentEvent, turnId?: Id): Promise<void> {
     const cursor = ++s.headCursor;
     const env: EventEnvelope = {
       sessionId: s.id,
@@ -776,6 +809,50 @@ export class AgentKernel implements Kernel {
   private async completeTurn(s: SessionState, stopReason: StopReason, usage: Usage, turnId: Id): Promise<void> {
     await this.hooks.fireStop(this.hookCtx(s), stopReason, this.hookErr(s, turnId));
     await this.emit(s, { kind: 'TurnCompleted', stopReason, usage }, turnId);
+  }
+
+  // ───────────────────────── 子 agent 接缝（4C / SubagentHost）─────────────────────────
+
+  /** 子 agent 派生：父会话落 SubagentStarted + 触发 SubagentStart hook（内核仍是唯一 AgentEvent 写入者）。 */
+  async noteSubagentStarted(parentSessionId: Id, info: { childSessionId: Id; label: string; model: string }): Promise<void> {
+    const s = this.sessions.get(parentSessionId);
+    if (!s) return; // 父会话已驱逐：静默丢弃（背景子 agent 可能晚于会话生命周期完成）
+    await this.hooks.fireSubagentStart(this.hookCtx(s), info.label, this.hookErr(s, s.currentTurnId));
+    await this.emit(s, { kind: 'SubagentStarted', childSessionId: info.childSessionId, label: info.label, model: info.model }, s.currentTurnId);
+  }
+
+  /**
+   * 子 agent 完成：父会话落 SubagentResult（只回摘要，§2.5）+ 触发 SubagentStop hook。
+   * injectSteering=true（背景）时摘要排入 steering 队列，于父下一 step 注入消息窗口；前台无需（摘要经 tool_result 回灌）。
+   * emit 经串行链保护，背景回调与在跑 turn 的 emit 不交错。
+   */
+  async noteSubagentResult(
+    parentSessionId: Id,
+    info: { childSessionId: Id; summary: string },
+    opts?: { injectSteering?: boolean },
+  ): Promise<void> {
+    const s = this.sessions.get(parentSessionId);
+    if (!s) return;
+    await this.emit(s, { kind: 'SubagentResult', childSessionId: info.childSessionId, summary: info.summary }, s.currentTurnId);
+    await this.hooks.fireSubagentStop(this.hookCtx(s), info.summary, this.hookErr(s, s.currentTurnId));
+    if (opts?.injectSteering) s.pendingSteering.push(`[子 agent ${info.childSessionId} 结果]\n${info.summary}`);
+  }
+
+  /**
+   * 抽干 steering 队列（4C，§2.5）：把后台子 agent 结果并入下一次推理的消息窗口。
+   * 关键——并入**末条 user 消息**（注入 tool_results 那条或初始 prompt），保持 user/assistant 严格交替，
+   * 杜绝「连续两条 user」破坏 provider 消息契约。仅在 step 顶（消息尚未送 provider）调用。
+   */
+  private drainSteering(s: SessionState): void {
+    if (s.pendingSteering.length === 0) return;
+    const note = s.pendingSteering.splice(0).join('\n\n');
+    const last = s.messages[s.messages.length - 1];
+    if (last && last.role === 'user') {
+      if (typeof last.content === 'string') last.content = `${last.content}\n\n${note}`;
+      else last.content.push({ type: 'text', text: note });
+    } else {
+      s.messages.push({ role: 'user', content: note });
+    }
   }
 
   private toolCtx(s: SessionState, signal?: AbortSignal): ToolContext {
