@@ -67,3 +67,5 @@ export * from './registry';
 export * from './builtins';
 export * from './mcp';
 export * from './exec';
+export * from './exec-local';
+export * from './bash';
