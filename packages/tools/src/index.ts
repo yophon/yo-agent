@@ -66,3 +66,4 @@ export interface ToolRegistry {
 export * from './registry';
 export * from './builtins';
 export * from './mcp';
+export * from './exec';

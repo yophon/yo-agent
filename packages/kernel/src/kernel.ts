@@ -10,6 +10,7 @@ import type {
   McpServerStatusInfo,
   PermissionMode,
   RiskLevel,
+  StopReason,
   Usage,
 } from '@yo-agent/protocol';
 import type { CanonMessage, ChatRequest, ContentBlock, Provider, ToolSpec } from '@yo-agent/provider';
@@ -19,6 +20,10 @@ import type { EventStore, SessionRow } from '@yo-agent/store';
 import { ResumeBuffer } from '@yo-agent/store';
 import type { ApprovalGate, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
 import { assessRisk } from './risk';
+import { DefaultPolicyEngine } from './policy';
+import type { PolicyEngine } from './policy';
+import { HookBus } from './hooks';
+import type { HookContext, HookErrorSink, Hooks } from './hooks';
 import { estimateMessagesTokens } from './tokens';
 
 const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
@@ -53,6 +58,10 @@ export interface AgentKernelDeps {
   mcpStatusSource?: () => McpServerStatusInfo[];
   /** MCP 按需重连（3C 会话级懒加载）：每 turn 起点 await，使空闲 TTL 断连的工具在下一 turn 透明恢复。 */
   mcpEnsureConnected?: () => Promise<void>;
+  /** 权限闸门（4A / ADR-16）：assessRisk 后、requestApproval 前按 permissionMode 决策 allow/ask/deny。缺省 DefaultPolicyEngine。 */
+  policyEngine?: PolicyEngine;
+  /** 生命周期 Hook 总线（4A / §11）：app 也可经 kernel.registerHook 注册。缺省空总线（无 hook）。 */
+  hookBus?: HookBus;
 }
 
 export interface StartSessionOpts {
@@ -106,11 +115,22 @@ export class AgentKernel implements Kernel {
     Id,
     (decision: { decision: ApprovalDecision; updatedInput?: unknown }) => void
   >();
+  /** 权限闸门（4A）：缺省 DefaultPolicyEngine —— supervised 档对非 never 工具恒 'ask'，等价既有行为。 */
+  private readonly policy: PolicyEngine;
+  /** 生命周期 Hook 总线（4A）：缺省空 → 无 hook 注册时全部触发为 no-op，运行时行为不变。 */
+  private readonly hooks: HookBus;
 
   constructor(deps: AgentKernelDeps) {
     this.events = deps.store;
     this.d = deps;
     this.resumeBuffer = new ResumeBuffer(deps.resumeBufferCapacity ?? 512);
+    this.policy = deps.policyEngine ?? new DefaultPolicyEngine();
+    this.hooks = deps.hookBus ?? new HookBus();
+  }
+
+  /** 注册生命周期 hook（4A / §11）；返回反注册函数。app/插件经此挂 PreToolUse 等。 */
+  registerHook(h: Hooks): () => void {
+    return this.hooks.register(h);
   }
 
   async startSession(opts: StartSessionOpts = {}): Promise<Id> {
@@ -142,6 +162,7 @@ export class AgentKernel implements Kernel {
     });
     await this.syncMcpStatus(s); // 已连接的 MCP server 状态落 EventLog（3C 可观测）
     await this.persistState(s); // 持久会话行（含 messages 快照），跨进程 resume 重建用
+    await this.hooks.fireSessionStart(this.hookCtx(s), this.hookErr(s)); // SessionStart hook（4A）
     return id;
   }
 
@@ -225,6 +246,7 @@ export class AgentKernel implements Kernel {
     const turnId = randomUUID();
     await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
     s.messages.push({ role: 'user', content: prompt });
+    await this.hooks.fireUserPromptSubmit(this.hookCtx(s), prompt, this.hookErr(s, turnId)); // UserPromptSubmit hook（4A）
     const done = this.runTurn(s, turnId).catch(async (e) => {
       // 兜底 emit 自身也可能抛（cursor 冲突 / 落库失败）；务必吞掉，否则后台 turn（beginTurn 丢弃 done）
       // 会成为 unhandledRejection 击垮常驻进程、连带所有会话（审查 high）。
@@ -312,7 +334,7 @@ export class AgentKernel implements Kernel {
     }
     for (let step = 0; step < maxSteps; step++) {
       if (s.interrupted) {
-        await this.emit(s, { kind: 'TurnCompleted', stopReason: 'interrupted', usage: zeroUsage() }, turnId);
+        await this.completeTurn(s, 'interrupted', zeroUsage(), turnId);
         return;
       }
 
@@ -370,7 +392,7 @@ export class AgentKernel implements Kernel {
       // 无工具调用 → 收尾。
       if (toolCalls.length === 0) {
         s.messages.push({ role: 'assistant', content: text });
-        await this.emit(s, { kind: 'TurnCompleted', stopReason: 'end_turn', usage: usage ?? zeroUsage() }, turnId);
+        await this.completeTurn(s, 'end_turn', usage ?? zeroUsage(), turnId);
         return;
       }
 
@@ -389,36 +411,79 @@ export class AgentKernel implements Kernel {
         const verdict = this.d.loopBreaker.check({ name: tc.name, input });
         if (verdict === 'break') {
           await this.emit(s, { kind: 'Error', message: `检测到死循环：反复调用 ${tc.name}` }, turnId);
-          await this.emit(s, { kind: 'TurnCompleted', stopReason: 'loop_detected', usage: usage ?? zeroUsage() }, turnId);
+          await this.completeTurn(s, 'loop_detected', usage ?? zeroUsage(), turnId);
           return;
         }
 
         assistantBlocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input });
 
-        // 审批（never 放行；always / risk-based 走 ApprovalGate，无 gate 默认 deny）。
-        if (desc && desc.approval !== 'never') {
-          // allow_always/reject_always 落 session 级缓存，同名工具后续不再重复弹审批（§9.2 会话内升级）。
-          const cached = s.approvalCache.get(tc.name);
-          let decision: ApprovalDecision;
-          let updatedInput: unknown;
-          if (cached) {
-            decision = cached === 'allow' ? 'allow_always' : 'reject_always';
-          } else {
-            const r = await this.requestApproval(s, tc.id, tc.name, input, assessRisk(desc, input), turnId);
-            decision = r.decision;
-            updatedInput = r.updatedInput;
-            if (decision === 'allow_always') s.approvalCache.set(tc.name, 'allow');
-            else if (decision === 'reject_always') s.approvalCache.set(tc.name, 'reject');
-          }
-          if (decision === 'reject_once' || decision === 'reject_always') {
-            toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: '用户拒绝了该工具调用', isError: true, name: tc.name });
+        // PreToolUse hook（4A / §11）：确定性强制——拦截 / 改写 input / 放行三态，先于权限闸门与审批。
+        // fail-closed：hook 抛错视为 deny（reason 可见）。无 hook 注册 → 恒 allow + input 不变（行为不变）。
+        if (desc) {
+          const pre = await this.hooks.firePreToolUse(this.hookCtx(s), { tool: tc.name, kind: desc.kind, input });
+          if (pre.decision === 'deny') {
+            toolResults.push({
+              type: 'tool_result',
+              toolUseId: tc.id,
+              content: `策略 hook 拒绝该工具调用${pre.reason ? `：${pre.reason}` : ''}`,
+              isError: true,
+              name: tc.name,
+            });
             continue;
           }
-          // modify：用户改参数后放行 → 用 updatedInput 覆盖（同步回传给 LLM 的 tool_use.input）。
-          if (updatedInput !== undefined) {
-            input = updatedInput;
+          if (pre.input !== input) {
+            input = pre.input;
             const block = assistantBlocks[assistantBlocks.length - 1];
-            if (block && block.type === 'tool_use') block.input = updatedInput;
+            if (block && block.type === 'tool_use') block.input = input;
+          }
+        }
+
+        // 权限闸门（4A / ADR-16）+ 审批（never 放行；ask 且非 never 走 ApprovalGate）。
+        // 不变量：supervised 档对非 never 工具 → gate='ask' → 等价既有审批行为。
+        if (desc) {
+          const risk = assessRisk(desc, input);
+          const gate = this.policy.decide({
+            permissionMode: s.permissionMode,
+            kind: desc.kind,
+            risk,
+            approval: desc.approval,
+            toolName: tc.name,
+          });
+          if (gate === 'deny') {
+            toolResults.push({
+              type: 'tool_result',
+              toolUseId: tc.id,
+              content: `权限模式（${s.permissionMode}）拒绝该工具调用`,
+              isError: true,
+              name: tc.name,
+            });
+            continue;
+          }
+          if (gate === 'ask' && desc.approval !== 'never') {
+            // allow_always/reject_always 落 session 级缓存，同名工具后续不再重复弹审批（§9.2 会话内升级）。
+            const cached = s.approvalCache.get(tc.name);
+            let decision: ApprovalDecision;
+            let updatedInput: unknown;
+            if (cached) {
+              decision = cached === 'allow' ? 'allow_always' : 'reject_always';
+            } else {
+              const r = await this.requestApproval(s, tc.id, tc.name, input, risk, turnId);
+              decision = r.decision;
+              updatedInput = r.updatedInput;
+              if (decision === 'allow_always') s.approvalCache.set(tc.name, 'allow');
+              else if (decision === 'reject_always') s.approvalCache.set(tc.name, 'reject');
+            }
+            await this.hooks.fireApproval(this.hookCtx(s), { tool: tc.name, risk, decision }, this.hookErr(s, turnId)); // OnApproval hook（4A）
+            if (decision === 'reject_once' || decision === 'reject_always') {
+              toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: '用户拒绝了该工具调用', isError: true, name: tc.name });
+              continue;
+            }
+            // modify：用户改参数后放行 → 用 updatedInput 覆盖（同步回传给 LLM 的 tool_use.input）。
+            if (updatedInput !== undefined) {
+              input = updatedInput;
+              const block = assistantBlocks[assistantBlocks.length - 1];
+              if (block && block.type === 'tool_use') block.input = updatedInput;
+            }
           }
         }
 
@@ -454,6 +519,15 @@ export class AgentKernel implements Kernel {
         await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: isError ? 'error' : 'ok' }, turnId);
         toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: out, isError: isError || undefined, name: tc.name });
 
+        // PostToolUse hook（4A / §11）：观测输出（注入防护 / 审计）；抛错经 onError 上报不拖垮 turn。
+        if (desc) {
+          await this.hooks.firePostToolUse(
+            this.hookCtx(s),
+            { tool: tc.name, kind: desc.kind, input, output: out, isError },
+            this.hookErr(s, turnId),
+          );
+        }
+
         // edit 类工具成功 → 发 FileChanged + L3 checkpoint 快照（§2.2 / §3.4）。
         if (!isError && desc && MUTATION_KINDS.has(desc.kind)) {
           await this.afterMutation(s, desc.kind, input, turnId);
@@ -462,7 +536,7 @@ export class AgentKernel implements Kernel {
 
       // 中断：不回填本轮 observation（含被中断工具的 error）、不 compact，直接收尾（审查 CONC-2，防污染 resume 上下文 + 多余压缩）。
       if (s.interrupted) {
-        await this.emit(s, { kind: 'TurnCompleted', stopReason: 'interrupted', usage: usage ?? zeroUsage() }, turnId);
+        await this.completeTurn(s, 'interrupted', usage ?? zeroUsage(), turnId);
         return;
       }
       s.messages.push({ role: 'assistant', content: assistantBlocks });
@@ -473,7 +547,7 @@ export class AgentKernel implements Kernel {
       await this.syncMcpStatus(s, turnId);
     }
 
-    await this.emit(s, { kind: 'TurnCompleted', stopReason: 'max_turn_steps', usage: zeroUsage() }, turnId);
+    await this.completeTurn(s, 'max_turn_steps', zeroUsage(), turnId);
   }
 
   /**
@@ -489,6 +563,7 @@ export class AgentKernel implements Kernel {
     const usableTokens = this.d.usableContextTokens ?? 200_000;
     const before = estimateMessagesTokens(s.messages);
     if (!this.d.condenser.shouldCompact({ usedTokens: before, usableTokens })) return;
+    await this.hooks.firePreCompact(this.hookCtx(s), this.hookErr(s, turnId)); // PreCompact hook（4A）
 
     // 结构化交接（3D）：condense 实际压缩时经 onHandoff 回传四节交接 + 保真标识符集，落 ContextCompacted。
     let handoffSummary: HandoffSummary | undefined;
@@ -679,6 +754,28 @@ export class AgentKernel implements Kernel {
     const s = this.sessions.get(id);
     if (!s) throw new Error(`未知会话：${id}`);
     return s;
+  }
+
+  /** Hook 上下文（4A）：会话快照三元组。 */
+  private hookCtx(s: SessionState): HookContext {
+    return { sessionId: s.id, cwd: s.cwd, permissionMode: s.permissionMode };
+  }
+
+  /** 观测型 hook 异常去向（4A）：emit Error 落 EventLog —— 不吞掉（可见），不拖垮 turn（仅记录）。 */
+  private hookErr(s: SessionState, turnId?: Id): HookErrorSink {
+    return async (point, err) => {
+      await this.emit(
+        s,
+        { kind: 'Error', message: `hook ${point} 异常：${err instanceof Error ? err.message : String(err)}` },
+        turnId,
+      );
+    };
+  }
+
+  /** 收尾 turn（4A）：先触发 Stop hook，再 emit TurnCompleted（统一各完成态出口）。 */
+  private async completeTurn(s: SessionState, stopReason: StopReason, usage: Usage, turnId: Id): Promise<void> {
+    await this.hooks.fireStop(this.hookCtx(s), stopReason, this.hookErr(s, turnId));
+    await this.emit(s, { kind: 'TurnCompleted', stopReason, usage }, turnId);
   }
 
   private toolCtx(s: SessionState, signal?: AbortSignal): ToolContext {
