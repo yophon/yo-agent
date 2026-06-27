@@ -8,7 +8,9 @@ import {
   ApprovalDecisionSchema,
   FileChangeKindSchema,
   ToolCompletionStatusSchema,
+  McpServerStatusSchema,
 } from './enums';
+import type { McpServerStatus } from './enums';
 
 // ───────────────────────── 子类型 ─────────────────────────
 
@@ -50,7 +52,24 @@ export const ErrorInfoSchema = z.object({
 });
 export type ErrorInfo = z.infer<typeof ErrorInfoSchema>;
 
-// ───────────────────────── AgentEvent sealed union（DESIGN §2.2，20 变体）─────────────────────────
+/**
+ * MCP host 连接状态快照单项（DESIGN §3.3，3C）。host 暴露 `statusSnapshot()` 供 kernel diff 落 EventLog；
+ * 与 `McpServerStatus` 事件解耦于此结构类型，避免 surface-mcp ↔ kernel 反向依赖。
+ */
+export interface McpServerStatusInfo {
+  server: string;
+  status: McpServerStatus;
+  toolCount?: number;
+  error?: string;
+  /**
+   * 工具集世代号（host 维护，按 server 名单调递增；每次连接/重连/list_changed 重建 +1）。
+   * kernel 据此检测「同名 server 工具身份变化」（list_changed rug-pull）→ 失效该 server 的会话审批缓存，
+   * 强制变更后的同名工具重新走 ApprovalGate（审查 SEC-8 修复）。不入持久事件，仅用于内存 diff。
+   */
+  epoch?: number;
+}
+
+// ───────────────────────── AgentEvent sealed union（DESIGN §2.2，21 变体）─────────────────────────
 
 export const AgentEventSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -149,6 +168,13 @@ export const AgentEventSchema = z.discriminatedUnion('kind', [
     label: z.string(),
     status: z.enum(['running', 'exited']),
     exitCode: z.number().int().optional(),
+  }),
+  z.object({
+    kind: z.literal('McpServerStatus'), // MCP host 连接状态（3C 韧性：连接/空闲断连/熔断）
+    server: z.string(),
+    status: McpServerStatusSchema,
+    toolCount: z.number().int().nonnegative().optional(),
+    error: z.string().optional(),
   }),
   z.object({
     kind: z.literal('UsageUpdate'),

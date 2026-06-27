@@ -499,6 +499,39 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "McpServerStatus"
+            },
+            "server": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "connected",
+                "disconnected",
+                "failed"
+              ]
+            },
+            "toolCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server",
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "UsageUpdate"
             },
             "inputTokens": {

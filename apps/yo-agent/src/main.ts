@@ -129,6 +129,9 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     registry: tools,
     transportFor: createStdioClientTransport,
     log: (m) => console.error(m),
+    // 连接状态变化（连接/断连/熔断）走 stderr 运行日志；落 EventLog 由 kernel.mcpStatusSource diff 负责。
+    onStatus: (st) =>
+      console.error(`[mcp] ${st.server} → ${st.status}${st.toolCount !== undefined ? `（${st.toolCount} 工具）` : ''}`),
   });
   const interactive = opts.mode === 'tui' || opts.mode === 'rpc';
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
@@ -142,6 +145,8 @@ function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: string
     checkpointer: opts.env.YO_CHECKPOINT === '1' ? new ShadowGitCheckpointer({ dir: opts.cwd }) : undefined,
     approvalGate,
     toolFlags: () => mcpHost.flags(),
+    mcpStatusSource: () => mcpHost.statusSnapshot(), // MCP 连接状态落 EventLog（3C 可观测）
+    mcpEnsureConnected: () => mcpHost.ensureConnected(), // 每 turn 起点重连空闲断连的 server（懒加载收口）
     model,
     cwd: opts.cwd,
     usableContextTokens: usableContextTokens(model, catalog),
@@ -216,6 +221,9 @@ async function main(): Promise<void> {
     const { kernel, mcpHost } = buildKernel({ env, cwd, prompt: '', mode });
     await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
     installShutdown(mcpHost); // 常驻进程：SIGINT/SIGTERM/EPIPE 退出前回收子进程
+    // 常驻进程才需空闲 TTL 清理：周期扫描断开长闲连接回收子进程（in-flight 守卫在 sweepIdle 内）。
+    // unref 不阻止进程退出；进程退出时 installShutdown 已统一 closeAll。
+    setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
     if (listenPort !== undefined) {
       // WS server：每连接先过 ed25519 + 配对码 + nonce 挑战握手，再交给 RpcSurface。
       const gate = new PairingGate();

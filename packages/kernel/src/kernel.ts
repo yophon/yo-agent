@@ -5,12 +5,15 @@ import type {
   ApprovalSuggestion,
   EventEnvelope,
   Id,
+  McpServerStatus,
+  McpServerStatusInfo,
   PermissionMode,
   RiskLevel,
   Usage,
 } from '@yo-agent/protocol';
 import type { CanonMessage, ChatRequest, ContentBlock, Provider, ToolSpec } from '@yo-agent/provider';
 import type { ToolContext, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
+import { sanitizeMcpServerName } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
 import { ResumeBuffer } from '@yo-agent/store';
 import type { ApprovalGate, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
@@ -45,6 +48,10 @@ export interface AgentKernelDeps {
   toolTimeoutMs?: number;
   /** availability configFlag 谓词数据源（如 MCP 连接健康标志，3C 熔断 → 工具显隐）；每次 toolCtx 求值。 */
   toolFlags?: () => Iterable<string>;
+  /** MCP 连接状态快照源（3C 可观测）：startSession + 每 turn 起点/tool 循环后 diff 后 emit McpServerStatus 落 EventLog。 */
+  mcpStatusSource?: () => McpServerStatusInfo[];
+  /** MCP 按需重连（3C 会话级懒加载）：每 turn 起点 await，使空闲 TTL 断连的工具在下一 turn 透明恢复。 */
+  mcpEnsureConnected?: () => Promise<void>;
 }
 
 export interface StartSessionOpts {
@@ -74,6 +81,8 @@ interface SessionState {
   pendingApprovalIds: Set<Id>;
   /** 当前 turn 的取消控制器（interrupt → abort，取消 in-flight 工具调用）；turn 外为 undefined。 */
   turnAbort?: AbortController;
+  /** 上次已落库的 MCP 连接状态 + 世代号（按 server），用于 diff 出连接/断连/熔断变化 + 重建（3C 可观测 + rug-pull 防护）。 */
+  lastMcpStatus: Map<string, { status: McpServerStatus; epoch: number }>;
 }
 
 interface ToolCallAccum {
@@ -118,6 +127,7 @@ export class AgentKernel implements Kernel {
       stepsSinceCompact: 0,
       approvalCache: new Map(),
       pendingApprovalIds: new Set(),
+      lastMcpStatus: new Map(),
     };
     this.sessions.set(id, s);
     await this.emit(s, {
@@ -129,6 +139,7 @@ export class AgentKernel implements Kernel {
       permissionMode: s.permissionMode,
       profile: 'default',
     });
+    await this.syncMcpStatus(s); // 已连接的 MCP server 状态落 EventLog（3C 可观测）
     await this.persistState(s); // 持久会话行（含 messages 快照），跨进程 resume 重建用
     return id;
   }
@@ -159,6 +170,7 @@ export class AgentKernel implements Kernel {
       stepsSinceCompact: 0,
       approvalCache: new Map(),
       pendingApprovalIds: new Set(),
+      lastMcpStatus: new Map(),
     };
     this.sessions.set(sessionId, s);
     return true;
@@ -273,6 +285,14 @@ export class AgentKernel implements Kernel {
   }
 
   private async runTurnInner(s: SessionState, turnId: Id): Promise<void> {
+    // turn 起点：先按需重连空闲 TTL 断连的 MCP server（懒加载收口），使其工具在本 turn snapshot 前恢复；
+    // 失败不阻断 turn（外部 server 不可信）。再 diff 连接状态变化（含重连/熔断/断连）落 EventLog（3C 可观测）。
+    try {
+      await this.d.mcpEnsureConnected?.();
+    } catch {
+      /* 重连异常不得阻断 turn */
+    }
+    await this.syncMcpStatus(s, turnId);
     const maxSteps = this.d.maxStepsPerTurn ?? 64;
     // turn 内工具集 snapshot（§15.4）：起点求值一次、整个 turn 固定——
     // MCP 工具中途增删（3C TTL/熔断）不漂移本 turn 的 prompt 工具前缀、不破 prompt cache。
@@ -448,6 +468,8 @@ export class AgentKernel implements Kernel {
       s.messages.push({ role: 'user', content: toolResults });
       // ContextManager.maybeCompact()：注入 observation 后按 token 阈值触发压缩（§2.1 / §5.1）。
       await this.maybeCompact(s, turnId);
+      // 本步工具调用可能触发熔断（turn 中途）：补 diff 落库，否则若冷却在下一 turn 前自愈则失败态系统性漏记（审查 CRIT-1）。
+      await this.syncMcpStatus(s, turnId);
     }
 
     await this.emit(s, { kind: 'TurnCompleted', stopReason: 'max_turn_steps', usage: zeroUsage() }, turnId);
@@ -547,6 +569,55 @@ export class AgentKernel implements Kernel {
     return { decision: 'reject_once' };
   }
 
+  /**
+   * diff MCP 连接状态快照 vs 上次落库值，对每个变化 emit McpServerStatus（3C 可观测，§3.3）。
+   * 在 startSession（turnId 缺省）、每 turn 起点、每步 tool 循环后调用——连接/断连/熔断/重建作为离散状态变更进 EventLog + resume 白名单。
+   * 世代号（epoch）变化 → 同名工具身份可能已变（list_changed rug-pull）→ 失效该 server 会话审批缓存（SEC-8）。
+   * 状态源（host.statusSnapshot）异常不得阻断主流程：吞错返回。
+   */
+  private async syncMcpStatus(s: SessionState, turnId?: Id): Promise<void> {
+    if (!this.d.mcpStatusSource) return;
+    let snap: McpServerStatusInfo[];
+    try {
+      snap = this.d.mcpStatusSource();
+    } catch {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const info of snap) {
+      seen.add(info.server);
+      const epoch = info.epoch ?? 0;
+      const prev = s.lastMcpStatus.get(info.server);
+      if (!prev || prev.status !== info.status || prev.epoch !== epoch) {
+        // 世代号变化（连接/重连/list_changed 重建）→ 同名工具身份可能已变（rug-pull）：
+        // 失效该 server 的会话审批缓存，强制变更后的同名工具重新走 ApprovalGate（审查 SEC-8）。
+        if (!prev || prev.epoch !== epoch) this.invalidateMcpApprovals(s, info.server);
+        s.lastMcpStatus.set(info.server, { status: info.status, epoch });
+        await this.emit(
+          s,
+          { kind: 'McpServerStatus', server: info.server, status: info.status, toolCount: info.toolCount },
+          turnId,
+        );
+      }
+    }
+    // 快照中消失的 server（已断连）→ 补发 disconnected（仅当上次非 disconnected，防重复）。
+    for (const [server, prev] of s.lastMcpStatus) {
+      if (!seen.has(server) && prev.status !== 'disconnected') {
+        this.invalidateMcpApprovals(s, server); // 断连后再连可能换实现 → 同样失效审批缓存
+        s.lastMcpStatus.set(server, { status: 'disconnected', epoch: prev.epoch });
+        await this.emit(s, { kind: 'McpServerStatus', server, status: 'disconnected' }, turnId);
+      }
+    }
+  }
+
+  /** 失效某 MCP server 全部工具的会话审批缓存（前缀 mcp__{sanitize(server)}__）：rug-pull / 重连后强制重新审批。 */
+  private invalidateMcpApprovals(s: SessionState, server: string): void {
+    const prefix = `mcp__${sanitizeMcpServerName(server)}__`;
+    for (const tool of [...s.approvalCache.keys()]) {
+      if (tool.startsWith(prefix)) s.approvalCache.delete(tool);
+    }
+  }
+
   // ───────────────────────── 内部工具 ─────────────────────────
 
   private async emit(s: SessionState, event: AgentEvent, turnId?: Id): Promise<void> {
@@ -605,7 +676,9 @@ export class AgentKernel implements Kernel {
     const ms = this.d.toolTimeoutMs;
     if (!ms || ms <= 0) return { signal: turnSignal, dispose: () => {} };
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(new Error(`工具调用超时（${ms}ms）`)), ms);
+    // 超时 abort 用 name='TimeoutError' 的可识别 reason：MCP executor 据此把「kernel 超时」与「用户中断」区分，
+    // 前者计入熔断、后者中性（审查 ATTR-3：双层超时叠加时挂死 server 不得被误判为中断）。
+    const timer = setTimeout(() => ctrl.abort(makeTimeoutReason(`工具调用超时（${ms}ms）`)), ms);
     const onTurnAbort = () => ctrl.abort(turnSignal?.reason);
     if (turnSignal) {
       if (turnSignal.aborted) ctrl.abort(turnSignal.reason);
@@ -627,6 +700,13 @@ export class AgentKernel implements Kernel {
 
 function zeroUsage(): Usage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+}
+
+/** 可识别的超时 abort reason（name='TimeoutError'）：下游据 name 区分「超时」与「用户中断」（审查 ATTR-3）。 */
+function makeTimeoutReason(message: string): Error {
+  const e = new Error(message);
+  e.name = 'TimeoutError';
+  return e;
 }
 
 function parseJsonObject(s: string): unknown {

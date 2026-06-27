@@ -21,6 +21,7 @@ export const SIGNIFICANT_EVENT_KINDS: ReadonlySet<AgentEventKind> = new Set<Agen
   'SubagentStarted',
   'SubagentResult',
   'BackgroundProcess', // 离散状态迁移（running/exited），非流式噪声（§6.3 属"状态变更"）
+  'McpServerStatus', // MCP 连接状态迁移（3C：连接/断连/熔断），离散状态变更非流式噪声
   'ContextCompacted',
   'TurnCompleted',
   'TurnFailed',

@@ -32,7 +32,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 |---|---|---|---|---|---|
 | **3A** | 工具集稳定性底座 + 内核共享接缝（**无外部连接**） | ①② 前置 | — | — | ✅ 已交付 |
 | **3B** | MCP host 连接层 + 三层信任配置（stdio，opt-in 防供应链） | ① | 3A | — | ✅ 已交付 |
-| **3C** | MCP host 韧性（懒加载/TTL/熔断/取消超时/跨进程重连/连接状态） + **真机冒烟①** | ① | 3B | — | ✅(+真机) |
+| **3C** | MCP host 韧性（懒加载/TTL/熔断/取消超时/跨进程重连/连接状态） + **真机冒烟①** | ① | 3B | — | ✅ 已交付(+真机) |
 | **3D** | Condenser 结构化 Handoff + 标识符保真（**增量改造**） | 打磨 | — | — | ✅ |
 | **3E** | 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import） | 打磨 | (3D 蒸馏子项) | — | ✅ |
 | **3F** | AcpSurface（复用 RpcSurface 骨架 + 事件翻译 + request_permission + fs/*） | ② | 3A | `surface-acp` | ✅ |
@@ -109,7 +109,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 
 ---
 
-## 3C — MCP host 韧性 + 真机冒烟①
+## 3C — MCP host 韧性 + 真机冒烟① ✅ 已交付
 
 **目标**：处理 MCP host 的运行时危险——长挂 `callTool`、server 掉线后工具仍可见、TTL 清理与 in-flight 竞态、`tools/list_changed` 破 cache、跨进程 resume 后连接丢失。把连接健康回路接到 3A 的 `availability`/版本机制。**末尾做退出标准①真机冒烟**。
 
@@ -131,6 +131,17 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - `McpServerConnected/Disconnected` 落 EventLog 且在 resume 白名单，Go schema 同步。
 - **真机冒烟①**：本机起 `@modelcontextprotocol/server-filesystem`（真实 npm server，stdio），host 连它，LLM 用其 `read_file` 成功 → **退出标准① 达成**。
 - 现有测试全绿。
+
+**交付状态**：`mcp-host.ts` 韧性回路——`CircuitBreaker`（阈值3→60s冷却→半开，纯时钟驱动）+ mcpExecutor MCP-local per-call 超时（默认60s）+ 失败归因 hooks + 空闲 TTL `sweepIdle`（in-flight 守卫防竞态）+ `tools/list_changed` 显式重建（脏位 coalescing + await 后连接复核）+ `ensureConnected` 按需重连（`connecting` map 并发去重）+ `statusSnapshot`/`epoch` 世代号；kernel `syncMcpStatus`（连接状态 diff 落 EventLog，**仍唯一事件写者**）+ `invalidateMcpApprovals`（epoch 变→失效审批缓存）+ 超时 reason `TimeoutError` 归因；`McpServerStatus` 协议变体（enum/discriminatedUnion/`AGENT_EVENT_KINDS`/resume 白名单/JSON+Go schema 全同步，21 变体）；`main.ts` 布线（`mcpStatusSource`/`mcpEnsureConnected`/`onStatus` + rpc 空闲清理 interval）。验证门 **228 测试（32 文件，+25）+ 真机冒烟** 全绿。
+
+- **退出标准① 达成**：真机起真实 `@modelcontextprotocol/server-filesystem`（stdio 子进程，npx 缓存），host 连接发现 14 个真实工具、kernel turn 调其 `read_file` 读回文件内容（`mcp-smoke.test.ts`，`YO_MCP_SMOKE=1` 门控离线 CI，亲测通过）。
+- 退出标准全覆盖：熔断（注入时钟）flags 显隐 + 冷却恢复；per-call 超时 + 用户中断/超时/传输错失败归因；TTL 到期遇 in-flight 推迟断连；list_changed 重建 + `toolsetVersion` 自增；跨进程 resume 重连不漂移；`McpServerStatus` 落 EventLog + resume 白名单 + Go schema 同步。
+
+**对抗式审查（6 维 + 完备性批判，43 agents → 二轮聚焦复验 3 agents）**：首轮 10 确认 + 3 补充、二轮 1 阻断，全部修复：
+- **HIGH ×1（SEC-8）**：`list_changed` 重建可经会话审批缓存 rug-pull 绕审批（被入侵 server 换同名工具实现）→ host 加 `epoch` 世代号（连接/重连/重建 +1、跨 disconnect 不重置），kernel 据 epoch 变化失效该 server 审批缓存，强制重新走 ApprovalGate。
+- **阻断 ×1（CONC-RECONN-1，二轮复验发现）**：并发 `ensureConnected` 对同一 server 双连接（子进程泄漏 + 工具孤儿）→ `connecting` map 按 server 名去重，复用进行中 promise。
+- **MEDIUM/LOW**：list_changed 风暴丢通知→脏位 coalescing；重建 await 后未复核连接→孤儿工具→连接复核（`conns.get(name)!==conn` 弃置）；空闲断连无重连→`ensureConnected` 按需重连（`specs` 转活）；冷却期成功提前清零→honor 固定冷却 + 保留半开计数；turn 中途熔断漏记→tool 循环后补 `syncMcpStatus`；双层超时误判为用户中断→`TimeoutError` reason 归因；`toolCount` 陈旧→epoch 变化触发 emit。
+> **已知限制（残留，记 Phase N）**：① 超长（>idleTtl）单 turn 内 `sweepIdle` 可能断开本 turn 快照引用但未调用的连接（按需重连 + in-flight 守卫已大幅缓解，失败工具下一 turn 自愈）；② resume 不重播 `lastMcpStatus`（崩溃前 connected 的 server 重连失败时观测态滞后，仅观测无功能影响）；③ list_changed 重建按 server 名（非 conn 身份）键的窄自愈竞态；④ `ensureConnected` 重连不接 turn signal（不可中断，SDK 请求超时兜底）。MCP 非文本内容（image/audio/resource）仍有损降级（沿 3B）。
 
 ---
 

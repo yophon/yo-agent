@@ -75,3 +75,10 @@ export type FileChangeKind = z.infer<typeof FileChangeKindSchema>;
 /** 工具完成状态（DESIGN §3.2：出错必须 error，不可包在 ok）。 */
 export const ToolCompletionStatusSchema = z.enum(['ok', 'error']);
 export type ToolCompletionStatus = z.infer<typeof ToolCompletionStatusSchema>;
+
+/**
+ * MCP host 连接状态（DESIGN §3.3 / §15.3，Phase 3C 韧性可观测）。
+ * connected：已连接并注册工具；disconnected：空闲 TTL 断连 / 主动关闭；failed：熔断打开（连续失败超阈值）。
+ */
+export const McpServerStatusSchema = z.enum(['connected', 'disconnected', 'failed']);
+export type McpServerStatus = z.infer<typeof McpServerStatusSchema>;

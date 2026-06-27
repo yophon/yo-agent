@@ -403,3 +403,172 @@ describe('AgentKernel turn 循环', () => {
     expect(tcc && 'status' in tcc ? tcc.status : null).toBe('error');
   });
 });
+
+describe('AgentKernel —— MCP 连接状态落 EventLog（3C 可观测）', () => {
+  function mcpKernel(snapshot: () => Array<{ server: string; status: 'connected' | 'disconnected' | 'failed'; toolCount?: number }>) {
+    const store = new MemoryEventStore();
+    const provider = new FakeProvider();
+    const tools = new InMemoryToolRegistry();
+    const kernel = new AgentKernel({
+      store,
+      provider,
+      tools,
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+      mcpStatusSource: snapshot,
+    });
+    return { kernel, provider };
+  }
+  const statuses = (events: AgentEvent[]) =>
+    events.filter((e): e is Extract<AgentEvent, { kind: 'McpServerStatus' }> => e.kind === 'McpServerStatus');
+
+  it('startSession 后已连接 server emit McpServerStatus(connected)', async () => {
+    const { kernel } = mcpKernel(() => [{ server: 'fs', status: 'connected', toolCount: 3 }]);
+    const events: AgentEvent[] = [];
+    const sid = await kernel.startSession();
+    for await (const e of kernel.events.read(sid)) events.push(e.event);
+    const st = statuses(events);
+    expect(st).toHaveLength(1);
+    expect(st[0]).toMatchObject({ server: 'fs', status: 'connected', toolCount: 3 });
+  });
+
+  it('turn 间状态变化 diff：connected→failed→disconnected 各 emit 一次，不重复', async () => {
+    let snap: Array<{ server: string; status: 'connected' | 'disconnected' | 'failed'; toolCount?: number }> = [
+      { server: 'fs', status: 'connected', toolCount: 2 },
+    ];
+    const { kernel, provider } = mcpKernel(() => snap);
+    const events: AgentEvent[] = [];
+    const sid = await kernel.startSession(); // emit connected
+    kernel.subscribe(sid, null, (env: EventEnvelope) => events.push(env.event));
+
+    provider.script(textTurn('a'));
+    snap = [{ server: 'fs', status: 'failed' }]; // 熔断
+    await kernel.submitInput(sid, 'x', 'k1'); // turn 起点 diff → emit failed
+
+    provider.script(textTurn('b'));
+    snap = []; // 断连（快照消失）
+    await kernel.submitInput(sid, 'y', 'k2'); // turn 起点 diff → emit disconnected
+
+    provider.script(textTurn('c'));
+    await kernel.submitInput(sid, 'z', 'k3'); // 无变化 → 不重复 emit
+
+    const seen = statuses(events).map((e) => e.status);
+    expect(seen).toEqual(['failed', 'disconnected']); // 订阅在 startSession 之后，故不含首条 connected
+  });
+
+  it('无 mcpStatusSource → 不 emit（向后兼容）', async () => {
+    const store = new MemoryEventStore();
+    const kernel = new AgentKernel({
+      store,
+      provider: new FakeProvider(),
+      tools: new InMemoryToolRegistry(),
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+    });
+    const events: AgentEvent[] = [];
+    const sid = await kernel.startSession();
+    for await (const e of kernel.events.read(sid)) events.push(e.event);
+    expect(events.filter((e) => e.kind === 'McpServerStatus')).toEqual([]);
+  });
+});
+
+describe('AgentKernel —— MCP 审批缓存失效 + 中途熔断落库（3C 审查修复）', () => {
+  it('list_changed 重建（epoch 变）失效审批缓存 → 同名工具重新走审批（SEC-8 rug-pull 防护）', async () => {
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      descriptor: {
+        name: 'mcp__x__foo',
+        kind: 'other',
+        description: '',
+        inputSchema: { type: 'object' },
+        owner: 'mcp',
+        availability: { configFlag: 'mcp:x' },
+        approval: 'risk-based',
+      },
+      executor: {
+        async *execute() {
+          yield { kind: 'output', chunk: 'ok' };
+        },
+      },
+    });
+    let epoch = 1;
+    let asks = 0;
+    const gate: ApprovalGate = {
+      async request() {
+        asks++;
+        return { decision: 'allow_always' };
+      },
+    };
+    const provider = new FakeProvider();
+    const kernel = new AgentKernel({
+      store: new MemoryEventStore(),
+      provider,
+      tools,
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+      approvalGate: gate,
+      toolFlags: () => ['mcp:x'],
+      mcpStatusSource: () => [{ server: 'x', status: 'connected', toolCount: 1, epoch }],
+    });
+    const sid = await kernel.startSession();
+
+    // 入参逐轮不同：规避 HistoryLoopBreaker（同名同参连续调用判死循环）；审批缓存按工具名而非入参。
+    provider.script(toolCallTurn('mcp__x__foo', 'c1', { n: 1 }));
+    provider.script(textTurn('a'));
+    await kernel.submitInput(sid, 't1', 'k1');
+    expect(asks).toBe(1); // 首次审批 → allow_always 缓存
+
+    provider.script(toolCallTurn('mcp__x__foo', 'c2', { n: 2 }));
+    provider.script(textTurn('b'));
+    await kernel.submitInput(sid, 't2', 'k2');
+    expect(asks).toBe(1); // epoch 不变 → 缓存命中（按名），不再问
+
+    epoch = 2; // server 重建（list_changed），同名工具身份可能变
+    provider.script(toolCallTurn('mcp__x__foo', 'c3', { n: 3 }));
+    provider.script(textTurn('c'));
+    await kernel.submitInput(sid, 't3', 'k3');
+    expect(asks).toBe(2); // turn 起点 epoch 变 → 失效缓存 → 重新审批（rug-pull 不绕审批）
+  });
+
+  it('turn 中途熔断 → 本 turn 内补发 McpServerStatus failed（CRIT-1，不等下一 turn）', async () => {
+    let status: 'connected' | 'disconnected' | 'failed' = 'connected';
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      descriptor: {
+        name: 'mcp__x__foo',
+        kind: 'other',
+        description: '',
+        inputSchema: { type: 'object' },
+        owner: 'mcp',
+        availability: { configFlag: 'mcp:x' },
+        approval: 'never',
+      },
+      executor: {
+        async *execute() {
+          status = 'failed'; // 调用即触发熔断（turn 中途）
+          yield { kind: 'output', chunk: 'ok' };
+        },
+      },
+    });
+    const provider = new FakeProvider();
+    const kernel = new AgentKernel({
+      store: new MemoryEventStore(),
+      provider,
+      tools,
+      loopBreaker: new HistoryLoopBreaker(),
+      condenser: new NoopCondenser(),
+      toolFlags: () => ['mcp:x'],
+      mcpStatusSource: () => (status === 'disconnected' ? [] : [{ server: 'x', status, toolCount: 1, epoch: 1 }]),
+    });
+    const events: AgentEvent[] = [];
+    const sid = await kernel.startSession(); // emit connected
+    kernel.subscribe(sid, null, (env: EventEnvelope) => events.push(env.event));
+    provider.script(toolCallTurn('mcp__x__foo', 'c1', {}));
+    provider.script(textTurn('done'));
+    await kernel.submitInput(sid, 't1', 'k1');
+    const st = events
+      .filter((e): e is Extract<AgentEvent, { kind: 'McpServerStatus' }> => e.kind === 'McpServerStatus')
+      .map((e) => e.status);
+    expect(st).toContain('failed'); // tool 循环后 sync 已落库 failed，不必等下一 turn
+  });
+});
