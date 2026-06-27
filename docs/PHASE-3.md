@@ -33,8 +33,8 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 | **3A** | 工具集稳定性底座 + 内核共享接缝（**无外部连接**） | ①② 前置 | — | — | ✅ 已交付 |
 | **3B** | MCP host 连接层 + 三层信任配置（stdio，opt-in 防供应链） | ① | 3A | — | ✅ 已交付 |
 | **3C** | MCP host 韧性（懒加载/TTL/熔断/取消超时/跨进程重连/连接状态） + **真机冒烟①** | ① | 3B | — | ✅ 已交付(+真机) |
-| **3D** | Condenser 结构化 Handoff + 标识符保真（**增量改造**） | 打磨 | — | — | ✅ |
-| **3E** | 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import） | 打磨 | (3D 蒸馏子项) | — | ✅ |
+| **3D** | Condenser 结构化 Handoff + 标识符保真（**增量改造**） | 打磨 | — | — | ✅ 已交付 |
+| **3E** | 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import） | 打磨 | (3D 蒸馏子项) | — | ✅ 已交付 |
 | **3F** | AcpSurface（复用 RpcSurface 骨架 + 事件翻译 + request_permission + fs/*） | ② | 3A | `surface-acp` | ✅ |
 | **3G** | MCP 进阶通道（resources/prompts/sampling/progress） + Streamable HTTP/OAuth | ① 增强 | 3B,3C | — | ✅(OAuth mock) |
 
@@ -145,7 +145,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 
 ---
 
-## 3D — Condenser 结构化 Handoff + 标识符保真（增量改造，非新建）
+## 3D — Condenser 结构化 Handoff + 标识符保真（增量改造，非新建） ✅ 已交付
 
 > **现状已核实**：`condenser.ts` **已实现** 保首(`keepFirst=2`)+保尾(`keepTail=6`)+中段 LLM 摘要三段式、便宜模型摘要器（`makeProviderSummarizer`）、`SUMMARY_SYSTEM` **已含**四节「目标/已发生/当前状态/下一步」+「逐字保留不透明标识符」prompt（`condenser.ts:35-40`）。`minStepsBetweenCompact` guard **已存在**（`kernel.ts:417-419`）。**Phase 3 的真正 delta 很小**——不要重复实现既有逻辑。
 
@@ -163,9 +163,13 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - 连续两次满足 token 阈值，guard 阻止第二次立即 compact。
 - 现有测试全绿。
 
+**交付状态**：`HandoffSummarySchema`（protocol，四节 zod）+ `ContextCompacted` 扩 `handoffSummary?`/`preservedIdentifiers?`（向后兼容可选字段，变体数仍 21，JSON Schema 重新生成）；`condenser.ts` 增量改造——`parseHandoffSections`（确定性解析便宜模型四节 markdown，无标题回退 whatHappened 不丢内容）+ `extractIdentifiers`（URL/UUID/path/hash/error-code 消费式去重提取，过滤散文误命中）+ **标识符保真机制**（diff 检出缺失 → 对便宜模型单次重试 → 仍缺则确定性回填段，保证渲染后逐字含全部）+ `onHandoff` 回调（向后兼容，**不改 `condense` 返回类型**，内核据此填 ContextCompacted 落库）；`maybeCompact` guard 补 cache 失效成本注释。验证门 **264 测试（+36）** 全绿。
+- 退出标准全覆盖：5 标识符故意丢 2 → 重试补齐（无回填段）/ 恒丢 → 回填段保证逐字全含；四节解析 + 无标题回退；`ContextCompacted` 落 `handoffSummary`；`mergeAdjacentUser` 不变量保持（沿用既有边界保护测试）；`minStepsBetweenCompact` guard 阻止立即再压。
+- **审查节奏（ADR-14）**：本片为纯本地上下文打磨，按新节奏只做实现 + 针对性单测（标识符保真机制有专测），大规模对抗式审查随 Phase 3 整体收口统一做。
+
 ---
 
-## 3E — 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import）
+## 3E — 动态 auto-memory（独立 MemoryStore + workspace 隔离 + @import） ✅ 已交付
 
 > **决策（避免违反 ADR-1）**：auto-memory 持久化走**独立 `MemoryStore` 子系统**，**不扩展冻结的 `EventStore` 接口**（`store/index.ts:39`，ADR-1 把 EventLog 设为唯一事实源的冻结接口）。`MemoryStore` 与 EventLog 共 SQLite 库不同表（`memory` 表 PK `workspace_path+key`），`MemoryEventStore`/`SqliteEventStore` 不受影响。
 
@@ -184,6 +188,11 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - MEMORY.md 索引按 200 行/25KB 加载，per-topic 文件未 read 直到引用触发。
 - `writeMemory`/`readMemory` 在内存与 SQLite 两实现一致，resume 后记忆可读回。
 - 现有测试全绿。
+
+**交付状态**：`automemory.ts`（独立 `MemoryStore`：`InMemoryMemoryStore` + `SqliteMemoryStore`，共库不同 `memory` 表 PK `(workspace_path,key)`，**不扩 ADR-1 冻结的 EventStore**，持久层不引入时钟由调用方戳 `updatedAt`）；`context-files.ts` 增强——`expandImports`（递归 @import：相对引用文件位置解析 + `realpath` 逃逸防护 + `visited` 防循环 + 深度上限 + 缺失占位，**matchAll 预收集避免递归共享 /g lastIndex 污染**）+ workspace 隔离 MEMORY.md（仅从 `workspaceRoot` 读、不沿 dirChain 上溯）+ `capMemoryIndex`（前 200 行/25KB，§15.5）+ `safeTruncateBytes`（UTF-8 字节安全 + 回退空白边界不切断标识符）；手动主路 `parseRememberDirective`/`appendMemoryLine`/`memoryKeyFor`/`findWorkspaceRoot`；`main.ts` 接线（`#remember` 落盘 MEMORY.md + 写 MemoryStore 不耗 LLM 轮次；`loadConventionFiles` 传 git 根作 `workspaceRoot`）。验证门 **264 测试（+36）** 全绿。
+- 退出标准全覆盖：workspace A 记忆在 B 不可见 + 父目录 MEMORY.md 不上溯泄漏；`@../secret.md`/越界经 realpath 拒、内容不内联；A↔B 循环 import 被 visited 拦 + 深度上限兜底；MEMORY.md cap 200 行/25KB；内存与 SQLite 两实现合约一致 + 落盘重开可读回。
+- **审查节奏（ADR-14）**：纯本地上下文打磨，只做实现 + 针对性单测（逃逸/循环/隔离/截断均有专测），大规模对抗式审查随 Phase 3 整体收口。
+- **已知限制（记 Phase N）**：① 自动蒸馏管线未做——"动态" = 手动 `#remember` + 静态 MEMORY.md 两级加载（设计明示，非虚标）；② `#remember` 仅接一次性 `-p` 路径，TUI/RPC 交互内 `#remember` 拦截留后续；③ subagent 独立 `agent-memory/` 隔离待 SubagentManager（Phase 4）兑现；④ @import 仅接 MEMORY.md，约定文件（yo.md/CLAUDE.md）@import 与 skill @-reference 共用 resolver 已就绪但未在约定加载链启用。
 
 ---
 
@@ -264,6 +273,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - **ADR-11（AcpSurface 独立包 + 复用 transport）**：ACP schema 与阻塞语义（`session/prompt` 等 turn 完成、`request_permission` 阻塞反向请求）与 RPC 的非阻塞 notify 分歧大；独立 `surface-acp` 隔离翻译层与 `@zed-industries/agent-client-protocol` 依赖，但复用 `JsonRpcPeer`/`JsonlStreamChannel`（含 `void handleRequest` 不死锁特性）。
 - **ADR-12（auto-memory 独立 MemoryStore）**：不扩 ADR-1 冻结的 `EventStore`；记忆与 EventLog 共库不同表，关注点分离。
 - **ADR-13（退出标准达成口径）**：① 由 3C 末真实 `server-filesystem` stdio 冒烟达成；② 由 ACP client 离线对驱达成（真实 IDE 人工验收）。离线可 CI + 协议层等价真实接管，延续 Phase 1/2 范式。
+- **ADR-14（审查节奏：大阶段收口才做大规模对抗式审查）**：自 3D 起调整验证节奏——**小切片（3D/3E/…）只做实现 + 单测，"大体无误即过"**；**大规模对抗式审查（Workflow 多 agent finder→adversarial verify→completeness critic）推迟到一个大阶段（Phase 3 整体）收口时一次性做**，覆盖该阶段所有切片的跨片交互。理由：① 切片间存在共享接缝（`condenser`/`context-files`/`MemoryStore`/`kernel`），逐片审查会重复扫同一批接缝且看不到跨片交互（如 3D 的 `preservedIdentifiers` ↔ 3E 的自动蒸馏占位）；② 大阶段末审查能以"整阶段交付物"为单元做完备性批判，回归面更完整；③ 节省逐片审查的 token/时延。**保留底线**：每片末 `pnpm run check` 全绿（typecheck + schema gen + 全量测试只增不减），关键护栏（标识符保真 diff、@import 逃逸、workspace 隔离）必须有针对性单测。**触发例外**：若某片触及不可信输入/审批/供应链/prompt-cache 等高危面，仍即时单片审查（3B/3C 已做，其性质属"接外部连接"）。3D/3E 为纯本地上下文打磨，按新节奏走。
 
 ---
 
@@ -309,7 +319,7 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - ② **被 Zed/JetBrains 经 ACP 接管跑通编程对话**：3F AcpSurface → **`@zed-industries/agent-client-protocol` client 离线对驱跑通含审批+fs 写入的一轮编程对话**（真实 IDE 人工验收）。
 - 上下文/记忆打磨：3D 结构化 Handoff + 标识符保真、3E workspace 隔离 auto-memory，均离线单测覆盖。
 
-**验证门**：`pnpm run check` —— typecheck 0 错误 + JSON Schema 全量 gen + 测试在 Phase 2 的 145 基线上**只增不减**全绿；每片末跑全量回归。
+**验证门**：`pnpm run check` —— typecheck 0 错误 + JSON Schema 全量 gen + 测试在 Phase 2 的 145 基线上**只增不减**全绿；每片末跑全量回归。**对抗式审查节奏（ADR-14）**：3B/3C（接外部连接，高危）已逐片审查；3D/3E（纯本地上下文打磨）按新节奏只做实现+单测，与 3F/3G 一并在 **Phase 3 整体收口**时做一次大规模对抗式审查。
 
 ---
 

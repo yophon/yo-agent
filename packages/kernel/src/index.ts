@@ -6,6 +6,7 @@ import type {
   AgentEvent,
   ApprovalDecision,
   EventEnvelope,
+  HandoffSummary,
   Id,
   PermissionMode,
   RiskLevel,
@@ -63,6 +64,11 @@ export interface CondenseOpts {
   hint?: string;
   keepFirst?: number;
   keepTail?: number;
+  /**
+   * 结构化交接回调（3D）：condense 实际压缩时回传四节交接 + diff 校验后逐字保真的标识符集合。
+   * 内核据此填 ContextCompacted.handoffSummary / preservedIdentifiers 落库。向后兼容——不传则忽略。
+   */
+  onHandoff?: (handoff: HandoffSummary, preservedIdentifiers: string[]) => void;
 }
 
 /**

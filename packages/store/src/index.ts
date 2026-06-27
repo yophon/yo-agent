@@ -7,6 +7,7 @@ import { EVENTLOG_SCHEMA_VERSION } from '@yo-agent/protocol';
 
 export { EVENTLOG_SCHEMA_VERSION };
 export * from './memory';
+export * from './automemory';
 export * from './sqlite';
 export * from './checkpoint';
 export * from './resume';

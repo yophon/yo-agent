@@ -4,6 +4,7 @@ import type {
   ApprovalDecision,
   ApprovalSuggestion,
   EventEnvelope,
+  HandoffSummary,
   Id,
   McpServerStatus,
   McpServerStatusInfo,
@@ -482,19 +483,36 @@ export class AgentKernel implements Kernel {
   private async maybeCompact(s: SessionState, turnId: Id): Promise<void> {
     s.stepsSinceCompact++;
     const minSteps = this.d.minStepsBetweenCompact ?? 1;
+    // min-rounds guard：刚 compact 完（stepsSinceCompact 已归 0）不立即再压。每次 compact 重写消息窗口前缀 →
+    // 击穿 prompt cache（整窗 re-prefill 成本高，§15.4），故两次 compact 至少间隔 minSteps 步，摊薄失效成本。
     if (s.stepsSinceCompact < minSteps) return;
     const usableTokens = this.d.usableContextTokens ?? 200_000;
     const before = estimateMessagesTokens(s.messages);
     if (!this.d.condenser.shouldCompact({ usedTokens: before, usableTokens })) return;
 
-    const condensed = await this.d.condenser.condense(s.messages);
+    // 结构化交接（3D）：condense 实际压缩时经 onHandoff 回传四节交接 + 保真标识符集，落 ContextCompacted。
+    let handoffSummary: HandoffSummary | undefined;
+    let preservedIdentifiers: string[] | undefined;
+    const condensed = await this.d.condenser.condense(s.messages, {
+      onHandoff: (h, ids) => {
+        handoffSummary = h;
+        preservedIdentifiers = ids.length > 0 ? ids : undefined;
+      },
+    });
     if (condensed === s.messages || condensed.length >= s.messages.length) return; // 没压成，不发事件
     s.messages = condensed;
     const after = estimateMessagesTokens(condensed);
     const toCursor = s.headCursor; // ContextCompacted 自身分配的 cursor 在 toCursor 之后
     await this.emit(
       s,
-      { kind: 'ContextCompacted', fromCursor: s.lastCompactCursor, toCursor, tokensSaved: Math.max(0, before - after) },
+      {
+        kind: 'ContextCompacted',
+        fromCursor: s.lastCompactCursor,
+        toCursor,
+        tokensSaved: Math.max(0, before - after),
+        ...(handoffSummary ? { handoffSummary } : {}),
+        ...(preservedIdentifiers ? { preservedIdentifiers } : {}),
+      },
       turnId,
     );
     s.lastCompactCursor = s.headCursor;

@@ -10,9 +10,24 @@
  * Provider：ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY（OPENAI_MODE=responses，YO_TOOL_SHIM=1 双轨）；
  * 否则 FakeProvider 演示。YO_DB=路径 → SQLite 持久化。YO_COMPACT=1 → 启用 Condenser。自动加载 cwd 链上 yo.md/AGENTS.md。
  */
-import { AgentKernel, HistoryLoopBreaker, loadConventionFiles } from '@yo-agent/kernel';
+import {
+  AgentKernel,
+  HistoryLoopBreaker,
+  appendMemoryLine,
+  findWorkspaceRoot,
+  loadConventionFiles,
+  memoryKeyFor,
+  parseRememberDirective,
+} from '@yo-agent/kernel';
 import type { Kernel } from '@yo-agent/kernel';
-import { MemoryEventStore, ShadowGitCheckpointer, SqliteEventStore } from '@yo-agent/store';
+import {
+  InMemoryMemoryStore,
+  MemoryEventStore,
+  ShadowGitCheckpointer,
+  SqliteEventStore,
+  SqliteMemoryStore,
+} from '@yo-agent/store';
+import type { MemoryStore } from '@yo-agent/store';
 import type { EventStore } from '@yo-agent/store';
 import { InMemoryToolRegistry, builtinTools } from '@yo-agent/tools';
 import { ModelCatalog } from '@yo-agent/provider';
@@ -263,7 +278,25 @@ async function main(): Promise<void> {
     console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server]');
     process.exit(2);
   }
-  const system = (await loadConventionFiles(cwd)) || undefined;
+  const workspaceRoot = findWorkspaceRoot(cwd);
+
+  // 手动记忆主路（3E）：`#remember <文本>` 落盘 MEMORY.md + 写结构化 MemoryStore，不耗 LLM 轮次。
+  const remember = parseRememberDirective(prompt);
+  if (remember) {
+    const line = await appendMemoryLine(workspaceRoot, remember.content);
+    const memStore: MemoryStore = process.env.YO_DB ? SqliteMemoryStore.open(process.env.YO_DB) : new InMemoryMemoryStore();
+    await memStore.writeMemory({
+      workspacePath: workspaceRoot,
+      key: memoryKeyFor(remember.content),
+      content: remember.content,
+      updatedAt: Date.now(),
+      source: 'remember',
+    });
+    console.error(`[记忆] 已写入 ${workspaceRoot}/MEMORY.md：${line}`);
+    return;
+  }
+
+  const system = (await loadConventionFiles(cwd, { workspaceRoot })) || undefined;
   const { kernel, model, demo, mcpHost } = buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');

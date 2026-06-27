@@ -425,6 +425,36 @@
             "tokensSaved": {
               "type": "integer",
               "minimum": 0
+            },
+            "handoffSummary": {
+              "type": "object",
+              "properties": {
+                "goal": {
+                  "type": "string"
+                },
+                "whatHappened": {
+                  "type": "string"
+                },
+                "currentState": {
+                  "type": "string"
+                },
+                "nextSteps": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "goal",
+                "whatHappened",
+                "currentState",
+                "nextSteps"
+              ],
+              "additionalProperties": false
+            },
+            "preservedIdentifiers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "required": [

@@ -22,6 +22,33 @@ describe('AgentEvent sealed union', () => {
     expect(AgentEventSchema.safeParse({ kind: 'McpServerStatus', server: 'fs', status: 'nope' }).success).toBe(false);
   });
 
+  it('ContextCompacted 兼容旧三字段，并接受 3D 结构化 handoffSummary/preservedIdentifiers', () => {
+    // 旧事件（无新字段）仍合法——向后兼容。
+    expect(
+      AgentEventSchema.safeParse({ kind: 'ContextCompacted', fromCursor: 1, toCursor: 5, tokensSaved: 100 }).success,
+    ).toBe(true);
+    // 带结构化交接的新事件。
+    const r = AgentEventSchema.safeParse({
+      kind: 'ContextCompacted',
+      fromCursor: 1,
+      toCursor: 5,
+      tokensSaved: 100,
+      handoffSummary: { goal: 'G', whatHappened: 'H', currentState: 'C', nextSteps: 'N' },
+      preservedIdentifiers: ['uuid-1', 'path/a.ts'],
+    });
+    expect(r.success).toBe(true);
+    // handoffSummary 缺节 → 拒绝（四节必填）。
+    expect(
+      AgentEventSchema.safeParse({
+        kind: 'ContextCompacted',
+        fromCursor: 1,
+        toCursor: 5,
+        tokensSaved: 100,
+        handoffSummary: { goal: 'G' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('校验合法 SessionStarted 信封', () => {
     const env = {
       sessionId: 'sess_1',

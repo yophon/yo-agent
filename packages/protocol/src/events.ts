@@ -28,6 +28,23 @@ export const PlanStepSchema = z.object({
 });
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 
+/**
+ * 结构化交接摘要（3D / DESIGN §5.1）：把上下文压缩的中段历史压成四节可机读交接，
+ * 随 ContextCompacted 落库——resume 后可读回结构化交接、可审计。便宜模型产出四节文本，
+ * Condenser 确定性解析为本结构。标识符保真（preservedIdentifiers）由机制 diff 校验另行承载。
+ */
+export const HandoffSummarySchema = z.object({
+  /** ## 目标 */
+  goal: z.string(),
+  /** ## 已发生 */
+  whatHappened: z.string(),
+  /** ## 当前状态 */
+  currentState: z.string(),
+  /** ## 下一步 */
+  nextSteps: z.string(),
+});
+export type HandoffSummary = z.infer<typeof HandoffSummarySchema>;
+
 export const ApprovalSuggestionSchema = z.object({
   decision: ApprovalDecisionSchema,
   label: z.string().optional(),
@@ -154,6 +171,10 @@ export const AgentEventSchema = z.discriminatedUnion('kind', [
     fromCursor: CursorSchema,
     toCursor: CursorSchema,
     tokensSaved: z.number().int().nonnegative(),
+    /** 结构化交接摘要（3D）：四节可机读交接，resume 后可读回。可选——NoopCondenser/旧事件无此字段。 */
+    handoffSummary: HandoffSummarySchema.optional(),
+    /** 机制 diff 校验后逐字保真的不透明标识符集合（3D）：UUID/path/hash/URL/error-code。 */
+    preservedIdentifiers: z.array(z.string()).optional(),
   }),
   z.object({
     kind: z.literal('ApiRetry'),
