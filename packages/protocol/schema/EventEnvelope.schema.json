@@ -348,6 +348,9 @@
                 "requestId": {
                   "$ref": "#/definitions/EventEnvelope/properties/sessionId"
                 },
+                "toolCallId": {
+                  "$ref": "#/definitions/EventEnvelope/properties/sessionId"
+                },
                 "tool": {
                   "type": "string"
                 },

@@ -329,7 +329,25 @@ Phase 3 有两条字面退出标准（DESIGN §13）：
 - ② **被 Zed/JetBrains 经 ACP 接管跑通编程对话**：3F AcpSurface → **`@zed-industries/agent-client-protocol` client 离线对驱跑通含审批+fs 写入的一轮编程对话**（真实 IDE 人工验收）。
 - 上下文/记忆打磨：3D 结构化 Handoff + 标识符保真、3E workspace 隔离 auto-memory，均离线单测覆盖。
 
-**验证门**：`pnpm run check` —— typecheck 0 错误 + JSON Schema 全量 gen + 测试在 Phase 2 的 145 基线上**只增不减**全绿；每片末跑全量回归。**对抗式审查节奏（ADR-14）**：3B/3C（接外部连接，高危）已逐片审查；3D/3E（纯本地上下文打磨）按新节奏只做实现+单测，与 3F/3G 一并在 **Phase 3 整体收口**时做一次大规模对抗式审查。
+**验证门**：`pnpm run check` —— typecheck 0 错误 + JSON Schema 全量 gen + 测试在 Phase 2 的 145 基线上**只增不减**全绿；每片末跑全量回归。**对抗式审查节奏（ADR-14）**：3B/3C（接外部连接，高危）已逐片审查；3D/3E/3F/3G 在 **Phase 3 整体收口**做了一次大规模对抗式审查（见下）。**收口验证门：307 测试（37 文件，1 真机冒烟门控跳过）全绿。**
+
+---
+
+## Phase 3 整体收口对抗式审查（ADR-14，覆盖 3D-3G + 跨片接缝）
+
+**规模**：6 维 finder（3D/3E/3F-并发/3F-协议/3G-安全/3G-host）→ 每发现 3 方对抗式复核（correctness/security/skeptic，≥2/3 票确认）→ 完备性批判（跨片接缝）→ 综合。**85 agents**；25 候选 → **23 确认（22 + 完备性 1）+ 3 驳回**，全部修复并补回归测试。
+
+**HIGH（4，已修）**：
+- **H1 标识符保真校验对象错配**（condenser）：`missing`/回填以原始 `summaryText` 为基准，但进窗文本是 `parseHandoffSections→renderHandoff` 子集（前言/未映射小节/同键标题被丢/覆盖），模型已保留的标识符仍可静默丢失且 `preservedIdentifiers` 虚报全量。→ 校验改以最终 `finalText` 为基准；parse 把前言+未映射小节并入 whatHappened、同键累加拼接；`preserved` 取 finalText 实际集。
+- **H2 ACP 重叠 prompt 覆盖 pending**：同 session 第二个 prompt 覆盖前者 `{resolve,reject}` → 前一个永不 settle。→ `pending.has` 即拒（invalidRequest）。
+- **H3 fs-guard symlink 逃逸**：`path.resolve`（非 realpath）前缀校验，workspace 内软链可越界读写。→ 改 `realpathSync`（含最近存在父目录解析）+ 会话 root 锚定。
+- **H4 sampling 白嫖 Provider**：`rateLimiter` 可选 fail-open、按次非按量、丢弃请求 `maxTokens`、计费仅输出且异常不记。→ rateLimiter 必填、`maxTokens` 钳到硬上限、`onUsage` 计输入+输出且 finally 补记。
+
+**MEDIUM（6，已修）**：M1 @import 无字节预算指数级放大 DoS → 共享字节预算 + 截断占位；M2 loadSession 重放与 live 共享单调游标丢历史 → 重放期缓冲 live 后补放；M3 `PROTECTED_PATH_RE` 漏 `.env.local/.env.*` → 正则补变体；M4 审批 `requestId` ≠ 工具调用 id 致 ACP UI 裂成两条 → `ApprovalRequested` 增 `toolCallId` 字段、ACP 用其关联 + requestPermission 经 sendChain 保序；M5 fs 反向能力未按 `clientCapabilities.fs` 门控 → 入口校验；M6 OAuth `client.json` 0644 + 仅创建时生效的权限 → 统一 `writeSecret`（O_EXCL+0600）+ 目录 0700。
+
+**LOW（9）**：L1 ERRCODE 正则收紧、L2 裸文件名补抓、L3 safeTruncateBytes 代理对边界、L4 listMemory 内存/SQLite 字节序一致、L5 sentApprovals 回收、L6 blocksToText 占位不丢输入、L8 HTTP URL scheme 校验、L9 mcpExecutor falsy 拒因显式标志——均已修。**L7（`assertOAuthTransportCompatible` 为死代码，生产未接线）记 Phase N**：http/ws+OAuth 尚未接入 mcp.json，待接入时在连接入口强制调用（当前无实际暴露）。
+
+**驳回（3）**：经 3 方复核未达 2 票或无法在代码中证实。
 
 ---
 

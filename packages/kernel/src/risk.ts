@@ -3,7 +3,7 @@ import type { ToolDescriptor } from '@yo-agent/tools';
 
 /** 保护路径（§15.7 Protected Paths 最小子集）：命中 → 升 high。 */
 const PROTECTED_PATH_RE =
-  /(^|[/\\])\.(git|ssh|env)([/\\]|$)|\.(pem|key)$|(^|[/\\])(id_rsa|id_ed25519|\.npmrc|\.aws|\.yo-agent)([/\\]|$)/i;
+  /(^|[/\\])\.(git|ssh)([/\\]|$)|(^|[/\\])\.env(\.[^/\\]+)?([/\\]|$)|\.(pem|key)$|(^|[/\\])(id_rsa|id_ed25519|\.npmrc|\.aws|\.yo-agent)([/\\]|$)/i;
 /** 危险命令模式：命中 → 升 high（rm 含短选项 -rf 与长选项 --recursive/--force，审查 RISK-05）。 */
 const DANGEROUS_CMD_RE =
   /\brm\s+(-[rf]+|--recursive|--force|--no-preserve-root)|\bmkfs\b|\bdd\s+if=|:\(\)\s*\{\s*:\s*\|\s*:|\bshutdown\b|\bchmod\s+-R\b|>\s*\/dev\/sd/i;

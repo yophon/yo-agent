@@ -235,6 +235,27 @@ describe('3D — 标识符保真机制（diff → 重试 → 回填）', () => {
     for (const id of ids) expect(captured!.preserved).toContain(id);
   });
 
+  it('模型把标识符放进前言/未映射小节（summaryText 含但 parse 丢）→ 最终消息仍逐字含（审查 H1）', async () => {
+    const uuid = '11111111-1111-1111-1111-111111111111';
+    // summarize 把 uuid 放在前言（## 目标 之前）+ 一个未映射小节 ## 错误，四节里不含 uuid。
+    const summarize = async () =>
+      `好的，交接如下，涉及 ${uuid}\n## 目标\nG\n## 已发生\nH\n## 当前状态\nC\n## 下一步\nN\n## 错误\n另有 ${uuid}`;
+    const c = new SummarizingCondenser({ summarize, keepFirst: 1, keepTail: 2 });
+    const msgs: CanonMessage[] = [
+      { role: 'system', content: 'S' },
+      { role: 'user', content: `任务涉及 ${uuid}` },
+      { role: 'assistant', content: `处理 ${uuid}` },
+      { role: 'user', content: 'more' },
+      { role: 'assistant', content: 'a2' },
+      { role: 'user', content: 'tail' },
+    ];
+    let preserved: string[] = [];
+    const out = await c.condense(msgs, { onHandoff: (_h, p) => (preserved = p) });
+    const summary = asText(out.find((m) => m.role === 'user' && asText(m.content).includes('结构化交接'))!.content);
+    expect(summary).toContain(uuid); // 前言/未映射小节被并入 whatHappened，最终消息逐字含
+    expect(preserved).toContain(uuid); // preserved 取 finalText 实际集，不虚报
+  });
+
   it('中段无标识符 → onHandoff 仍回传交接、preserved 为空', async () => {
     const summarize = async () => fourSection('无标识符的普通描述');
     const c = new SummarizingCondenser({ summarize, keepFirst: 1, keepTail: 2 });

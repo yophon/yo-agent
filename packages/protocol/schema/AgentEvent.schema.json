@@ -315,6 +315,9 @@
             "requestId": {
               "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
             },
+            "toolCallId": {
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+            },
             "tool": {
               "type": "string"
             },

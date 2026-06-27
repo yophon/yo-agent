@@ -85,24 +85,31 @@ export class SummarizingCondenser implements Condenser {
     // 标识符保真：压缩前抽取中段不透明标识符集合（UUID/path/hash/URL/error-code）。
     const wanted = extractIdentifiers(middleText);
 
+    // 关键（审查 H1）：missing/回填/preserved 一律以「最终进窗文本」为基准，而非原始模型输出 summaryText。
+    // 因为 parseHandoffSections→renderHandoff 会丢弃前言/未映射小节，模型已保留的标识符仍可能不进窗——
+    // 只对 summaryText 校验会漏判 → 审计字段撒谎 + 标识符静默丢失。
     let summaryText = await this.summarize(middleText, opts.hint);
-    let missing = wanted.filter((id) => !summaryText.includes(id));
+    let handoff = parseHandoffSections(summaryText);
+    let rendered = renderHandoff(handoff, middle.length, []);
+    let missing = wanted.filter((id) => !rendered.includes(id));
     // diff 检出缺失 → 对便宜模型单次（可配）重试，hint 明列必须逐字保留的标识符。
     for (let attempt = 0; attempt < this.maxIdentifierRetries && missing.length > 0; attempt++) {
       summaryText = await this.summarize(middleText, retryHint(opts.hint, missing));
-      missing = wanted.filter((id) => !summaryText.includes(id));
+      handoff = parseHandoffSections(summaryText);
+      rendered = renderHandoff(handoff, middle.length, []);
+      missing = wanted.filter((id) => !rendered.includes(id));
     }
 
-    const handoff = parseHandoffSections(summaryText);
     // 重试仍缺 → 确定性回填：把缺失标识符逐字注入交接（机制护栏，不靠 prompt 文字）。
     const backfilled = missing;
-    // 最终保真集 = 全部 wanted（模型保留的 + 回填的，渲染后逐字可见）。
-    const preserved = wanted;
+    const finalText = backfilled.length > 0 ? renderHandoff(handoff, middle.length, backfilled) : rendered;
+    // preservedIdentifiers = finalText 实际逐字包含的集合（不虚报；回填后通常即全部 wanted）。
+    const preserved = wanted.filter((id) => finalText.includes(id));
     opts.onHandoff?.(handoff, preserved);
 
     const summaryMsg: CanonMessage = {
       role: 'user',
-      content: renderHandoff(handoff, middle.length, backfilled),
+      content: finalText,
     };
     // 合并相邻 user 消息：摘要(user) 与 head 末/tail 首的 user 相邻会破坏 Anthropic 严格 user/assistant 交替（400）。
     return mergeAdjacentUser([...head, summaryMsg, ...tail]);
@@ -158,11 +165,23 @@ export function parseHandoffSections(text: string): HandoffSummary {
     h.whatHappened = text.trim();
     return h;
   }
+  // 前言（首标题前）+ 未映射小节 body 不丢弃，统一并入 whatHappened（审查 H1：避免标识符随被丢内容流失）。
+  const extra: string[] = [];
+  const preamble = text.slice(0, headers[0]!.headerStart).trim();
+  if (preamble) extra.push(preamble);
   for (let i = 0; i < headers.length; i++) {
     const cur = headers[i]!;
     const bodyEnd = i + 1 < headers.length ? headers[i + 1]!.headerStart : text.length;
-    if (cur.key) h[cur.key] = text.slice(cur.bodyStart, bodyEnd).trim();
+    const body = text.slice(cur.bodyStart, bodyEnd).trim();
+    if (!body) continue;
+    if (cur.key) {
+      // 同键多标题累加拼接（审查 #2：后者不覆盖前者）。
+      h[cur.key] = h[cur.key] ? `${h[cur.key]}\n\n${body}` : body;
+    } else {
+      extra.push(body);
+    }
   }
+  if (extra.length > 0) h.whatHappened = h.whatHappened ? `${h.whatHappened}\n\n${extra.join('\n\n')}` : extra.join('\n\n');
   if (!h.goal && !h.whatHappened && !h.currentState && !h.nextSteps) h.whatHappened = text.trim();
   return h;
 }
@@ -170,8 +189,11 @@ export function parseHandoffSections(text: string): HandoffSummary {
 const URL_RE = /https?:\/\/[^\s)<>"'`]+/gi;
 const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
 const PATH_RE = /(?:\.{0,2}\/)?(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g;
+// 带已知扩展名的裸文件名（无目录前缀，如 config.json/schema.sql）——PATH_RE 要求 ≥1 斜杠会漏（审查 L2）。
+const BARE_FILE_RE = /\b[A-Za-z0-9_.-]+\.(?:json|ts|tsx|js|jsx|mjs|cjs|py|go|rs|sql|ya?ml|toml|lock|md|sh|env|txt|css|html?)\b/gi;
 const HASH_RE = /\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b/g;
-const ERRCODE_RE = /\b[A-Z][A-Z0-9]*[0-9][A-Z0-9]*\b/g;
+// 错误码：1-2 个大写字母 + ≥3 位数字（TS2304/E404），收紧以排除 S3/HTTP2/UTF8/SHA256/MD5 等散文缩写（审查 L1）。
+const ERRCODE_RE = /\b[A-Z]{1,2}\d{3,}\b/g;
 const ERRNO_RE = /\bE[A-Z]{2,}\b/g;
 
 /** 路径过滤：剔除 "and/or" 一类散文误命中——要求含扩展名 `.` 或 ≥2 分隔符或绝对/相对前缀。 */
@@ -201,6 +223,7 @@ export function extractIdentifiers(text: string): string[] {
   rest = consume(rest, PATH_RE, (s) => {
     if (isPathish(s)) out.add(s);
   });
+  rest = consume(rest, BARE_FILE_RE, (s) => out.add(s)); // 无斜杠的裸文件名（PATH 之后，hash 之前）
   rest = consume(rest, HASH_RE, (s) => out.add(s));
   for (const mm of rest.matchAll(ERRCODE_RE)) out.add(mm[0]);
   for (const mm of rest.matchAll(ERRNO_RE)) out.add(mm[0]);

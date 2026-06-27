@@ -105,8 +105,11 @@ export function blocksToText(blocks: ContentBlock[]): string {
       const r = b.resource as { text?: string; uri?: string };
       if (typeof r.text === 'string') parts.push(r.text);
       else if (typeof r.uri === 'string') parts.push(`@${r.uri}`);
+      else parts.push('[resource]');
     }
-    // image/audio：MVP 不声明能力，忽略（见 §已知限制）。
+    // image/audio：MVP 不声明能力；不静默丢，产占位标注（审查 L6）。
+    else if (b.type === 'image') parts.push('[image]');
+    else if (b.type === 'audio') parts.push('[audio]');
   }
   return parts.join('\n');
 }

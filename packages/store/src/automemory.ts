@@ -51,7 +51,9 @@ export class InMemoryMemoryStore implements MemoryStore {
   async listMemory(workspacePath: string): Promise<MemoryRecord[]> {
     return [...this.map.values()]
       .filter((r) => r.workspacePath === workspacePath)
-      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+      // 用 UTF-8 字节序比较，与 SqliteMemoryStore 的 ORDER BY key（BINARY 整理）一致——
+      // 避免含 astral 字符的键在两实现间排序发散（审查 L4）。
+      .sort((a, b) => Buffer.compare(Buffer.from(a.key, 'utf8'), Buffer.from(b.key, 'utf8')))
       .map((r) => ({ ...r }));
   }
 

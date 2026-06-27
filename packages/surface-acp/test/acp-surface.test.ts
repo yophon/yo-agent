@@ -131,6 +131,38 @@ describe('AcpSurface（ACP client 离线对驱，退出标准②）', () => {
     expect(calls).toEqual([]);
   });
 
+  it('同 session 重叠 prompt → 第二个被拒，不覆盖第一个（审查 H2）', async () => {
+    const calls: unknown[] = [];
+    const h = await harness({ tool: echoTool('always', calls), perm: () => new Promise<RequestPermissionResponse>(() => {}) });
+    h.provider.script(toolCallTurn('echo', 'tu1', { m: 1 }));
+    await h.conn.initialize({ protocolVersion: 1 });
+    const { sessionId } = await h.conn.newSession({ cwd: '/work', mcpServers: [] });
+    const p1 = h.conn.prompt({ ...userText('go'), sessionId }); // 挂起等审批
+    await h.permReceivedP;
+    await expect(h.conn.prompt({ ...userText('go2'), sessionId })).rejects.toThrow(); // 第二个被拒
+    await h.conn.cancel({ sessionId });
+    const r1 = await p1;
+    expect(r1.stopReason).toBe('cancelled'); // 第一个仍正常以 cancelled 收口（未被覆盖丢失）
+  });
+
+  it('requestPermission.toolCall.toolCallId = 工具调用 id（审查 M4 关联）', async () => {
+    const calls: unknown[] = [];
+    let capturedId: string | null = null;
+    const h = await harness({
+      tool: echoTool('always', calls),
+      perm: async (req) => {
+        capturedId = req.toolCall.toolCallId;
+        return { outcome: { outcome: 'selected', optionId: 'allow_once' } };
+      },
+    });
+    h.provider.script(toolCallTurn('echo', 'tu1', { m: 1 }));
+    h.provider.script(textTurn('done'));
+    await h.conn.initialize({ protocolVersion: 1 });
+    const { sessionId } = await h.conn.newSession({ cwd: '/work', mcpServers: [] });
+    await h.conn.prompt({ ...userText('go'), sessionId });
+    expect(capturedId).toBe('tu1'); // = ToolCallStarted.id，非随机 requestId
+  });
+
   it('fs/write_text_file 反向能力：正常路径写入；越界/保护路径被拦', async () => {
     const h = await harness();
     await h.conn.initialize({ protocolVersion: 1, clientCapabilities: { fs: { writeTextFile: true } } });

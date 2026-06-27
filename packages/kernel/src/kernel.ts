@@ -543,7 +543,7 @@ export class AgentKernel implements Kernel {
 
   private async requestApproval(
     s: SessionState,
-    _toolCallId: string,
+    toolCallId: string,
     tool: string,
     input: unknown,
     risk: RiskLevel,
@@ -570,7 +570,7 @@ export class AgentKernel implements Kernel {
           }, ms);
         }
       });
-      await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk, suggestions }, turnId);
+      await this.emit(s, { kind: 'ApprovalRequested', requestId, toolCallId, tool, input, risk, suggestions }, turnId);
       try {
         return await decided;
       } finally {
@@ -580,7 +580,7 @@ export class AgentKernel implements Kernel {
       }
     }
     // gate / 非交互：emit 后由 gate 决定 / headless 默认拒绝。
-    await this.emit(s, { kind: 'ApprovalRequested', requestId, tool, input, risk, suggestions }, turnId);
+    await this.emit(s, { kind: 'ApprovalRequested', requestId, toolCallId, tool, input, risk, suggestions }, turnId);
     if (this.d.approvalGate) {
       return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk });
     }

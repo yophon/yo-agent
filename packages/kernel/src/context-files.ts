@@ -85,6 +85,13 @@ export function capMemoryIndex(text: string): string {
  * - visited（realpath 去重）防 A↔B 循环；depth 上限兜底。
  * 越界/循环/超深/缺失 → 注入可观测占位标记，**绝不内联越界内容**。
  */
+/** @import 展开的总字符预算（防兄弟分支 fanout^depth 指数级放大 / 单个大文件无限内联 → OOM DoS，审查 M1）。 */
+const DEFAULT_IMPORT_BUDGET = 256 * 1024;
+
+interface ImportBudget {
+  remaining: number;
+}
+
 export async function expandImports(
   text: string,
   baseDir: string,
@@ -97,7 +104,7 @@ export async function expandImports(
   } catch {
     return text; // workspaceRoot 不存在 → 不展开（fail-closed）
   }
-  return resolveImports(text, baseDir, wsReal, new Set<string>(), 0, maxDepth);
+  return resolveImports(text, baseDir, wsReal, new Set<string>(), 0, maxDepth, { remaining: DEFAULT_IMPORT_BUDGET });
 }
 
 async function resolveImports(
@@ -107,6 +114,7 @@ async function resolveImports(
   visited: Set<string>,
   depth: number,
   maxDepth: number,
+  budget: ImportBudget,
 ): Promise<string> {
   // matchAll 预先收集（每层独立 regex）——避免递归共享 /g lastIndex 互相污染。
   const matches = [...text.matchAll(/(^|[\s(])@([^\s)]+)/g)];
@@ -115,7 +123,7 @@ async function resolveImports(
   let last = 0;
   for (const m of matches) {
     out += text.slice(last, m.index) + m[1]; // 保留前导字符（行首/空白/括号）
-    out += await resolveOne(m[2]!, baseDir, wsReal, visited, depth, maxDepth);
+    out += await resolveOne(m[2]!, baseDir, wsReal, visited, depth, maxDepth, budget);
     last = m.index + m[0].length;
   }
   out += text.slice(last);
@@ -129,8 +137,10 @@ async function resolveOne(
   visited: Set<string>,
   depth: number,
   maxDepth: number,
+  budget: ImportBudget,
 ): Promise<string> {
   if (depth >= maxDepth) return `[@import 跳过：超过最大深度 ${maxDepth}]`;
+  if (budget.remaining <= 0) return '[@import 截断：超出展开预算]';
   let real: string;
   try {
     real = await realpath(resolve(baseDir, rel));
@@ -140,11 +150,18 @@ async function resolveOne(
   // 逃逸防护：realpath 后须 === wsReal 或在其子树内。
   if (real !== wsReal && !real.startsWith(wsReal + sep)) return `[@import 拒绝：越界 ${rel}]`;
   if (visited.has(real)) return `[@import 跳过：循环 ${rel}]`;
-  const content = await tryRead(real);
+  let content = await tryRead(real);
   if (content === null) return `[@import 空：${rel}]`;
+  // 预算扣减（防 fanout 放大与单文件无限内联）：超预算则截断本文件内联量并停止后续展开。
+  let truncatedNote = '';
+  if (content.length > budget.remaining) {
+    content = content.slice(0, budget.remaining);
+    truncatedNote = '\n[@import 截断：超出展开预算]';
+  }
+  budget.remaining -= content.length;
   const next = new Set(visited);
   next.add(real);
-  return resolveImports(content, dirname(real), wsReal, next, depth + 1, maxDepth);
+  return (await resolveImports(content, dirname(real), wsReal, next, depth + 1, maxDepth, budget)) + truncatedNote;
 }
 
 /**
@@ -167,6 +184,11 @@ export function safeTruncateBytes(text: string, maxBytes: number): string {
   const slice = text.slice(0, cut);
   const ws = Math.max(slice.lastIndexOf('\n'), slice.lastIndexOf(' '));
   if (ws > cut * 0.5) cut = ws;
+  // 代理对边界保护（审查 L3）：若 cut 落在高代理之后（其低代理在 cut 之外）→ 回退 1，避免产生孤立代理项。
+  if (cut > 0) {
+    const c = text.charCodeAt(cut - 1);
+    if (c >= 0xd800 && c <= 0xdbff) cut -= 1;
+  }
   return text.slice(0, cut);
 }
 

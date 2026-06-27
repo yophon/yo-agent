@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { blocksToText, eventToSessionUpdate, mapStopReason } from '@yo-agent/surface-acp';
 import { ensureFsPathAllowed, FsGuardError } from '@yo-agent/surface-acp';
 import type { AgentEvent, StopReason } from '@yo-agent/protocol';
@@ -88,8 +91,8 @@ describe('3F — fs 守卫（Protected Paths + 逃逸）', () => {
   it('../ 逃逸拒', () => {
     expect(() => ensureFsPathAllowed('/work/../secret', '/work')).toThrow(FsGuardError);
   });
-  it('保护路径拒（reason=protected）：.env / .git / .ssh / *.key', () => {
-    for (const p of ['/work/.env', '/work/.git/config', '/work/.ssh/id', '/work/deploy.key']) {
+  it('保护路径拒（reason=protected）：.env/.env.local/.env.production/.git/.ssh/*.key（审查 M3 含 .env.* 变体）', () => {
+    for (const p of ['/work/.env', '/work/.env.local', '/work/.env.production', '/work/.git/config', '/work/.ssh/id', '/work/deploy.key']) {
       try {
         ensureFsPathAllowed(p, '/work');
         throw new Error(`should throw for ${p}`);
@@ -97,6 +100,27 @@ describe('3F — fs 守卫（Protected Paths + 逃逸）', () => {
         expect(e).toBeInstanceOf(FsGuardError);
         expect((e as FsGuardError).reason).toBe('protected');
       }
+    }
+  });
+});
+
+describe('3F — fs 守卫 symlink 逃逸（审查 H3）', () => {
+  it('workspace 内软链指向外部 → 越界拒；内部真实文件放行', async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'yo-fsg-')));
+    try {
+      const ws = join(base, 'ws');
+      const outside = join(base, 'outside');
+      await mkdir(ws, { recursive: true });
+      await mkdir(outside, { recursive: true });
+      await writeFile(join(outside, 'secret.txt'), 'SECRET');
+      await symlink(outside, join(ws, 'link'), 'dir'); // ws/link → ../outside
+      // 经软链访问外部文件 → realpath 解析后越界拒（path.resolve 不跟随 symlink 会漏放）。
+      expect(() => ensureFsPathAllowed(join(ws, 'link', 'secret.txt'), ws)).toThrow(FsGuardError);
+      // 内部真实文件 → 放行。
+      await writeFile(join(ws, 'real.txt'), 'ok');
+      expect(() => ensureFsPathAllowed(join(ws, 'real.txt'), ws)).not.toThrow();
+    } finally {
+      await rm(base, { recursive: true, force: true });
     }
   });
 });

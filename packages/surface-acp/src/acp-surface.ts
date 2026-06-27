@@ -90,7 +90,7 @@ export class AcpSurface implements Surface {
   private async newSession(p: NewSessionRequest): Promise<NewSessionResponse> {
     const sessionId = await this.kernel.startSession({ cwd: p.cwd });
     this.cwds.set(sessionId, p.cwd);
-    this.attach(sessionId);
+    await this.attach(sessionId);
     return { sessionId };
   }
 
@@ -98,14 +98,20 @@ export class AcpSurface implements Surface {
     const ok = await this.kernel.resumeSession(p.sessionId);
     if (!ok) throw RequestError.resourceNotFound(p.sessionId);
     this.cwds.set(p.sessionId, p.cwd);
-    this.attach(p.sessionId);
-    // 重放历史 → session/update（cursor 去重，与 live 订阅幂等）。loadSession 期间无并发 turn（client 先 await）。
-    for await (const env of this.kernel.events.read(p.sessionId)) this.onEvent(env);
+    // 重放历史 → session/update；重放期间到达的 live 事件先缓冲、重放完再补放（审查 M2：避免 live 抢先推高
+    // 单调 lastCursor 把未重放历史吞掉）。cursor 去重保证补放不重复。
+    await this.attach(p.sessionId, async () => {
+      for await (const env of this.kernel.events.read(p.sessionId)) this.onEvent(env);
+    });
     await this.sendChain; // 历史 update 全部发完再返回
     return {};
   }
 
   private async prompt(p: PromptRequest): Promise<PromptResponse> {
+    // 同 session 重叠 prompt 会覆盖 pending → 前一个永不 settle（审查 H2）。ACP 每 session 串行一个 prompt，直接拒绝。
+    if (this.pending.has(p.sessionId)) {
+      throw RequestError.invalidRequest({ reason: `session ${p.sessionId} 已有进行中的 prompt` });
+    }
     const text = blocksToText(p.prompt);
     const idemKey = `acp-${p.sessionId}-${++this.promptSeq}`;
     const result = new Promise<AcpStopReason>((resolve, reject) => {
@@ -127,15 +133,17 @@ export class AcpSurface implements Surface {
 
   // ───────────────────────── fs/* 反向能力（Protected Paths + 逃逸守卫）─────────────────────────
 
-  /** 经 client 读文件（ACP fs/read_text_file）。越界/保护路径被拦。 */
+  /** 经 client 读文件（ACP fs/read_text_file）。需 client 声明 fs.readTextFile 能力；越界/保护路径被拦。 */
   async readTextFile(sessionId: Id, path: string, opts?: { line?: number; limit?: number }): Promise<string> {
+    if (!this.clientCaps.fs?.readTextFile) throw RequestError.invalidRequest({ reason: 'client 未声明 fs.readTextFile 能力' });
     this.guardFs(sessionId, path);
     const res = await this.conn.readTextFile({ sessionId, path, line: opts?.line ?? null, limit: opts?.limit ?? null });
     return res.content;
   }
 
-  /** 经 client 写文件（ACP fs/write_text_file）。越界/保护路径被拦。 */
+  /** 经 client 写文件（ACP fs/write_text_file）。需 client 声明 fs.writeTextFile 能力；越界/保护路径被拦。 */
   async writeTextFile(sessionId: Id, path: string, content: string): Promise<void> {
+    if (!this.clientCaps.fs?.writeTextFile) throw RequestError.invalidRequest({ reason: 'client 未声明 fs.writeTextFile 能力' });
     this.guardFs(sessionId, path);
     await this.conn.writeTextFile({ sessionId, path, content });
   }
@@ -153,11 +161,25 @@ export class AcpSurface implements Surface {
 
   // ───────────────────────── 事件回路 ─────────────────────────
 
-  private attach(sessionId: Id): void {
+  /**
+   * 订阅会话事件。可选 replay：先订阅（live 入缓冲）→ 跑 replay（历史经 onEvent）→ flush 缓冲的 live。
+   * 保证历史先于 live 处理、不与单调 lastCursor 竞争（审查 M2）。无 replay（newSession）则立即进入 flushing。
+   */
+  private async attach(sessionId: Id, replay?: () => Promise<void>): Promise<void> {
     this.detach(sessionId);
     this.lastCursor.set(sessionId, -1);
-    const unsub = this.kernel.subscribe(sessionId, null, (env) => this.onEvent(env));
+    const queue: EventEnvelope[] = [];
+    let flushing = !replay;
+    const unsub = this.kernel.subscribe(sessionId, null, (env) => {
+      if (flushing) this.onEvent(env);
+      else queue.push(env);
+    });
     this.subs.set(sessionId, unsub);
+    if (replay) {
+      await replay();
+      flushing = true;
+      for (const env of queue) this.onEvent(env); // cursor 去重跳过与历史重叠者
+    }
   }
 
   private detach(sessionId: Id): void {
@@ -226,13 +248,15 @@ export class AcpSurface implements Surface {
         : APPROVAL_DECISIONS.map((d) => ({ optionId: d, name: d, kind: d }));
 
     const toolCall: ToolCallUpdate = {
-      toolCallId: ev.requestId,
+      // 用关联的工具调用 id（审查 M4）：让 ACP client 把权限对话框挂到正确 tool_call 上，不裂成两条。
+      toolCallId: ev.toolCallId ?? ev.requestId,
       title: ev.tool,
       status: 'pending',
       rawInput: ev.input && typeof ev.input === 'object' && !Array.isArray(ev.input) ? (ev.input as Record<string, unknown>) : { value: ev.input },
     };
 
     try {
+      await this.sendChain; // 先把已排队的 update（如前序 agent_message_chunk）发出，再发权限请求，保序（审查 M4）
       const res = await this.conn.requestPermission({ sessionId, options, toolCall });
       const decision =
         res.outcome.outcome === 'selected' && isApprovalDecision(res.outcome.optionId)
@@ -242,6 +266,8 @@ export class AcpSurface implements Surface {
     } catch {
       // 反向请求失败（断连/取消）→ 默认拒，避免 turn 永久挂起。
       if (this.kernel.isApprovalPending(ev.requestId)) this.kernel.decideApproval(ev.requestId, 'reject_once');
+    } finally {
+      this.sentApprovals.delete(ev.requestId); // 审批终结 → 回收去重标记，防长连接单调增长（审查 L5）
     }
   }
 }

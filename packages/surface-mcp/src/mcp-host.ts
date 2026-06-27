@@ -166,6 +166,7 @@ export function mcpExecutor(
         w?.();
       };
       let settled = false;
+      let failed = false; // 显式标志：勿用 `if (failure)`——falsy 拒因（reject(undefined/0/'')）会漏判（审查 L9）
       let result: Awaited<ReturnType<Client['callTool']>> | undefined;
       let failure: unknown;
       const callP = client
@@ -175,6 +176,7 @@ export function mcpExecutor(
             result = r;
           },
           (e) => {
+            failed = true;
             failure = e;
           },
         )
@@ -193,7 +195,7 @@ export function mcpExecutor(
           });
         }
         await callP; // 已 settle；仅为满足 lint（promise 已被消费）
-        if (failure) throw failure;
+        if (failed) throw failure ?? new Error(`MCP 工具 ${remoteName} 调用失败（无拒因）`);
         hooks?.onTransportOk?.(); // 收到响应（即便 isError）= 连接健康
       } catch (e) {
         // 失败归因（§15.3 熔断）：传输错 / 本地超时 / kernel 超时(reason.name==='TimeoutError') 均计入熔断（server 挂死或不可达）；

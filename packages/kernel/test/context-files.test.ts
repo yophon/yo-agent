@@ -172,6 +172,19 @@ describe('3E — @import 展开（expandImports）', () => {
       await rm(base, { recursive: true, force: true });
     }
   });
+
+  it('字节预算兜底：超大 @import 被截断、不无限内联（审查 M1 DoS）', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'yo-imp-'));
+    try {
+      // 写一个 > 256KB 预算的大文件，确保被截断标记。
+      await writeFile(join(base, 'huge.md'), 'X'.repeat(300 * 1024));
+      const out = await expandImports('@huge.md', base, base);
+      expect(out).toContain('超出展开预算');
+      expect(out.length).toBeLessThan(300 * 1024); // 未全量内联
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('3E — 截断安全（capMemoryIndex / safeTruncateBytes）', () => {

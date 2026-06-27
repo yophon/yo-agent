@@ -25,9 +25,13 @@ export interface HttpTransportOptions {
   reconnect?: boolean;
 }
 
-/** 构造 Streamable HTTP client transport（含重连退避 + 可选 OAuth）。 */
+/** 构造 Streamable HTTP client transport（含重连退避 + 可选 OAuth）。仅允许 http/https scheme（审查 L8）。 */
 export function createHttpClientTransport(url: string, opts: HttpTransportOptions = {}): Transport {
-  return new StreamableHTTPClientTransport(new URL(url), {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`MCP HTTP 传输仅支持 http/https，拒绝 scheme：${parsed.protocol}`);
+  }
+  return new StreamableHTTPClientTransport(parsed, {
     authProvider: opts.authProvider,
     reconnectionOptions: opts.reconnect === false ? undefined : DEFAULT_HTTP_RECONNECTION,
   });

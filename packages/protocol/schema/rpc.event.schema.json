@@ -348,6 +348,9 @@
                 "requestId": {
                   "$ref": "#/definitions/rpc.event/properties/sessionId"
                 },
+                "toolCallId": {
+                  "$ref": "#/definitions/rpc.event/properties/sessionId"
+                },
                 "tool": {
                   "type": "string"
                 },

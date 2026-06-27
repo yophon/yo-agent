@@ -150,6 +150,8 @@ export const AgentEventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ApprovalRequested'),
     requestId: IdSchema,
+    /** 关联的工具调用 id（= ToolCallStarted.id）：供 ACP 等 surface 把权限对话框挂到正确工具调用上（审查 M4）。 */
+    toolCallId: IdSchema.optional(),
     tool: z.string(),
     input: z.unknown(),
     risk: RiskLevelSchema,

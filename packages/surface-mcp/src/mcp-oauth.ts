@@ -7,7 +7,7 @@
  * headless 常驻进程无浏览器 → `redirectToAuthorization` **带外授权**：写授权 URL 到文件 + stderr 提示，
  * 不开浏览器、不阻塞首连（操作者带外完成后用 finishAuth 回灌 code）。
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type {
@@ -29,7 +29,7 @@ export interface FileOAuthOptions {
 
 export class FileOAuthClientProvider implements OAuthClientProvider {
   constructor(private readonly opts: FileOAuthOptions) {
-    mkdirSync(opts.dir, { recursive: true });
+    mkdirSync(opts.dir, { recursive: true, mode: 0o700 }); // 私有目录（审查 M6）
   }
 
   get redirectUrl(): string {
@@ -51,18 +51,19 @@ export class FileOAuthClientProvider implements OAuthClientProvider {
     return this.readJson<OAuthClientInformationFull>('client.json');
   }
   saveClientInformation(info: OAuthClientInformationFull): void {
-    this.writeJson('client.json', info);
+    // client.json 可能含 client_secret/registration_access_token（AS 下发）→ 同 token 一律 0600（审查 M6）。
+    this.writeSecret('client.json', JSON.stringify(info, null, 2));
   }
 
   tokens(): OAuthTokens | undefined {
     return this.readJson<OAuthTokens>('tokens.json');
   }
   saveTokens(tokens: OAuthTokens): void {
-    this.writeJson('tokens.json', tokens, 0o600); // 含 access/refresh token → 私有权限
+    this.writeSecret('tokens.json', JSON.stringify(tokens, null, 2)); // 含 access/refresh token
   }
 
   saveCodeVerifier(verifier: string): void {
-    writeFileSync(this.path('verifier.txt'), verifier, { mode: 0o600 });
+    this.writeSecret('verifier.txt', verifier);
   }
   codeVerifier(): string {
     const v = this.tryRead('verifier.txt');
@@ -90,8 +91,18 @@ export class FileOAuthClientProvider implements OAuthClientProvider {
       return undefined; // 损坏文件 fail-closed（视为未注册/未登录）
     }
   }
-  private writeJson(name: string, value: unknown, mode = 0o644): void {
-    writeFileSync(this.path(name), JSON.stringify(value, null, 2), { mode });
+  /**
+   * 写敏感文件：先删旧文件再以 O_EXCL（flag:'wx'）+ 0600 原子创建（审查 M6）——
+   * mode 仅在创建时生效，直接 writeFileSync 覆盖既有宽权限文件不会收紧权限；攻击者预置 0666 文件即可窃取。
+   */
+  private writeSecret(name: string, data: string): void {
+    const p = this.path(name);
+    try {
+      rmSync(p, { force: true });
+    } catch {
+      /* 不存在即可 */
+    }
+    writeFileSync(p, data, { mode: 0o600, flag: 'wx' });
   }
   private tryRead(name: string): string | null {
     try {

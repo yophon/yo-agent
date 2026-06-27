@@ -84,13 +84,38 @@ describe('3G — sampling handler（路由 Provider + 限流 + 计费）', () =>
     const provider = new FakeProvider();
     provider.script(textTurn('SAMPLED-REPLY'));
     let usage = 0;
-    const handler: SamplingHandler = createSamplingHandler({ provider, model: 'fake', onUsage: (i) => (usage = i.outputChars) });
+    const handler: SamplingHandler = createSamplingHandler({
+      provider,
+      model: 'fake',
+      rateLimiter: new RateLimiter({ maxPerWindow: 10, windowMs: 60_000 }),
+      onUsage: (i) => (usage = i.outputChars),
+    });
     const res = await handler({
       method: 'sampling/createMessage',
       params: { messages: [{ role: 'user', content: { type: 'text', text: 'hi' } }], maxTokens: 100 },
     });
     expect(res.content.type === 'text' && res.content.text).toBe('SAMPLED-REPLY');
     expect(usage).toBe('SAMPLED-REPLY'.length);
+  });
+
+  it('maxTokens 必经硬上限钳制 + 计输入/输出（审查 H4）', async () => {
+    const provider = new FakeProvider();
+    provider.script(textTurn('out'));
+    let info: { inputChars: number; outputChars: number } | null = null;
+    const handler = createSamplingHandler({
+      provider,
+      model: 'fake',
+      rateLimiter: new RateLimiter({ maxPerWindow: 10, windowMs: 60_000 }),
+      maxOutputTokens: 50,
+      onUsage: (i) => (info = i),
+    });
+    await handler({
+      method: 'sampling/createMessage',
+      params: { messages: [{ role: 'user', content: { type: 'text', text: 'hello' } }], maxTokens: 999999 },
+    });
+    expect(provider.seen[0]!.maxTokens).toBe(50); // 对端超大 maxTokens 被钳到 cap
+    expect(info!.inputChars).toBeGreaterThan(0); // 输入也计费
+    expect(info!.outputChars).toBe('out'.length);
   });
 
   it('限流触发 → 抛错', async () => {
