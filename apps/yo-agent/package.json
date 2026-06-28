@@ -10,6 +10,7 @@
   "dependencies": {
     "@yo-agent/auth": "workspace:*",
     "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/plugin-host": "workspace:*",
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",
     "@yo-agent/store": "workspace:*",

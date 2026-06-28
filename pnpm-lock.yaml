@@ -32,6 +32,9 @@ importers:
       '@yo-agent/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@yo-agent/plugin-host':
+        specifier: workspace:*
+        version: link:../../packages/plugin-host
       '@yo-agent/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -84,6 +87,18 @@ importers:
       '@yo-agent/store':
         specifier: workspace:*
         version: link:../store
+      '@yo-agent/tools':
+        specifier: workspace:*
+        version: link:../tools
+
+  packages/plugin-host:
+    dependencies:
+      '@yo-agent/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@yo-agent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@yo-agent/tools':
         specifier: workspace:*
         version: link:../tools

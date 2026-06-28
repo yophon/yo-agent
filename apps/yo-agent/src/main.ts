@@ -57,6 +57,7 @@ import {
   loadMcpServers,
   loadTrustedProjectServers,
 } from '@yo-agent/surface-mcp';
+import { DefaultPluginHost, loadPluginSpecs, workerTransportFactory } from '@yo-agent/plugin-host';
 import { PairingGate } from '@yo-agent/auth';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -161,6 +162,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   model: string;
   demo: boolean;
   mcpHost: McpHostManager;
+  pluginHost: DefaultPluginHost;
 }> {
   const { provider, model, demo } = selectProvider(opts.env, opts.prompt);
   const catalog = ModelCatalog.bundled();
@@ -191,6 +193,17 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     onStatus: (st) =>
       console.error(`[mcp] ${st.server} → ${st.status}${st.toolCount !== undefined ? `（${st.toolCount} 工具）` : ''}`),
   });
+  // 插件 host（4E / ADR-18）：第三方插件跑独立 Worker，工具/hook 经 IPC 隔离；崩溃不拖垮主进程、读不到 secret。
+  // 插件工具以 owner:'plugin'、approval 非 never 注册进同一 registry（经主审批流）；健康标志喂 kernel.toolFlags
+  //（崩溃/未就绪 → availability configFlag 撤下 → 工具消失，复用 3C 熔断接缝）。
+  const pluginSpecs = await loadPluginSpecs([join(home, '.yo-agent', 'plugins'), join(wsRoot, '.yo-agent', 'plugins')]);
+  const pluginHost = new DefaultPluginHost({
+    registry: tools,
+    transportFor: workerTransportFactory(pluginSpecs),
+    log: (m) => console.error(m),
+  });
+  // mcp + plugin 健康标志合并喂 availability（任一源熔断/崩溃 → 其工具从 resolveAvailable 消失）。
+  const allFlags = (): Set<string> => new Set([...mcpHost.flags(), ...pluginHost.flags()]);
   const interactive = opts.mode === 'tui' || opts.mode === 'rpc' || opts.mode === 'acp';
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
   const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
@@ -203,7 +216,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     condenser: buildCondenser(opts.env, provider, model),
     checkpointer: opts.env.YO_CHECKPOINT === '1' ? new ShadowGitCheckpointer({ dir: opts.cwd }) : undefined,
     approvalGate,
-    toolFlags: () => mcpHost.flags(),
+    toolFlags: () => allFlags(),
     mcpStatusSource: () => mcpHost.statusSnapshot(), // MCP 连接状态落 EventLog（3C 可观测）
     mcpEnsureConnected: () => mcpHost.ensureConnected(), // 每 turn 起点重连空闲断连的 server（懒加载收口）
     model,
@@ -225,14 +238,27 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       condenser: () => buildCondenser(opts.env, provider, model),
       usableContextTokens: usableContextTokens(model, catalog),
     }),
-    parentToolsOf: (sid) => tools.resolveAvailable({ sessionId: sid, cwd: opts.cwd, flags: new Set(mcpHost.flags()) }).map((d) => d.name),
+    parentToolsOf: (sid) => tools.resolveAvailable({ sessionId: sid, cwd: opts.cwd, flags: allFlags() }).map((d) => d.name),
     parentModeOf: (sid) => kernel.listSessions().find((s) => s.sessionId === sid)?.permissionMode ?? 'supervised',
     cwdOf: () => opts.cwd,
     defaultModel: model,
     recipeFor: (profile) => recipes.get(profile), // 4D：子 agent 画像（工具/权限/model/prompt 请求，仍经 deriveSubagentPolicy 收紧）
   });
   tools.register(makeSubagentSpawnTool(subagents));
-  return { kernel, model, demo, mcpHost };
+
+  // 插件 hook 跨进程兑现（4E）：聚合 Hooks 注册进 kernel HookBus 一次，按订阅 fan-out 经 IPC；
+  // 插件不可用/超时/崩溃绝不抛（PreToolUse 视为放行，不因挂掉的插件拒主循环工具）。
+  kernel.registerHook(pluginHost.hooks());
+  // 启动插件（各自握手 ready 后注册其工具）；best-effort：失败/崩溃只记日志、不阻断本机 agent。
+  if (pluginSpecs.length > 0) {
+    try {
+      const ok = await pluginHost.start(pluginSpecs);
+      if (ok.length > 0) console.error(`[plugin] 已加载 ${ok.length}/${pluginSpecs.length} 插件：${ok.join(', ')}`);
+    } catch (e) {
+      console.error(`[plugin] 启动异常（跳过）：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { kernel, model, demo, mcpHost, pluginHost };
 }
 
 /**
@@ -270,12 +296,14 @@ async function bootstrapMcpHost(mcpHost: McpHostManager, cwd: string, env: NodeJ
  * 进程退出前回收 MCP host 子进程（审查 lifecycle/wiring：常驻 rpc 与异常路径会泄漏 stdio 子 server）。
  * 覆盖 SIGINT/SIGTERM/EPIPE 三条退出路径——closeAll 逐个向 transport 发 SIGTERM 杀子进程。幂等。
  */
-function installShutdown(mcpHost: McpHostManager): void {
+function installShutdown(mcpHost: McpHostManager, pluginHost?: DefaultPluginHost): void {
   let closing = false;
   const shutdown = (code: number): void => {
     if (closing) return;
     closing = true;
-    void mcpHost.closeAll().finally(() => process.exit(code));
+    void Promise.allSettled([mcpHost.closeAll(), pluginHost?.closeAll() ?? Promise.resolve()]).finally(() =>
+      process.exit(code),
+    );
   };
   process.on('SIGINT', () => shutdown(130));
   process.on('SIGTERM', () => shutdown(143));
@@ -298,9 +326,9 @@ async function main(): Promise<void> {
   // ACP 模式：stdin/stdout 是 ACP（JSON-RPC over ndjson）协议通道，被 Zed/JetBrains 接管为编程 agent 后端。
   // 日志走 stderr，进程常驻。审批经 ACP 反向 requestPermission（interactiveApproval）。
   if (mode === 'acp') {
-    const { kernel, mcpHost } = await buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt: '', mode });
     await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
-    installShutdown(mcpHost);
+    installShutdown(mcpHost, pluginHost);
     setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
     const acpStream = ndJsonStream(
       Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
@@ -313,9 +341,9 @@ async function main(): Promise<void> {
 
   // RPC 模式：--listen <port> → WS server（带设备鉴权），否则 stdio JSONL。日志一律走 stderr，进程常驻。
   if (mode === 'rpc') {
-    const { kernel, mcpHost } = await buildKernel({ env, cwd, prompt: '', mode });
+    const { kernel, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt: '', mode });
     await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
-    installShutdown(mcpHost); // 常驻进程：SIGINT/SIGTERM/EPIPE 退出前回收子进程
+    installShutdown(mcpHost, pluginHost); // 常驻进程：SIGINT/SIGTERM/EPIPE 退出前回收子进程
     // 常驻进程才需空闲 TTL 清理：周期扫描断开长闲连接回收子进程（in-flight 守卫在 sweepIdle 内）。
     // unref 不阻止进程退出；进程退出时 installShutdown 已统一 closeAll。
     setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
@@ -347,8 +375,8 @@ async function main(): Promise<void> {
 
   // MCP server 模式：stdout 是 MCP 协议通道（日志走 stderr），常驻；被 Claude Code/Cursor 当节点调用。
   if (mode === 'mcp-server') {
-    const { kernel, mcpHost } = await buildKernel({ env, cwd, prompt: '', mode });
-    installShutdown(mcpHost); // 本模式不 bootstrap host（closeAll 为空 no-op），仍统一 EPIPE→受控退出
+    const { kernel, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt: '', mode });
+    installShutdown(mcpHost, pluginHost); // 本模式不 bootstrap host（closeAll 为空 no-op），仍统一 EPIPE→受控退出
     await new McpServerSurface({ transport: createStdioTransport() }).start(kernel as Kernel);
     await new Promise<void>(() => {}); // 永不 resolve：进程常驻
     return;
@@ -377,12 +405,12 @@ async function main(): Promise<void> {
   }
 
   const system = (await loadConventionFiles(cwd, { workspaceRoot })) || undefined;
-  const { kernel, model, demo, mcpHost } = await buildKernel({ env, cwd, prompt, mode });
+  const { kernel, model, demo, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');
   }
   await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（首轮前完成发现/注册）
-  installShutdown(mcpHost); // SIGINT/SIGTERM 中断也回收子进程
+  installShutdown(mcpHost, pluginHost); // SIGINT/SIGTERM 中断也回收子进程
 
   const sessionId = await kernel.startSession({ system, model });
 
@@ -398,7 +426,7 @@ async function main(): Promise<void> {
     kernel.subscribe(sessionId, null, (env2: EventEnvelope) => renderer.render(env2));
     await kernel.submitInput(sessionId, prompt, `cli-${Date.now()}`);
   } finally {
-    await mcpHost.closeAll(); // 一次性会话结束 / 异常 → 回收外部 server 子进程
+    await Promise.allSettled([mcpHost.closeAll(), pluginHost.closeAll()]); // 一次性会话结束 / 异常 → 回收外部 server 子进程 + 插件 Worker
   }
 }
 
