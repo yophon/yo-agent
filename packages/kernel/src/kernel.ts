@@ -13,7 +13,9 @@ import type {
   StopReason,
   Usage,
 } from '@yo-agent/protocol';
-import type { CanonMessage, ChatRequest, ContentBlock, Provider, ToolSpec } from '@yo-agent/provider';
+import type { CanonMessage, ChatRequest, ContentBlock, ErrorCategory, Provider, ToolSpec } from '@yo-agent/provider';
+import { decideFallback } from './fallback';
+import type { ProviderRoute } from './fallback';
 import type { ToolContext, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
 import { sanitizeMcpServerName } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
@@ -65,6 +67,14 @@ export interface AgentKernelDeps {
   hookBus?: HookBus;
   /** 追加进每个新会话 system 消息的固定后缀（4D：技能摘要常驻上下文，跨 surface 统一注入）。 */
   systemSuffix?: string;
+  /** 成本估算（4F）：emit UsageUpdate/TurnCompleted 前填 costUsd（含 cache 读写分价）。缺省不填。 */
+  costEstimator?: (model: string, usage: Usage) => number | undefined;
+  /**
+   * Provider fallback 链 / auth rotation（4F / DESIGN §4.4）：主路由（provider+model）的备选链。
+   * 主路由 = {provider, model}（本 deps 的 provider + model）；本字段是其后的备选（换 key / 换 provider）。
+   * 缺省空——行为同既有（provider 错误 → TurnFailed，无 fallback）。
+   */
+  fallbacks?: ProviderRoute[];
 }
 
 export interface StartSessionOpts {
@@ -105,6 +115,8 @@ interface SessionState {
   pendingSteering: string[];
   /** 当前在跑 turn 的 id（4C）：供后台子 agent 的离带 emit（SubagentResult）打 turn 标签；turn 外为 undefined。 */
   currentTurnId?: Id;
+  /** 当前 provider 路由下标（4F fallback 链）：0=主路由；fallback switch 后递增并**粘滞**（跨 turn 不回探死掉的主路由）。 */
+  routeIdx: number;
 }
 
 interface ToolCallAccum {
@@ -165,6 +177,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       lastMcpStatus: new Map(),
       emitChain: Promise.resolve(),
       pendingSteering: [],
+      routeIdx: 0,
     };
     this.sessions.set(id, s);
     await this.emit(s, {
@@ -211,6 +224,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       lastMcpStatus: new Map(),
       emitChain: Promise.resolve(),
       pendingSteering: [],
+      routeIdx: 0,
     };
     this.sessions.set(sessionId, s);
     return true;
@@ -352,6 +366,9 @@ export class AgentKernel implements Kernel, SubagentHost {
       const ex = this.d.tools.executor(d.name);
       if (ex) execMap.set(d.name, ex);
     }
+    // 4F fallback：本 turn 是否已 commit 成功模型（已产出）。一旦 commit，后续 step 不得换模型（防跨模型漂移）。
+    const chain = this.routeChain();
+    let turnCommitted = false;
     for (let step = 0; step < maxSteps; step++) {
       if (s.interrupted) {
         await this.completeTurn(s, 'interrupted', zeroUsage(), turnId);
@@ -360,47 +377,97 @@ export class AgentKernel implements Kernel, SubagentHost {
       // 异步 steering 注入（4C）：把已完成的后台子 agent 结果并入下一次推理的消息窗口（§2.5），不阻塞主 turn。
       this.drainSteering(s);
 
-      const req: ChatRequest = { modelId: s.model, messages: s.messages, tools: toolSpecs };
       let text = '';
-      const toolCalls: ToolCallAccum[] = [];
-      const argsById = new Map<string, string>();
+      let toolCalls: ToolCallAccum[] = [];
+      let argsById = new Map<string, string>();
       let stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'pause_turn' = 'end_turn';
       let usage: Usage | undefined;
 
-      for await (const ev of this.d.provider.streamChat(req)) {
-        switch (ev.kind) {
-          case 'TextDelta':
-            text += ev.text;
-            await this.emit(s, { kind: 'AssistantText', delta: ev.text }, turnId);
-            break;
-          case 'ThinkingDelta':
-            await this.emit(s, { kind: 'Reasoning', delta: ev.text }, turnId);
-            break;
-          case 'ToolCallStart':
-            toolCalls.push({ id: ev.id, name: ev.name });
-            argsById.set(ev.id, '');
-            break;
-          case 'ToolCallArgsDelta':
-            argsById.set(ev.id, (argsById.get(ev.id) ?? '') + ev.delta);
-            break;
-          case 'ToolCallEnd':
-            break;
-          case 'UsageUpdate':
-            usage = ev.usage;
-            await this.emit(s, { kind: 'UsageUpdate', ...ev.usage }, turnId);
-            break;
-          case 'Stop':
-            stopReason = ev.reason;
-            break;
-          case 'Error':
-            await this.emit(s, { kind: 'Error', message: ev.error.message }, turnId);
-            await this.emit(
-              s,
-              { kind: 'TurnFailed', error: { message: ev.error.message, retryable: ev.error.retryable } },
-              turnId,
-            );
-            return;
+      // 4F：provider 调用 + fallback/auth rotation。错误经 category 决策——context_overflow→压缩重试（同模型）、
+      // rate_limit/network/billing/auth→换路由（仅未 commit & 有下家）、其余→失败。已产出（流式发过内容）的错误
+      // 不重试（避免重复 emit / 跨模型漂移）。attempt 上界 = 链长 + 几次压缩，防病态循环。
+      let provErr: { message: string; category?: ErrorCategory } | undefined;
+      const maxAttempts = chain.length + 3;
+      let attempt = 0;
+      attemptLoop: while (true) {
+        if (++attempt > maxAttempts) {
+          provErr = provErr ?? { message: 'fallback 尝试超上限' };
+          break;
         }
+        const route = chain[Math.min(s.routeIdx, chain.length - 1)]!;
+        text = '';
+        toolCalls = [];
+        argsById = new Map<string, string>();
+        stopReason = 'end_turn';
+        usage = undefined;
+        provErr = undefined;
+        let produced = false; // 本次尝试是否已流式发出内容（text/thinking/tool）——已发则不可干净重试
+        const req: ChatRequest = { modelId: route.model, messages: s.messages, tools: toolSpecs };
+
+        for await (const ev of route.provider.streamChat(req)) {
+          switch (ev.kind) {
+            case 'TextDelta':
+              text += ev.text;
+              produced = true;
+              await this.emit(s, { kind: 'AssistantText', delta: ev.text }, turnId);
+              break;
+            case 'ThinkingDelta':
+              produced = true;
+              await this.emit(s, { kind: 'Reasoning', delta: ev.text }, turnId);
+              break;
+            case 'ToolCallStart':
+              produced = true;
+              toolCalls.push({ id: ev.id, name: ev.name });
+              argsById.set(ev.id, '');
+              break;
+            case 'ToolCallArgsDelta':
+              argsById.set(ev.id, (argsById.get(ev.id) ?? '') + ev.delta);
+              break;
+            case 'ToolCallEnd':
+              break;
+            case 'UsageUpdate':
+              usage = ev.usage;
+              await this.emit(s, { kind: 'UsageUpdate', ...this.withCost(route.model, ev.usage) }, turnId);
+              break;
+            case 'Stop':
+              stopReason = ev.reason;
+              break;
+            case 'Error':
+              provErr = { message: ev.error.message, category: ev.error.category };
+              break;
+          }
+          if (provErr) break; // 收到错误即停止消费本流
+        }
+
+        if (!provErr) {
+          turnCommitted = true; // 成功产出 → commit 本 turn 的模型，后续 step 不再换
+          break attemptLoop;
+        }
+        if (produced) break attemptLoop; // 已流式发出内容的错误 → 不重试（无法干净回退）
+        const action = decideFallback(provErr.category, {
+          hasNext: s.routeIdx < chain.length - 1,
+          committed: turnCommitted,
+        });
+        if (action === 'compact') {
+          const compacted = await this.forceCompact(s, turnId); // 同模型压缩窗口后重试
+          if (!compacted) break attemptLoop; // 压不动 → 放弃
+          continue attemptLoop;
+        }
+        if (action === 'switch') {
+          s.routeIdx++; // 换 key / 换 provider（粘滞，跨 turn 不回探）
+          continue attemptLoop;
+        }
+        break attemptLoop; // fail
+      }
+
+      if (provErr) {
+        await this.emit(s, { kind: 'Error', message: provErr.message }, turnId);
+        await this.emit(
+          s,
+          { kind: 'TurnFailed', error: { message: provErr.message, ...(provErr.category ? { category: provErr.category } : {}) } },
+          turnId,
+        );
+        return;
       }
 
       // max_tokens：话未说完，追加"请继续"续传，不算错误（§15.1）。
@@ -585,6 +652,20 @@ export class AgentKernel implements Kernel, SubagentHost {
     const usableTokens = this.d.usableContextTokens ?? 200_000;
     const before = estimateMessagesTokens(s.messages);
     if (!this.d.condenser.shouldCompact({ usedTokens: before, usableTokens })) return;
+    await this.doCondense(s, turnId);
+  }
+
+  /**
+   * 强制压缩（4F context_overflow fallback）：跳过阈值/min-rounds 闸门立即压一次（provider 报上下文超限 = 必须现在压）。
+   * 返回是否真压成（压不动 → false，调用方放弃重试）。
+   */
+  private async forceCompact(s: SessionState, turnId: Id): Promise<boolean> {
+    return this.doCondense(s, turnId);
+  }
+
+  /** 压缩核心（§5.1 / 3D 结构化交接）：condense 只改送 LLM 的窗口，原始 EventLog 不删；压成则发 ContextCompacted。返回是否压成。 */
+  private async doCondense(s: SessionState, turnId: Id): Promise<boolean> {
+    const before = estimateMessagesTokens(s.messages);
     await this.hooks.firePreCompact(this.hookCtx(s), this.hookErr(s, turnId)); // PreCompact hook（4A）
 
     // 结构化交接（3D）：condense 实际压缩时经 onHandoff 回传四节交接 + 保真标识符集，落 ContextCompacted。
@@ -596,7 +677,7 @@ export class AgentKernel implements Kernel, SubagentHost {
         preservedIdentifiers = ids.length > 0 ? ids : undefined;
       },
     });
-    if (condensed === s.messages || condensed.length >= s.messages.length) return; // 没压成，不发事件
+    if (condensed === s.messages || condensed.length >= s.messages.length) return false; // 没压成，不发事件
     s.messages = condensed;
     const after = estimateMessagesTokens(condensed);
     const toCursor = s.headCursor; // ContextCompacted 自身分配的 cursor 在 toCursor 之后
@@ -614,6 +695,26 @@ export class AgentKernel implements Kernel, SubagentHost {
     );
     s.lastCompactCursor = s.headCursor;
     s.stepsSinceCompact = 0;
+    return true;
+  }
+
+  /** 4F：provider fallback 链 = 主路由（deps.provider+model）+ deps.fallbacks。 */
+  private routeChain(): ProviderRoute[] {
+    const primary: ProviderRoute = { provider: this.d.provider, model: this.d.model ?? 'fake-model' };
+    return [primary, ...(this.d.fallbacks ?? [])];
+  }
+
+  /** 4F：会话当前生效路由的模型 id（committeed/fallback 后），用于成本估算。 */
+  private activeModel(s: SessionState): string {
+    const chain = this.routeChain();
+    return chain[Math.min(s.routeIdx, chain.length - 1)]!.model;
+  }
+
+  /** 4F：按模型填 costUsd（已含则尊重原值）；无 estimator 或未知模型 → 原样返回。 */
+  private withCost(model: string, usage: Usage): Usage {
+    if (usage.costUsd != null) return usage;
+    const costUsd = this.d.costEstimator?.(model, usage);
+    return costUsd != null ? { ...usage, costUsd } : usage;
   }
 
   /** edit 类工具成功后：发 FileChanged（best-effort，取 input.path）+ L3 checkpoint 快照。 */
@@ -812,7 +913,12 @@ export class AgentKernel implements Kernel, SubagentHost {
   /** 收尾 turn（4A）：先触发 Stop hook，再 emit TurnCompleted（统一各完成态出口）。 */
   private async completeTurn(s: SessionState, stopReason: StopReason, usage: Usage, turnId: Id): Promise<void> {
     await this.hooks.fireStop(this.hookCtx(s), stopReason, this.hookErr(s, turnId));
-    await this.emit(s, { kind: 'TurnCompleted', stopReason, usage }, turnId);
+    const withCost = this.withCost(this.activeModel(s), usage); // 4F：填 costUsd（含 cache 分价）
+    await this.emit(
+      s,
+      { kind: 'TurnCompleted', stopReason, usage: withCost, ...(withCost.costUsd != null ? { costUsd: withCost.costUsd } : {}) },
+      turnId,
+    );
   }
 
   // ───────────────────────── 子 agent 接缝（4C / SubagentHost）─────────────────────────

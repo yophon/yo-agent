@@ -172,3 +172,4 @@ export * from './hooks';
 export * from './subagent';
 export * from './skills';
 export * from './recipes';
+export * from './fallback';

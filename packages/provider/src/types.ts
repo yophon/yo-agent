@@ -2,7 +2,8 @@
  * Provider 抽象的类型契约（DESIGN §4 / §15.4）。
  * 内核永不按 provider 分支；BYOK 多家归一成一条 Stream<ProviderEvent> + 双轨 tool-calling。
  */
-import type { Effort, Usage } from '@yo-agent/protocol';
+import type { Effort, ErrorCategory, Usage } from '@yo-agent/protocol';
+export type { ErrorCategory } from '@yo-agent/protocol';
 
 export interface ToolSpec {
   name: string;
@@ -53,7 +54,7 @@ export type ProviderEvent =
   | { kind: 'ToolCallEnd'; id: string }
   | { kind: 'UsageUpdate'; usage: Usage }
   | { kind: 'Stop'; reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'pause_turn' }
-  | { kind: 'Error'; error: { message: string; status?: number; retryable?: boolean } };
+  | { kind: 'Error'; error: { message: string; status?: number; retryable?: boolean; category?: ErrorCategory } };
 
 export interface ProviderCapabilities {
   nativeToolCalling: boolean;

@@ -16,6 +16,7 @@ import type {
   ToolChoice,
 } from './types';
 import { sseDataLines } from './sse';
+import { classifyError } from './errors';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -64,7 +65,7 @@ export class AnthropicProvider implements Provider {
     } catch (e) {
       yield {
         kind: 'Error',
-        error: { message: e instanceof Error ? e.message : String(e), retryable: true },
+        error: { message: e instanceof Error ? e.message : String(e), retryable: true, category: classifyError(undefined, e instanceof Error ? e.message : String(e)) },
       };
       return;
     }
@@ -76,6 +77,7 @@ export class AnthropicProvider implements Provider {
           message: `HTTP ${res.status}: ${text}`,
           status: res.status,
           retryable: res.status >= 500 || res.status === 429,
+          category: classifyError(res.status, text),
         },
       };
       return;

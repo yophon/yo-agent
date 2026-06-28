@@ -718,6 +718,17 @@
                     },
                     "retryable": {
                       "type": "boolean"
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "rate_limit",
+                        "billing",
+                        "auth",
+                        "context_overflow",
+                        "network",
+                        "unknown"
+                      ]
                     }
                   },
                   "required": [

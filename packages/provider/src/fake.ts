@@ -1,3 +1,4 @@
+import type { ErrorCategory } from '@yo-agent/protocol';
 import type {
   ChatRequest,
   ModelInfo,
@@ -42,6 +43,21 @@ export function textTurn(text: string): ProviderEvent[] {
   return [
     { kind: 'TextDelta', text },
     { kind: 'Stop', reason: 'end_turn' },
+  ];
+}
+
+/** 脚本化一条 provider 错误（4F fallback 测试）：可带 category/status 驱动内核 fallback 决策。 */
+export function errorTurn(message: string, opts: { category?: ErrorCategory; status?: number; retryable?: boolean } = {}): ProviderEvent[] {
+  return [
+    {
+      kind: 'Error',
+      error: {
+        message,
+        ...(opts.status !== undefined ? { status: opts.status } : {}),
+        ...(opts.retryable !== undefined ? { retryable: opts.retryable } : {}),
+        ...(opts.category !== undefined ? { category: opts.category } : {}),
+      },
+    },
   ];
 }
 

@@ -62,10 +62,19 @@ export const UsageSchema = z.object({
 });
 export type Usage = z.infer<typeof UsageSchema>;
 
+/**
+ * 错误归类（4F / DESIGN §4.4，provider fallback 决策轴）：
+ * rate_limit→换 key/换 provider，billing/auth→换 provider，context_overflow→触发压缩重试，network→重试/换路由。
+ */
+export const ErrorCategorySchema = z.enum(['rate_limit', 'billing', 'auth', 'context_overflow', 'network', 'unknown']);
+export type ErrorCategory = z.infer<typeof ErrorCategorySchema>;
+
 export const ErrorInfoSchema = z.object({
   message: z.string(),
   type: z.string().optional(),
   retryable: z.boolean().optional(),
+  /** 4F：错误归类，驱动内核 fallback 链/auth rotation 决策。 */
+  category: ErrorCategorySchema.optional(),
 });
 export type ErrorInfo = z.infer<typeof ErrorInfoSchema>;
 

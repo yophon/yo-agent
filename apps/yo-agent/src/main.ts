@@ -225,6 +225,9 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     interactiveApproval: interactive,
     approvalTimeoutMs: interactive ? 5 * 60_000 : undefined, // 5 分钟默认 deny（§6.3）
     systemSuffix: renderSkillSummaries(skills) || undefined, // 技能摘要常驻 system（4D，跨 surface 统一）
+    costEstimator: (m, u) => catalog.estimateCost(m, u), // 4F：UsageUpdate/TurnCompleted 填 costUsd（含 cache 分价）
+    // fallbacks：内核已支持 deps.fallbacks（provider fallback 链 / auth rotation）；CLI 单 provider 默认不配链。
+    // 多 key/多 provider 链由部署侧按需注入（见 docs/PHASE-4.md 4F）。
   });
   // 子 agent（4C / ADR-17）：host=本内核（仍是唯一 AgentEvent 写入者）；in-process 档跑独立 childSessionId 子内核。
   // deriveSubagentPolicy 收紧基准 = 父会话当前可见工具 + 权限模式；递归经 deriveSubagentPolicy 剥离 spawn + maxDepth 双防护。

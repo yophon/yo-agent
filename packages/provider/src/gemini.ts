@@ -17,6 +17,7 @@ import type {
   ToolChoice,
 } from './types';
 import { sseDataLines } from './sse';
+import { classifyError } from './errors';
 
 export interface GeminiProviderOpts {
   apiKey?: string;
@@ -57,7 +58,7 @@ export class GeminiProvider implements Provider {
         body: JSON.stringify(body),
       });
     } catch (e) {
-      yield { kind: 'Error', error: { message: e instanceof Error ? e.message : String(e), retryable: true } };
+      yield { kind: 'Error', error: { message: e instanceof Error ? e.message : String(e), retryable: true, category: classifyError(undefined, e instanceof Error ? e.message : String(e)) } };
       return;
     }
     if (!res.ok || !res.body) {
@@ -69,7 +70,7 @@ export class GeminiProvider implements Provider {
       }
       yield {
         kind: 'Error',
-        error: { message: `HTTP ${res.status}: ${text}`, status: res.status, retryable: res.status >= 500 || res.status === 429 },
+        error: { message: `HTTP ${res.status}: ${text}`, status: res.status, retryable: res.status >= 500 || res.status === 429, category: classifyError(res.status, text) },
       };
       return;
     }
