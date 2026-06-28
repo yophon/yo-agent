@@ -90,3 +90,173 @@ describe('CliApp（Ink 冒烟）', () => {
     unmount();
   });
 });
+
+/** 记录每次 submitInput 的 prompt（验证 REPL 多轮）。autoComplete=false 时不自动完成（留住 running 态）。 */
+class RecordingKernel implements TuiKernel {
+  handler: ((env: EventEnvelope) => void) | null = null;
+  readonly submitted: string[] = [];
+  readonly steered: string[] = [];
+  readonly interrupted: Id[] = [];
+  constructor(private readonly autoComplete = true) {}
+  subscribe(_s: Id, _c: number | null, handler: (env: EventEnvelope) => void): () => void {
+    this.handler = handler;
+    return () => {};
+  }
+  async submitInput(_s: Id, prompt: string): Promise<unknown> {
+    this.submitted.push(prompt);
+    if (this.autoComplete) {
+      this.handler?.(ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } }));
+    }
+    return { turnId: 't' };
+  }
+  async steer(_s: Id, text: string): Promise<void> {
+    this.steered.push(text);
+  }
+  async interrupt(s: Id): Promise<void> {
+    this.interrupted.push(s);
+    this.handler?.(ev({ kind: 'TurnCompleted', stopReason: 'interrupted', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } }));
+  }
+  decideApproval(): void {}
+}
+
+describe('CliApp REPL（多轮 / 输入框）', () => {
+  it('空 prompt：不自动发轮，进输入态；键入回车后提交', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(
+      React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }),
+    );
+    await tick();
+    expect(kernel.submitted).toEqual([]); // 空 prompt 不自动发首轮
+    expect(lastFrame()).toContain('›'); // 输入提示符在
+    stdin.write('hello');
+    await tick();
+    expect(lastFrame()).toContain('hello'); // 字符回显
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['hello']);
+    unmount();
+  });
+
+  it('多轮：完成一轮后仍可继续提交下一轮（不自动退出）', async () => {
+    const kernel = new RecordingKernel();
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('first');
+    stdin.write(ENTER);
+    await tick();
+    stdin.write('second');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['first', 'second']);
+    unmount();
+  });
+
+  it('/exit：退出后不再响应输入（不把 /exit 当 prompt 提交）', async () => {
+    const kernel = new RecordingKernel();
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('/exit');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    // 退出后再键入一轮，应被忽略（useInput 已卸载）。
+    stdin.write('ignored');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual([]); // /exit 不提交、退出后输入无效
+    unmount();
+  });
+});
+
+describe('CliApp 4.5（结构化渲染 / 命令 / 中断 / steer）', () => {
+  const ESC1 = ESC; // 单独 ESC（无后续）= Escape 键
+
+  it('工具调用：分组渲染 name/summary + 输出预览 + 完成图标', async () => {
+    const kernel = new FakeKernel([
+      ev({ kind: 'ToolCallStarted', id: 'c1', name: 'read', toolKind: 'read', summary: 'note.txt', input: { path: 'note.txt' } }),
+      ev({ kind: 'ToolCallOutput', id: 'c1', chunk: '口令是 PURPLE-42' }),
+      ev({ kind: 'ToolCallCompleted', id: 'c1', status: 'ok' }),
+      ev({ kind: 'AssistantText', delta: '口令是 PURPLE-42' }),
+      ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }),
+    ]);
+    const { lastFrame, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'go', model: 'gpt-5.5' }));
+    await tick();
+    const f = lastFrame()!;
+    expect(f).toContain('read'); // 工具名
+    expect(f).toContain('note.txt'); // summary
+    expect(f).toContain('PURPLE-42'); // 输出预览 + 助手文本
+    expect(f).toContain('✓'); // 完成图标
+    unmount();
+  });
+
+  it('状态栏：累计 token 与 model 反映在底部', async () => {
+    const kernel = new FakeKernel([
+      ev({ kind: 'UsageUpdate', inputTokens: 1200, outputTokens: 300, cacheReadTokens: 0 }),
+      ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 1200, outputTokens: 300, cacheReadTokens: 0, costUsd: 0.02 } }),
+    ]);
+    const { lastFrame, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'go', model: 'gpt-5.5' }));
+    await tick();
+    const f = lastFrame()!;
+    expect(f).toContain('gpt-5.5');
+    expect(f).toContain('↑1.2k');
+    expect(f).toContain('↓300');
+    unmount();
+  });
+
+  it('/help：渲染命令帮助；slash 不作为 prompt 提交', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('/help');
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain('可用命令');
+    expect(kernel.submitted).toEqual([]); // slash 不作为 prompt
+    // /clear 被接受且界面仍可用（Static 滚动区历史不可回收属其固有语义，此处验证不崩、不提交）。
+    stdin.write('/clear');
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain('›'); // 输入态仍在
+    expect(kernel.submitted).toEqual([]);
+    unmount();
+  });
+
+  it('Esc 中断运行中的轮（调用 kernel.interrupt）', async () => {
+    const kernel = new RecordingKernel(false); // 不自动完成 → 停在 running
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'long task' }));
+    await tick();
+    expect(kernel.interrupted).toEqual([]);
+    stdin.write(ESC1);
+    await tick();
+    expect(kernel.interrupted).toEqual(['s']);
+    unmount();
+  });
+
+  it('运行中回车 → steer（轮内追加引导，不新开轮）', async () => {
+    const kernel = new RecordingKernel(false);
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'task' }));
+    await tick();
+    stdin.write('also handle errors');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.steered).toEqual(['also handle errors']);
+    expect(kernel.submitted).toEqual(['task']); // 仅初始轮，steer 未新开第二轮
+    unmount();
+  });
+
+  it('输入历史：↑ 召回上一条', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('alpha');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['alpha']);
+    stdin.write(ESC + '[A'); // ↑
+    await tick();
+    expect(lastFrame()).toContain('alpha'); // 召回到输入行
+    unmount();
+  });
+});

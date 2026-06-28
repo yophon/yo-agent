@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "gen:schema": "tsx packages/protocol/scripts/gen-schema.ts",
-    "check": "pnpm run typecheck && pnpm run gen:schema && pnpm run test"
+    "check": "pnpm run typecheck && pnpm run gen:schema && pnpm run test",
+    "install:cli": "tsx scripts/install-cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

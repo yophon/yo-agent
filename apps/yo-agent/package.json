@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "yo-agent headless CLI（Phase 1 Slice A）。无 ANTHROPIC_API_KEY 时用 FakeProvider 演示。",
+  "bin": {
+    "yoagent": "bin/yoagent.mjs"
+  },
   "scripts": {
     "start": "tsx src/main.ts"
   },

@@ -386,7 +386,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!prompt) {
+  // --tui 是交互式 REPL，允许无初始 prompt 启动（进输入态等待键入）；其余一次性模式仍需 prompt。
+  if (!prompt && mode !== 'tui') {
     console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server | acp]');
     process.exit(2);
   }
@@ -421,7 +422,8 @@ async function main(): Promise<void> {
   // try/finally：turn 抛错（走 main().catch→exit(1)）也回收子进程，不只 happy-path（审查 lifecycle）。
   try {
     if (mode === 'tui') {
-      await runTui({ kernel, sessionId, prompt });
+      const mode0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.permissionMode ?? 'supervised';
+      await runTui({ kernel, sessionId, prompt, model, cwd, permissionMode: mode0 });
       return;
     }
     const renderer = mode === 'jsonl' ? new JsonlRenderer() : new HeadlessRenderer();
