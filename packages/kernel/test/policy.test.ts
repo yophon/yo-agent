@@ -76,4 +76,29 @@ describe('4A — DefaultPolicyEngine 权限闸门决策矩阵', () => {
       expect(d).not.toBe('allow');
     }
   });
+
+  // ───── 收口安全修复回归 ─────
+
+  it('收口 4A-H：accept-edits 对高/未知风险编辑类 → ask（不无视风险放行 Protected Path 写入）', () => {
+    expect(decide('accept-edits', 'edit', 'high')).toBe('ask');
+    expect(decide('accept-edits', 'move', 'unknown')).toBe('ask');
+    // 低/中风险编辑仍自动放行（accept-edits 本意）
+    expect(decide('accept-edits', 'edit', 'medium')).toBe('allow');
+    expect(decide('accept-edits', 'edit', 'low')).toBe('allow');
+    // 读类不受影响
+    expect(decide('accept-edits', 'read', 'high')).toBe('allow');
+  });
+
+  it("收口 4A-MED：approval:'always' 在非 bypass 档恒 ask（必经审批契约不被自动放行软化）", () => {
+    for (const mode of ['accept-edits', 'autonomous', 'ci'] as PermissionMode[]) {
+      expect(decide(mode, 'edit', 'low', 'always')).toBe('ask'); // 低风险也强制审批
+      expect(decide(mode, 'read', 'low', 'always')).toBe('ask');
+    }
+    expect(decide('supervised', 'read', 'low', 'always')).toBe('ask');
+    // bypass 明示 opt-out：always 也放行
+    expect(decide('bypass', 'edit', 'high', 'always')).toBe('allow');
+    // read-only 优先于 always：非读类恒 deny（最严档不被 always 软化成 ask）
+    expect(decide('read-only', 'edit', 'low', 'always')).toBe('deny');
+    // never 优先于一切（含 always 语义不冲突——never 工具不会同时是 always）
+  });
 });

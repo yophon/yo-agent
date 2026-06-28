@@ -145,8 +145,8 @@ export class DefaultSubagentManager implements SubagentManager {
   private readonly maxDepth: number;
   /** sessionId → 深度（仅管理器派生的会话有记录；顶层父会话不在表内 → 深度按 0 计）。 */
   private readonly depthOf = new Map<Id, number>();
-  /** childSessionId → 背景任务取消控制器（供 abort 回收）。 */
-  private readonly inflight = new Map<Id, AbortController>();
+  /** childSessionId → { 取消控制器, 父会话 }（供 abort 按父会话作用域回收，审查 likely#4/gap#2）。 */
+  private readonly inflight = new Map<Id, { ac: AbortController; parentSessionId: Id }>();
 
   constructor(opts: SubagentManagerOpts) {
     this.o = opts;
@@ -167,10 +167,16 @@ export class DefaultSubagentManager implements SubagentManager {
     return { childSessionId: launched.childSessionId, summary: r.summary, isError: r.isError ?? false };
   }
 
-  /** 取消某父会话派生的全部在飞背景子 agent（会话结束/中断时回收）。 */
+  /**
+   * 取消在飞背景子 agent（会话结束/中断时回收，审查 gap#2 接 kernel.sessionReaper）。
+   * 传 parentSessionId → 仅取消该父会话派生的（不误杀其他会话的背景子 agent）；省略 → 取消全部。
+   */
   abortInflight(parentSessionId?: Id): void {
-    for (const [, ac] of this.inflight) ac.abort(new Error('子 agent 已取消'));
-    if (parentSessionId === undefined) this.inflight.clear();
+    for (const [childId, rec] of this.inflight) {
+      if (parentSessionId !== undefined && rec.parentSessionId !== parentSessionId) continue;
+      rec.ac.abort(new Error('子 agent 已取消'));
+      this.inflight.delete(childId); // 取消即移除（done 的 finally 再删一次为幂等 no-op）
+    }
   }
 
   private launch(opts: SubagentSpawnOpts): { childSessionId: Id; done: Promise<SubagentRunResult> } {
@@ -212,7 +218,7 @@ export class DefaultSubagentManager implements SubagentManager {
     const label = opts.profile || 'subagent';
     const background = opts.mode === 'background';
     const ac = new AbortController();
-    if (background) this.inflight.set(childSessionId, ac);
+    if (background) this.inflight.set(childSessionId, { ac, parentSessionId: opts.parentSessionId });
 
     const done = (async (): Promise<SubagentRunResult> => {
       try {

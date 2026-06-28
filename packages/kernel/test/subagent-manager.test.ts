@@ -110,4 +110,27 @@ describe('4C — DefaultSubagentManager', () => {
     expect(r.summary).toContain('已截断');
     expect(r.summary.length).toBeLessThan(100);
   });
+
+  it('收口 gap#2/likely#4：abortInflight(parent) 按父会话作用域回收背景子 agent，不误杀他会话', async () => {
+    const aborted: string[] = [];
+    const runner: SubagentRunner = {
+      run: (spec, signal) =>
+        new Promise((resolve) => {
+          signal?.addEventListener('abort', () => {
+            aborted.push(spec.task);
+            resolve({ summary: '[已取消]', isError: true });
+          });
+        }),
+    };
+    const { mgr } = mkManager(runner);
+    void mgr.spawn({ parentSessionId: 'pA', profile: 'x', task: 'A', mode: 'background' });
+    void mgr.spawn({ parentSessionId: 'pB', profile: 'x', task: 'B', mode: 'background' });
+    await Promise.resolve();
+    mgr.abortInflight('pA'); // 仅回收 pA 的背景子 agent
+    await new Promise((r) => setTimeout(r, 5));
+    expect(aborted).toEqual(['A']); // pB 不受影响
+    mgr.abortInflight(); // 收尾全部回收
+    await new Promise((r) => setTimeout(r, 5));
+    expect(aborted.sort()).toEqual(['A', 'B']);
+  });
 });

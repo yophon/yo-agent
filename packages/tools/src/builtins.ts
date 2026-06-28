@@ -1,16 +1,52 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { bashTool } from './bash';
 import type { RegisteredTool, ToolContext } from './index';
 
-/** L0 路径保护：限制工具读写在 cwd 内（DESIGN §3.4 / §9.4）。 */
-function confine(cwd: string, p: string): string {
-  const abs = isAbsolute(p) ? p : resolve(cwd, p);
-  const rel = relative(cwd, abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`路径越界（超出 cwd）：${p}`);
+/** realpath（解析符号链接）；不存在则原样返回。 */
+function realpathOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
   }
-  return abs;
+}
+
+/**
+ * realpath 目标本身；不存在（如待写入新文件）则向上找最近存在祖先做 realpath，再拼回尾段——
+ * 使 symlink 在「已存在前缀」里被解析（防经软链逃逸），新文件落点按其真实父目录判定。
+ */
+function realpathTargetOrParent(abs: string): string {
+  let cur = abs;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(cur);
+      return tail.length > 0 ? join(real, ...tail) : real;
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return abs;
+      tail.unshift(basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/**
+ * L0 路径保护：限制工具读写在 cwd 内（DESIGN §3.4 / §9.4）。
+ * 审查 H1（4B confirmed）：词法 resolve+relative 不跟随符号链接，cwd 内一个指向外部的软链（如恶意仓库里
+ * `creds -> ~/.aws/credentials`）会被词法校验放行 → fs 跟随软链落到 cwd 外（read approval:'never' 直接外泄）。
+ * 故用 realpath 解析符号链接后再做前缀校验（与 surface-acp/fs-guard 同一硬化），返回 realpath 后的真实路径。
+ */
+function confine(cwd: string, p: string): string {
+  const root = realpathOr(resolve(cwd));
+  const abs = isAbsolute(p) ? p : resolve(root, p);
+  const target = realpathTargetOrParent(abs);
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error(`路径越界（超出 cwd / 经符号链接逃逸）：${p}`);
+  }
+  return target;
 }
 
 function strField(input: unknown, key: string, fallback = ''): string {
@@ -149,6 +185,7 @@ export const grepTool: RegisteredTool = {
         throw new Error(`grep：无效正则 ${pattern}`);
       }
       const root = confine(ctx.cwd, strField(input, 'path', '.'));
+      const base = realpathOr(resolve(ctx.cwd)); // 输出相对 realpath(cwd)：confine 已 realpath，file 在 /private/var 等真实路径下
       const results: string[] = [];
       const MAX = 200;
       outer: for await (const file of walkFiles(root)) {
@@ -158,7 +195,7 @@ export const grepTool: RegisteredTool = {
         } catch {
           continue;
         }
-        const rel = relative(ctx.cwd, file);
+        const rel = relative(base, file);
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i]!)) {
@@ -192,12 +229,13 @@ export const globTool: RegisteredTool = {
       const pattern = strField(input, 'pattern');
       if (pattern === '') throw new Error('glob：pattern 必填');
       const root = confine(ctx.cwd, strField(input, 'path', '.'));
+      const base = realpathOr(resolve(ctx.cwd)); // 输出相对 realpath(cwd)（confine 已 realpath）
       const re = globToRegExp(pattern);
       const out: string[] = [];
       const MAX = 500;
       for await (const file of walkFiles(root)) {
         if (re.test(relative(root, file))) {
-          out.push(relative(ctx.cwd, file));
+          out.push(relative(base, file));
           if (out.length >= MAX) break;
         }
       }

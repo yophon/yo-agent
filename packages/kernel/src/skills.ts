@@ -99,8 +99,13 @@ export function renderSkillSummaries(skills: Skill[]): string {
   return ['# 可用技能（仅摘要；需要时用 skill_activate 加载全文）', ...lines].join('\n');
 }
 
+/** skill/recipe 单文件读取上限（审查 4D-LOW：不可信 workspace 放数 GB .md 会 OOM 撑爆启动）。 */
+export const MAX_SKILL_FILE_BYTES = 1024 * 1024; // 1 MiB
+
 async function tryRead(path: string): Promise<string | null> {
   try {
+    const st = await stat(path);
+    if (st.size > MAX_SKILL_FILE_BYTES) return null; // 超限跳过（防 OOM DoS），由调用方按需告警
     return (await readFile(path, 'utf8')).trim() || null;
   } catch {
     return null;

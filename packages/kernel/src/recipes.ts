@@ -1,8 +1,8 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PermissionModeSchema } from '@yo-agent/protocol';
 import type { PermissionMode } from '@yo-agent/protocol';
-import { parseFrontmatter, parseList } from './skills';
+import { MAX_SKILL_FILE_BYTES, parseFrontmatter, parseList } from './skills';
 
 /**
  * 子 agent recipe / profile（DESIGN §5 / §8，Roo mode / Goose Recipes 范式）：
@@ -65,7 +65,9 @@ export async function loadRecipes(dirs: Array<{ dir: string; source?: string }>)
       if (!entry.toLowerCase().endsWith('.md')) continue;
       let text: string | null;
       try {
-        text = (await readFile(join(dir, entry), 'utf8')).trim() || null;
+        const full = join(dir, entry);
+        if ((await stat(full)).size > MAX_SKILL_FILE_BYTES) continue; // 审查 4D-LOW：超限跳过防 OOM DoS
+        text = (await readFile(full, 'utf8')).trim() || null;
       } catch {
         continue;
       }

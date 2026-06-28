@@ -47,4 +47,22 @@ describe('assessRisk（替换硬编码 unknown）', () => {
   it('普通路径不升级', () => {
     expect(assessRisk(desc({ kind: 'edit' }), { path: 'src/app.ts' })).toBe('medium');
   });
+
+  // ───── 收口安全修复回归 ─────
+
+  it('收口 4A-H：apply_patch 的 patch 信封内 Protected Path → high（不再漏 autonomous/ci 自动放行）', () => {
+    const patch = '*** Begin Patch\n*** Update File: .git/hooks/pre-commit\n@@\n+evil\n*** End Patch';
+    expect(assessRisk(desc({ kind: 'edit' }), { patch })).toBe('high');
+    expect(assessRisk(desc({ kind: 'edit' }), { patch: '*** Add File: .env\n+SECRET=1' })).toBe('high');
+    // 普通文件 patch 不升级
+    expect(assessRisk(desc({ kind: 'edit' }), { patch: '*** Update File: src/app.ts\n+x' })).toBe('medium');
+  });
+
+  it('收口 4B-LOW：危险命令补漏 dd of= / NVMe 重定向 / find -delete → high；/dev/null 不误伤', () => {
+    const ex = desc({ kind: 'read', owner: 'mcp' }); // 外部读类基线 medium，命中危险命令才升 high
+    expect(assessRisk(ex, { command: 'dd of=/dev/sda bs=1M' })).toBe('high');
+    expect(assessRisk(ex, { command: 'cat x > /dev/nvme0n1' })).toBe('high');
+    expect(assessRisk(ex, { command: 'find . -name "*.log" -delete' })).toBe('high');
+    expect(assessRisk(ex, { command: 'echo hi > /dev/null' })).toBe('medium');
+  });
 });

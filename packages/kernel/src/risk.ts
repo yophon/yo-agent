@@ -4,9 +4,14 @@ import type { ToolDescriptor } from '@yo-agent/tools';
 /** 保护路径（§15.7 Protected Paths 最小子集）：命中 → 升 high。 */
 const PROTECTED_PATH_RE =
   /(^|[/\\])\.(git|ssh)([/\\]|$)|(^|[/\\])\.env(\.[^/\\]+)?([/\\]|$)|\.(pem|key)$|(^|[/\\])(id_rsa|id_ed25519|\.npmrc|\.aws|\.yo-agent)([/\\]|$)/i;
-/** 危险命令模式：命中 → 升 high（rm 含短选项 -rf 与长选项 --recursive/--force，审查 RISK-05）。 */
+/**
+ * 危险命令模式：命中 → 升 high（rm 含短选项 -rf 与长选项 --recursive/--force，审查 RISK-05）。
+ * 审查 4B-LOW：补 `dd of=`（覆写磁盘，原只匹配 `dd if=`）、磁盘设备重定向覆盖 NVMe/mmcblk/vd/disk（原只 sd）、
+ * `find … -delete`。仅匹配真实磁盘设备名（不误伤 /dev/null|zero）。该正则仅为防御纵深——真正阻断依赖
+ * execute 恒 high + 审批 + 沙箱。
+ */
 const DANGEROUS_CMD_RE =
-  /\brm\s+(-[rf]+|--recursive|--force|--no-preserve-root)|\bmkfs\b|\bdd\s+if=|:\(\)\s*\{\s*:\s*\|\s*:|\bshutdown\b|\bchmod\s+-R\b|>\s*\/dev\/sd/i;
+  /\brm\s+(-[rf]+|--recursive|--force|--no-preserve-root)|\bmkfs\b|\bdd\s+(if|of)=|:\(\)\s*\{\s*:\s*\|\s*:|\bshutdown\b|\bchmod\s+-R\b|>\s*\/dev\/(sd|nvme|mmcblk|vd|disk)|\bfind\b.*\s-delete\b/i;
 
 /**
  * 工具调用风险分级（DESIGN §9.2 / §15.7）。替换 kernel 中硬编码的 'unknown'。
@@ -55,6 +60,13 @@ function riskProbeText(input: unknown): string {
     const v = o[k];
     if (typeof v === 'string') parts.push(v);
     else if (Array.isArray(v)) parts.push(v.filter((x) => typeof x === 'string').join(' '));
+  }
+  // apply_patch 的 patch 信封（审查 4A-H）：原只扫字段名启发式，漏 patch 内嵌路径 → 写 Protected Path 不升 high
+  //（autonomous/ci 自动放行）。抽出 `*** Add/Update/Delete File: <path>` 的目标路径纳入风险探测。
+  if (typeof o.patch === 'string') {
+    for (const m of o.patch.matchAll(/^\*\*\*\s+(?:Add|Update|Delete|Move)\s+File:\s*(.+?)\s*$/gim)) {
+      if (m[1]) parts.push(m[1]);
+    }
   }
   return parts.join(' ');
 }

@@ -80,10 +80,14 @@ export function makeBashTool(backend: ExecBackend): RegisteredTool {
 /** 默认 bash 工具：L1 本地子进程后端。app 经 builtinTools 注册；L2 容器档（Phase 6）用 makeBashTool 换后端。 */
 export const bashTool: RegisteredTool = makeBashTool(new LocalSubprocessExecBackend());
 
-/** 完整输出写盘到 tmp（不污染 workspace/checkpoint），返回路径。 */
+/**
+ * 完整输出写盘到 tmp（不污染 workspace/checkpoint），返回路径。
+ * 审查 4B-LOW：命令输出可能含 secret/token，写多用户共享 /tmp 必须 mode 0o600（仅属主可读），
+ * 否则同主机他用户可 readdir 枚举读取。（生命周期清理留后续：按会话/turn 结束清扫。）
+ */
 async function dumpOverflow(content: string): Promise<string> {
   const path = join(tmpdir(), `yo-bash-${randomUUID()}.log`);
-  await writeFile(path, content, 'utf8');
+  await writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
   return path;
 }
 

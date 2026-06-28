@@ -191,7 +191,7 @@ export type AnthropicSseEvent =
   | { type: 'message_delta'; delta?: { stop_reason?: string }; usage?: AnthropicUsage }
   | { type: 'message_stop' }
   | { type: 'ping' }
-  | { type: 'error'; error?: { message?: string } };
+  | { type: 'error'; error?: { message?: string; type?: string } };
 
 interface AnthropicUsage {
   input_tokens?: number;
@@ -248,8 +248,12 @@ export class AnthropicSseDecoder {
         if (ev.delta?.stop_reason) out.push({ kind: 'Stop', reason: mapStopReason(ev.delta.stop_reason) });
         return out;
       }
-      case 'error':
-        return [{ kind: 'Error', error: { message: ev.error?.message ?? 'anthropic error' } }];
+      case 'error': {
+        // 审查 4F-MED：SSE 流内 error 事件（如 overloaded_error，常在 content 前推送）原丢弃 category →
+        // fallback 链对早期瞬时错误不触发。归类后带上 category，使 kernel 能据此换路由/压缩重试。
+        const message = ev.error?.message ?? 'anthropic error';
+        return [{ kind: 'Error', error: { message, category: classifyError(undefined, `${ev.error?.type ?? ''} ${message}`) } }];
+      }
       default:
         return [];
     }

@@ -24,4 +24,18 @@ describe('4F — classifyError（错误归类驱动 fallback）', () => {
     expect(classifyError(undefined, '某些奇怪的错误')).toBe('unknown');
     expect(classifyError(418, "I'm a teapot")).toBe('unknown');
   });
+
+  // ───── 收口安全修复回归（4F-MED）─────
+
+  it('收口：Anthropic/Gemini context-overflow 文案归 context_overflow（压缩重试安全网不失效）', () => {
+    expect(classifyError(400, 'prompt is too long: 215534 tokens > 204798 maximum')).toBe('context_overflow');
+    expect(classifyError(400, 'input exceeds the maximum number of tokens')).toBe('context_overflow');
+    expect(classifyError(400, 'The input token count exceeds the limit')).toBe('context_overflow');
+    expect(classifyError(400, 'request failed for token reasons')).toBe('context_overflow'); // 400+token 兜底
+  });
+
+  it('收口：overloaded 归 rate_limit（早期瞬时错误驱动 fallback 换路由）', () => {
+    expect(classifyError(undefined, 'overloaded_error Overloaded')).toBe('rate_limit');
+    expect(classifyError(undefined, 'Overloaded')).toBe('rate_limit');
+  });
 });

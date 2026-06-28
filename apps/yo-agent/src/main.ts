@@ -226,6 +226,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     approvalTimeoutMs: interactive ? 5 * 60_000 : undefined, // 5 分钟默认 deny（§6.3）
     systemSuffix: renderSkillSummaries(skills) || undefined, // 技能摘要常驻 system（4D，跨 surface 统一）
     costEstimator: (m, u) => catalog.estimateCost(m, u), // 4F：UsageUpdate/TurnCompleted 填 costUsd（含 cache 分价）
+    sessionReaper: (sid) => subagents.abortInflight(sid), // 审查 gap#2：会话驱逐时回收其背景子 agent
     // fallbacks：内核已支持 deps.fallbacks（provider fallback 链 / auth rotation）；CLI 单 provider 默认不配链。
     // 多 key/多 provider 链由部署侧按需注入（见 docs/PHASE-4.md 4F）。
   });

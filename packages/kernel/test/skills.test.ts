@@ -73,6 +73,15 @@ describe('4D — loadSkills', () => {
     expect(skills).toEqual([]);
   });
 
+  it('收口 4D-LOW：超大 .md（>1MiB）被跳过，防 OOM DoS', async () => {
+    await writeFile(join(dir, 'huge.md'), '---\nname: huge\n---\n' + 'x'.repeat(1024 * 1024 + 10));
+    await writeFile(join(dir, 'ok.md'), '---\nname: ok\ndescription: 正常\n---\n正文');
+    const skills = await loadSkills([{ dir, source: 'project' }]);
+    const names = skills.map((s) => s.name);
+    expect(names).toContain('ok'); // 正常技能加载
+    expect(names).not.toContain('huge'); // 超大文件跳过
+  });
+
   it('renderSkillSummaries：摘要段含名与描述；空 → 空串', () => {
     expect(renderSkillSummaries([])).toBe('');
     const out = renderSkillSummaries([{ name: 'foo', description: '描述', body: 'x' }]);

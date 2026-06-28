@@ -40,6 +40,13 @@ export class DefaultPolicyEngine implements PolicyEngine {
     // never 工具恒放行（不可被权限模式升级为审批/拒，保持与既有 kernel 行为一致）。
     if (i.approval === 'never') return 'allow';
 
+    // read-only 优先：只读档对非读类恒拒，先于 always 升级（拒 > 审批，最严档不被 always 软化）。
+    if (i.permissionMode === 'read-only') return READ_CLASS.has(i.kind) ? 'allow' : 'deny';
+
+    // approval:'always'（必经审批契约，审查 4A-MED）：除 bypass（明示 opt-out）外恒走审批，
+    // 不被 accept-edits/autonomous/ci 的自动放行软化。否则声明 always 的（插件/外部）工具在非 supervised 档形同 risk-based。
+    if (i.approval === 'always' && i.permissionMode !== 'bypass') return 'ask';
+
     switch (i.permissionMode) {
       case 'supervised':
         // 默认档：全部非 never 工具走审批 —— 等价既有行为。
@@ -47,12 +54,12 @@ export class DefaultPolicyEngine implements PolicyEngine {
       case 'bypass':
         // 明示危险：全放行（CI 信任环境 / 显式 opt-out）。
         return 'allow';
-      case 'read-only':
-        // 只读：仅放行读类（read/search/think）；编辑/执行/删除/网络(fetch)/其它一律拒，且不弹审批。
-        return READ_CLASS.has(i.kind) ? 'allow' : 'deny';
+      // read-only 已在上方「read-only 优先」分支返回，不再入 switch。
       case 'accept-edits':
-        // 自动接受编辑：读类 + 编辑类直接放行；危险类与网络/其它仍走审批。
-        if (READ_CLASS.has(i.kind) || EDIT_CLASS.has(i.kind)) return 'allow';
+        // 自动接受编辑：读类直接放行；编辑类**仅低/中风险**放行，high/unknown（如写 Protected Path/.git/hooks）仍走审批
+        //（审查 4A-H：accept-edits 不应无视风险放行 Protected Path 写入）；危险类与网络/其它仍走审批。
+        if (READ_CLASS.has(i.kind)) return 'allow';
+        if (EDIT_CLASS.has(i.kind)) return i.risk === 'high' || i.risk === 'unknown' ? 'ask' : 'allow';
         return 'ask';
       case 'autonomous':
         // 自主：按风险——高/未知风险走审批，其余放行。

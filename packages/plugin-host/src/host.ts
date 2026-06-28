@@ -70,6 +70,8 @@ interface PluginRuntime {
   healthy: boolean;
   lastHeartbeatAt: number;
   attempt: number;
+  /** 是否已为本次崩溃排程重连（去重，审查 4E-MED：替代易截断重连链的 attempt>0 启发式）。 */
+  reconnecting: boolean;
   /** 已注册进 registry 的工具名（closeAll/reconnect 调和用）。 */
   registeredTools: Set<string>;
   pending: Map<number, Pending>;
@@ -192,6 +194,7 @@ export class DefaultPluginHost {
       healthy: false,
       lastHeartbeatAt: this.o.now(),
       attempt,
+      reconnecting: false,
       registeredTools: new Set(),
       pending: new Map(),
       hookPoints: new Set(),
@@ -199,6 +202,7 @@ export class DefaultPluginHost {
     rt.transport = transport;
     rt.attempt = attempt;
     rt.healthy = false;
+    rt.reconnecting = false; // 本次（重）启动进行中 → 清重连去重标志
     this.plugins.set(spec.id, rt);
 
     return new Promise<void>((resolve, reject) => {
@@ -268,6 +272,12 @@ export class DefaultPluginHost {
   private registerTools(rt: PluginRuntime, decls: PluginToolDecl[]): void {
     for (const decl of decls) {
       if (rt.registeredTools.has(decl.name)) continue; // 重连：已注册过（configFlag 已随 healthy 恢复可见）
+      // 审查 4E-MED：插件工具名不得冒用 MCP 保留命名空间 mcp__server__tool（否则恶意插件可冒名顶替/遮蔽
+      // 后注册的 MCP 工具 → confused deputy + 撞名 DoS 掉合法 MCP 工具，因插件先于 MCP 引导注册）。
+      if (decl.name.startsWith('mcp__')) {
+        this.log(`[plugin] ${rt.spec.id} 工具「${decl.name}」被拒：禁用 MCP 保留前缀 mcp__`);
+        continue;
+      }
       const tool: RegisteredTool = {
         descriptor: {
           name: decl.name,
@@ -442,18 +452,21 @@ export class DefaultPluginHost {
 
   /** 判死：撤健康标志（工具消失）→ 拒在飞调用 → 终止 Worker → 排程重连。绝不抛（主进程存活）。 */
   private degrade(rt: PluginRuntime, reason: string): void {
-    if (!rt.healthy && rt.pending.size === 0 && rt.attempt > 0) return; // 已降级，避免重复排程
+    // 降级动作（撤标志 + 拒在飞 + 终止 Worker）每次崩溃信号都执行（'error'/'exit'/心跳超时可重复触发，幂等）。
     const wasHealthy = rt.healthy;
     rt.healthy = false; // flags() 立即撤下 plugin:<id> → resolveAvailable 不再含其工具
     for (const [, pend] of rt.pending) this.settlePending(pend, new Error(`插件已崩溃：${reason}`));
     rt.pending.clear();
     if (wasHealthy) this.log(`[plugin] ${rt.spec.id} 降级：${reason}`);
-    void rt.transport.terminate().catch(() => {});
+    void rt.transport.terminate().catch(() => {}); // 始终终止（即便不再重连也不泄漏 Worker）
     if (this.closing) return;
+    // 重连排程去重：用显式 reconnecting 标志（审查 4E-MED：旧 attempt>0 启发式在首次重连后会截断重连链 + 漏 terminate）。
+    if (rt.reconnecting) return;
     if (rt.attempt >= this.o.maxReconnect) {
       this.log(`[plugin] ${rt.spec.id} 超重连上限（${this.o.maxReconnect}），放弃`);
       return;
     }
+    rt.reconnecting = true;
     const nextAttempt = rt.attempt + 1;
     const backoff = Math.min(30_000, 500 * 2 ** (nextAttempt - 1));
     const t = setTimeout(() => {

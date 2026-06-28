@@ -62,15 +62,23 @@ describe('4F — provider fallback / auth rotation', () => {
     expect(text(evs)).toBe('备用应答');
   });
 
-  it('billing/auth → 换 provider；路由粘滞（下一 turn 直接走备用）', async () => {
+  it('billing/auth → 换 provider；每 turn 回探主路由（不永久弃用，审查 4F-MED 修复）', async () => {
     const h = harness({ withFallback: true });
     h.primary.script(errorTurn('402', { category: 'billing' }));
     h.backup.script(textTurn('一'));
     await h.run('t1');
+    // t2：routeIdx 每 turn 归 0 → 再探主路由（仍 billing）→ 换备用。修复前会永久粘滞备用、即便主路由已恢复也不回探。
+    h.primary.script(errorTurn('402', { category: 'billing' }));
     h.backup.script(textTurn('二'));
     await h.run('t2');
-    expect(h.primary.seen).toHaveLength(1); // 主路由只在第一次被试
-    expect(h.backup.seen).toHaveLength(2); // 粘滞：t2 直接走备用，不回探死掉的主路由
+    expect(h.primary.seen).toHaveLength(2); // 每 turn 回探主路由
+    expect(h.backup.seen).toHaveLength(2); // 两 turn 各 fallback 到备用
+    // t3：主路由恢复 → 立即被重新采用（不被永久弃用）；用 seen 计数断言（稳健，不依赖跨 turn 事件累积）。
+    h.primary.script(textTurn('主路由已恢复'));
+    await h.run('t3');
+    expect(h.primary.seen).toHaveLength(3); // t3 又探主路由
+    expect(h.primary.seen[2]!.modelId).toBe('primary'); // 且成功走主路由
+    expect(h.backup.seen).toHaveLength(2); // t3 主路由成功，未再 fallback 到备用
   });
 
   it('context_overflow → 同模型压缩后重试（不换路由）', async () => {

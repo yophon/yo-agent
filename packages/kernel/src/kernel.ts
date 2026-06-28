@@ -75,6 +75,8 @@ export interface AgentKernelDeps {
    * 缺省空——行为同既有（provider 错误 → TurnFailed，无 fallback）。
    */
   fallbacks?: ProviderRoute[];
+  /** 会话驱逐回收钩子（审查 gap#2）：endSession 时调用，app 接 SubagentManager.abortInflight(sessionId) 回收背景子 agent。 */
+  sessionReaper?: (sessionId: Id) => void;
 }
 
 export interface StartSessionOpts {
@@ -232,7 +234,12 @@ export class AgentKernel implements Kernel, SubagentHost {
 
   /** 驱逐一次性会话（MCP run 等常驻进程防内存无界泄漏）。 */
   endSession(sessionId: Id): void {
+    const s = this.sessions.get(sessionId);
+    // 审查 gap#3：mid-turn 驱逐须 abort 在跑 turn，否则 turn 循环持已移除的 SessionState 引用继续 append/mutate（孤儿 turn）。
+    s?.turnAbort?.abort(new Error('session ended'));
     this.sessions.delete(sessionId);
+    // 审查 gap#2：通知外部回收该会话派生的背景子 agent（abortInflight 死代码的下游危害——背景子 agent 不随会话回收）。
+    this.d.sessionReaper?.(sessionId);
   }
 
   /** 审批是否仍挂起（surface 重放历史 ApprovalRequested 时据此跳过已决审批的 approval/request 重投）。 */
@@ -308,7 +315,9 @@ export class AgentKernel implements Kernel, SubagentHost {
   }
 
   async steer(sessionId: Id, text: string): Promise<void> {
-    this.require(sessionId).messages.push({ role: 'user', content: text });
+    // 审查 cross-seam-MED：经统一 appendUserText 并入（末条为 user 则合并，否则新增）——直接 push 会在「末条已是 user
+    // （注入 tool_result 那条 / 连续 steer）」时产生连续两条 user，破坏 provider 严格交替契约（400）。
+    this.appendUserText(this.require(sessionId), text);
   }
 
   async interrupt(sessionId: Id): Promise<void> {
@@ -368,6 +377,10 @@ export class AgentKernel implements Kernel, SubagentHost {
     }
     // 4F fallback：本 turn 是否已 commit 成功模型（已产出）。一旦 commit，后续 step 不得换模型（防跨模型漂移）。
     const chain = this.routeChain();
+    // 审查 4F-MED：每 turn 起点回探主路由（routeIdx 归 0）——否则一次瞬时 rate_limit/network 会让会话永久弃用主路由
+    //（即便主路由早已恢复）。turn 内 switch 仍递增（防本 turn 内反复打死路由）；持久错误（auth/billing）的跨 turn
+    // 粘滞优化（避免每 turn 白试一次死主路由）留作后续（见 docs/PHASE-4.md 已知限制）。
+    s.routeIdx = 0;
     let turnCommitted = false;
     for (let step = 0; step < maxSteps; step++) {
       if (s.interrupted) {
@@ -955,7 +968,11 @@ export class AgentKernel implements Kernel, SubagentHost {
    */
   private drainSteering(s: SessionState): void {
     if (s.pendingSteering.length === 0) return;
-    const note = s.pendingSteering.splice(0).join('\n\n');
+    this.appendUserText(s, s.pendingSteering.splice(0).join('\n\n'));
+  }
+
+  /** 把文本并入消息窗口的**末条 user**（保 user/assistant 严格交替）；末条非 user 则新增一条 user。 */
+  private appendUserText(s: SessionState, note: string): void {
     const last = s.messages[s.messages.length - 1];
     if (last && last.role === 'user') {
       if (typeof last.content === 'string') last.content = `${last.content}\n\n${note}`;
