@@ -9,9 +9,11 @@ import type {
   AgentEvent,
   ApprovalSuggestion,
   Id,
+  PlanStep,
   RiskLevel,
+  TodoItem,
 } from '@yo-agent/protocol';
-import { fmtInt, type Tone } from '../tui-format';
+import { fmtCost, fmtInt, type Tone } from '../tui-format';
 
 // ── 区块 ─────────────────────────────────────────────────────────────────
 export type Block =
@@ -29,6 +31,9 @@ export type Block =
       exitCode?: number;
       truncatedToPath?: string;
     }
+  | { kind: 'todo'; id: string; items: TodoItem[] }
+  | { kind: 'plan'; id: string; steps: PlanStep[] }
+  | { kind: 'subagent'; id: string; childId: string; label: string; model: string; summary?: string }
   | { kind: 'notice'; id: string; tone: Tone; text: string };
 
 export interface ApprovalView {
@@ -62,6 +67,10 @@ export interface UiState {
   liveUsage: UsageTotals;
   /** 区块 id 发号器。 */
   seq: number;
+  /** 活动行动作词(4.6c):思考中 / 读取 x / 执行 y / 等待审批。 */
+  activity: string;
+  /** 本轮 TurnStarted 的事件时戳(轮摘要算耗时;server-time 基准)。 */
+  turnStartedTs: number | null;
 }
 
 export const DEFAULT_SUGGESTIONS: ApprovalSuggestion[] = [
@@ -87,12 +96,14 @@ export function initialState(opts: InitialStateOpts): UiState {
     totals: ZERO_USAGE,
     liveUsage: ZERO_USAGE,
     seq: 0,
+    activity: '思考中',
+    turnStartedTs: null,
   };
 }
 
 // ── 动作 ─────────────────────────────────────────────────────────────────
 export type UiAction =
-  | { type: 'event'; event: AgentEvent }
+  | { type: 'event'; event: AgentEvent; ts?: number }
   /** 用户提交一轮(user 区块 + 进入运行态)。 */
   | { type: 'submit'; text: string }
   | { type: 'submit-failed'; message: string }
@@ -172,21 +183,41 @@ export function reduce(state: UiState, action: UiAction): UiState {
     case 'approval-clear':
       return { ...state, approval: null };
     case 'event':
-      return reduceEvent(state, action.event);
+      return reduceEvent(state, action.event, action.ts);
     default:
       return state;
   }
 }
 
-function reduceEvent(state: UiState, e: AgentEvent): UiState {
+/** ToolCallStarted → 活动行动作词。 */
+const KIND_VERB: Record<string, string> = {
+  read: '读取',
+  edit: '修改',
+  execute: '执行',
+  search: '检索',
+  fetch: '抓取',
+  think: '思考',
+  other: '调用',
+};
+
+function activityFor(name: string, toolKind: string, summary: string): string {
+  const verb = KIND_VERB[toolKind] ?? '调用';
+  const target = (summary || name).split('\n')[0] ?? '';
+  return `${verb} ${target.length > 40 ? target.slice(0, 39) + '…' : target}`;
+}
+
+function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
   switch (e.kind) {
+    case 'TurnStarted':
+      return { ...state, turnStartedTs: ts ?? null, activity: '思考中' };
     case 'AssistantText':
-      return e.delta ? appendStream(state, 'assistant', e.delta) : state;
+      return e.delta ? { ...appendStream(state, 'assistant', e.delta), activity: '回复中' } : state;
     case 'Reasoning':
-      return e.delta ? appendStream(state, 'reasoning', e.delta) : state;
+      return e.delta ? { ...appendStream(state, 'reasoning', e.delta), activity: '思考中' } : state;
     case 'ToolCallStarted':
       return {
         ...state,
+        activity: activityFor(e.name, e.toolKind, e.summary),
         live: [
           ...state.live,
           { kind: 'tool', id: e.id, name: e.name, summary: e.summary, input: e.input, output: '' },
@@ -203,6 +234,7 @@ function reduceEvent(state: UiState, e: AgentEvent): UiState {
     case 'ApprovalRequested':
       return {
         ...state,
+        activity: '等待审批',
         approval: {
           requestId: e.requestId,
           tool: e.tool,
@@ -216,10 +248,6 @@ function reduceEvent(state: UiState, e: AgentEvent): UiState {
       return pushLive(state, { kind: 'notice', tone: 'info', text: `上下文压缩:省 ${fmtInt(e.tokensSaved)} tokens` });
     case 'McpServerStatus':
       return pushLive(state, { kind: 'notice', tone: 'dim', text: `[mcp] ${e.server} → ${e.status}` });
-    case 'SubagentStarted':
-      return pushLive(state, { kind: 'notice', tone: 'dim', text: `↳ 子 agent 启动:${e.label}(${e.model})` });
-    case 'SubagentResult':
-      return pushLive(state, { kind: 'notice', tone: 'dim', text: `↳ 子 agent 完成:${e.summary}` });
     case 'ApiRetry':
       return pushLive(state, {
         kind: 'notice',
@@ -240,6 +268,30 @@ function reduceEvent(state: UiState, e: AgentEvent): UiState {
           costUsd: e.costUsd ?? 0,
         },
       };
+    case 'Todo':
+      return upsertByKind(state, 'todo', (id) => ({ kind: 'todo', id, items: e.items }));
+    case 'Plan':
+      return upsertByKind(state, 'plan', (id) => ({ kind: 'plan', id, steps: e.steps }));
+    case 'SubagentStarted':
+      return pushLive(state, { kind: 'subagent', childId: e.childSessionId, label: e.label, model: e.model });
+    case 'SubagentResult': {
+      let found = false;
+      const live = state.live.map((b) => {
+        if (b.kind === 'subagent' && b.childId === e.childSessionId) {
+          found = true;
+          return { ...b, summary: e.summary };
+        }
+        return b;
+      });
+      if (found) return { ...state, live };
+      return pushLive(state, { kind: 'notice', tone: 'dim', text: `↳ 子 agent 完成:${e.summary}` });
+    }
+    case 'BackgroundProcess':
+      return pushLive(state, {
+        kind: 'notice',
+        tone: 'dim',
+        text: `⚙ ${e.label}:${e.status}${e.exitCode !== undefined ? `(exit ${e.exitCode})` : ''}`,
+      });
     case 'TurnCompleted': {
       const u = e.usage;
       const totals: UsageTotals = {
@@ -249,26 +301,55 @@ function reduceEvent(state: UiState, e: AgentEvent): UiState {
         costUsd: state.totals.costUsd + (u.costUsd ?? e.costUsd ?? 0),
       };
       const flushed = flushLive({ ...state, totals, liveUsage: ZERO_USAGE });
-      const done = pushCommitted(
-        flushed,
-        e.stopReason === 'interrupted' ? 'warn' : 'success',
-        `完成 · ${e.stopReason}`,
-      );
-      return { ...done, running: false, turns: done.turns + 1 };
+      // 去噪(4.6c):正常完成只留一条 dim 轮摘要(耗时 · token · 成本);中断才发声。
+      let done = flushed;
+      if (e.stopReason === 'interrupted') {
+        done = pushCommitted(flushed, 'warn', '⏹ 已中断');
+      } else {
+        const summary = turnSummary(state.turnStartedTs, ts, u, u.costUsd ?? e.costUsd);
+        if (summary) done = pushCommitted(flushed, 'dim', summary);
+      }
+      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null };
     }
     case 'TurnFailed': {
       const flushed = flushLive(state);
       const done = pushCommitted(flushed, 'error', `失败:${e.error.message}`);
-      return { ...done, running: false, turns: done.turns + 1 };
+      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null };
     }
-    // 4.6a 行为等价:以下事件暂不渲染(4.6c 起接管 Todo/Plan/BackgroundProcess)。
+    // 会话元信息不渲染。
     case 'SessionStarted':
-    case 'TurnStarted':
-    case 'Todo':
-    case 'Plan':
-    case 'BackgroundProcess':
       return state;
     default:
       return state;
   }
+}
+
+/** 轮摘要:`· 8.2s · ↑1.2k ↓300 · $0.03`;全部为零 → null(不产噪音)。 */
+function turnSummary(
+  startedTs: number | null,
+  endTs: number | undefined,
+  u: { inputTokens: number; outputTokens: number },
+  costUsd: number | undefined,
+): string | null {
+  const parts: string[] = [];
+  if (startedTs !== null && endTs !== undefined && endTs > startedTs) {
+    parts.push(`${((endTs - startedTs) / 1000).toFixed(1)}s`);
+  }
+  if (u.inputTokens > 0 || u.outputTokens > 0) parts.push(`↑${fmtInt(u.inputTokens)} ↓${fmtInt(u.outputTokens)}`);
+  if (costUsd && costUsd > 0) parts.push(fmtCost(costUsd));
+  return parts.length ? `· ${parts.join(' · ')}` : null;
+}
+
+/** todo/plan 单例区块:live 内已有同类则就地更新,否则新开。 */
+function upsertByKind(state: UiState, kind: 'todo' | 'plan', make: (id: string) => Block): UiState {
+  const idx = state.live.findIndex((b) => b.kind === kind);
+  if (idx >= 0) {
+    const existing = state.live[idx]!;
+    const updated = { ...make(existing.id) };
+    const live = [...state.live];
+    live[idx] = updated;
+    return { ...state, live };
+  }
+  const [id, s2] = nextId(state);
+  return { ...s2, live: [...s2.live, make(id)] };
 }

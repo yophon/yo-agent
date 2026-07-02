@@ -61,6 +61,7 @@ export type KeyCommand =
   | { type: 'history-prev' }
   | { type: 'history-next' }
   | { type: 'backspace' }
+  | { type: 'toggle-verbose' }
   | { type: 'insert'; text: string };
 
 /** 无命令(吞掉或忽略)。 */
@@ -93,6 +94,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): Routed {
   if (key.ctrl && ch === 'd') return ctx.bufferEmpty ? { type: 'exit-request' } : { type: 'delete-forward' };
   if (key.ctrl && ch === 'b') return { type: 'cursor-left' };
   if (key.ctrl && ch === 'f') return { type: 'cursor-right' };
+  if (key.ctrl && ch === 'o') return { type: 'toggle-verbose' };
 
   // ⑤ 词操作(Alt+B/F、Alt+←→)。
   if (key.meta && (ch === 'b' || key.leftArrow)) return { type: 'word-left' };

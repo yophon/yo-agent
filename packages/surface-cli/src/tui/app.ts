@@ -20,6 +20,7 @@ import type { ApprovalDecision, EventEnvelope, Id, PermissionMode } from '@yo-ag
 import {
   SLASH_HELP,
   SPINNER_FRAMES,
+  fmtInt,
   parseSlash,
   riskColor,
   statusBar,
@@ -27,7 +28,7 @@ import {
 } from '../tui-format';
 import { initialState, reduce, type Block, type UiAction, type UiState } from './model';
 import { routeKey, type KeyCommand } from './keymap';
-import { renderBlock } from './render/blocks';
+import { renderBlock, type RenderOpts } from './render/blocks';
 import * as ed from './input/editor';
 import { PersistentHistory } from './input/history';
 import { PasteTracker, expandPastes, foldPaste, newPasteStore } from './input/paste';
@@ -131,13 +132,22 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     [],
   );
 
-  // spinner 动画帧。
+  // spinner 动画帧 + 本轮起始时刻(活动行耗时,UI 本地时钟)。
   const [spin, setSpin] = useState(0);
+  const runStartedAtRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!state.running) return;
+    if (!state.running) {
+      runStartedAtRef.current = null;
+      return;
+    }
+    runStartedAtRef.current ??= Date.now();
     const t = setInterval(() => setSpin((s) => (s + 1) % SPINNER_FRAMES.length), 80);
     return () => clearInterval(t);
   }, [state.running]);
+
+  // 工具区块展开体(Ctrl+O);只影响其后渲染(<Static> 已渲区块不回改)。
+  const [verbose, setVerbose] = useState(false);
+  const verboseRef = useRef(false);
 
   // ── 副作用:提交/命令 ────────────────────────────────────────────────
   function submit(text: string): void {
@@ -148,7 +158,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   }
 
   useEffect(() => {
-    const unsub = kernel.subscribe(sessionId, null, (env) => dispatch({ type: 'event', event: env.event }));
+    const unsub = kernel.subscribe(sessionId, null, (env) => dispatch({ type: 'event', event: env.event, ts: env.ts }));
     if (prompt.trim().length > 0) {
       dispatch({ type: 'submit', text: prompt });
       void kernel.submitInput(sessionId, prompt, `tui-${Date.now()}`).catch(() => {});
@@ -254,6 +264,10 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       }
       case 'interrupt':
         void kernel.interrupt?.(sessionId).catch(() => {});
+        break;
+      case 'toggle-verbose':
+        verboseRef.current = !verboseRef.current;
+        setVerbose(verboseRef.current);
         break;
       case 'exit-request':
         armExit();
@@ -381,8 +395,18 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     );
   } else {
     if (state.running) {
+      // 活动行(4.6c):动作词 + 耗时 + 本轮出 token。
+      const elapsed = runStartedAtRef.current ? Math.floor((Date.now() - runStartedAtRef.current) / 1000) : 0;
+      const parts = [`${SPINNER_FRAMES[spin]} ${state.activity}…`];
+      if (elapsed >= 1) parts.push(`${elapsed}s`);
+      if (state.liveUsage.outTok > 0) parts.push(`↓${fmtInt(state.liveUsage.outTok)}`);
       footer.push(
-        h(Text, { key: 'busy', color: 'gray' }, `${SPINNER_FRAMES[spin]} 运行中…(Esc/Ctrl+C 中断,可直接输入引导后回车)`),
+        h(
+          Text,
+          { key: 'busy', color: 'gray' },
+          parts.join(' · '),
+          h(Text, { key: 'h', dimColor: true }, '(Esc 中断 · Enter 引导)'),
+        ),
       );
     }
     footer.push(renderInputBox(editor, columns, state.running));
@@ -391,16 +415,19 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       : h(
           Text,
           { key: 'hint', color: 'gray', dimColor: true },
-          state.running ? 'Enter 引导当前轮 · Esc 中断' : 'Enter 发送 · Alt+Enter/Ctrl+J 换行 · ↑↓ 历史 · /help 命令',
+          state.running ? 'Enter 引导当前轮 · Esc 中断 · Ctrl+O 详情' : 'Enter 发送 · Alt+Enter/Ctrl+J 换行 · ↑↓ 历史 · Ctrl+O 详情 · /help 命令',
         );
     footer.push(hint);
   }
 
+  const renderOpts: RenderOpts = { width: columns, verbose };
   return h(
     Box,
     { flexDirection: 'column' },
-    h(Static, { key: 'static', items: state.committed, children: (b: unknown) => renderBlock(b as Block) }),
-    state.live.length ? h(Box, { key: 'live', flexDirection: 'column' }, ...state.live.map(renderBlock)) : null,
+    h(Static, { key: 'static', items: state.committed, children: (b: unknown) => renderBlock(b as Block, renderOpts) }),
+    state.live.length
+      ? h(Box, { key: 'live', flexDirection: 'column' }, ...state.live.map((b) => renderBlock(b, renderOpts)))
+      : null,
     h(Text, { key: 'bar', color: 'gray', dimColor: true }, bar),
     ...footer,
   );

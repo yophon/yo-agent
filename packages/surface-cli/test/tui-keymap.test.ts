@@ -50,6 +50,7 @@ describe('keymap:编辑/词操作/行移/历史', () => {
     expect(routeKey('k', { ctrl: true }, idle)).toEqual({ type: 'kill-line-end' });
     expect(routeKey('b', { ctrl: true }, idle)).toEqual({ type: 'cursor-left' });
     expect(routeKey('f', { ctrl: true }, idle)).toEqual({ type: 'cursor-right' });
+    expect(routeKey('o', { ctrl: true }, idle)).toEqual({ type: 'toggle-verbose' });
   });
   it('Alt+B/F 与 Alt+←→ → 词移动', () => {
     expect(routeKey('b', { meta: true }, idle)).toEqual({ type: 'word-left' });

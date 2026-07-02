@@ -14,3 +14,9 @@ export * as editor from './tui/input/editor';
 export { PersistentHistory, HISTORY_LIMIT } from './tui/input/history';
 export { PasteTracker, newPasteStore, foldPaste, expandPastes, FOLD_LINES } from './tui/input/paste';
 export { cellWidth, graphemes, strWidth } from './tui/input/width';
+// 渲染层(4.6c):markdown/diff 内有 inline/toStyled 等通用名,命名空间导出。
+export * as md from './tui/render/markdown';
+export * as diffRender from './tui/render/diff';
+export { toolView, type ToolView, type ToolBlock } from './tui/render/tool-views';
+export { lineText, type Span, type StyledLine } from './tui/render/spans';
+export { renderBlock, type RenderOpts } from './tui/render/blocks';

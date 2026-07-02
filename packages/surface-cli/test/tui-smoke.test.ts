@@ -44,14 +44,14 @@ describe('CliApp（Ink 冒烟）', () => {
   it('渲染流式助手文本 + 完成态', async () => {
     const kernel = new FakeKernel([
       ev({ kind: 'AssistantText', delta: '你好世界' }),
-      ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } }),
+      ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }),
     ]);
     const { lastFrame, unmount } = render(
       React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'hi', autoExit: false }),
     );
     await tick();
     expect(lastFrame()).toContain('你好世界');
-    expect(lastFrame()).toContain('完成');
+    expect(lastFrame()).toContain('· ↑10 ↓5'); // 4.6c 去噪:dim 轮摘要替代「完成」notice
     unmount();
   });
 
@@ -186,7 +186,8 @@ describe('CliApp 4.5（结构化渲染 / 命令 / 中断 / steer）', () => {
     expect(f).toContain('read'); // 工具名
     expect(f).toContain('note.txt'); // summary
     expect(f).toContain('PURPLE-42'); // 输出预览 + 助手文本
-    expect(f).toContain('✓'); // 完成图标
+    expect(f).toContain('⏺'); // 工具圆点(4.6c)
+    expect(f).toContain('1 行'); // read 折叠尾:行数
     unmount();
   });
 
