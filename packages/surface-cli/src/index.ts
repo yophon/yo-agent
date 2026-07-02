@@ -9,6 +9,7 @@ export * from './tui-format';
 export * from './tui/app';
 export * from './tui/model';
 export * from './tui/keymap';
+export { useSyncedRef, type SyncedRef } from './tui/hooks';
 // 输入层(4.6b):editor 命名过于通用(insert/left/up…),整体命名空间导出。
 export * as editor from './tui/input/editor';
 export { PersistentHistory, HISTORY_LIMIT } from './tui/input/history';
@@ -20,14 +21,14 @@ export * as diffRender from './tui/render/diff';
 export { toolView, type ToolView, type ToolBlock } from './tui/render/tool-views';
 export { lineText, type Span, type StyledLine } from './tui/render/spans';
 export { renderBlock, type RenderOpts } from './tui/render/blocks';
-// 命令与补全(4.6d)。SlashCommand 与 tui-format 旧类型撞名,这里以注册表版为准显式导出。
+// 命令与补全(4.6d;4.7a 起 tui-format 旧 SlashCommand 已删,注册表版直接导出)。
 export {
   buildCommands,
   findCommand,
   helpText,
   parseCommandLine,
   type CommandDeps,
-  type SlashCommand as SlashCommandDef,
+  type SlashCommand,
 } from './tui/commands';
 export * from './tui/input/completion';
 export { renderPicker, renderCompletionMenu, type PickerItem, type PickerState } from './tui/render/picker';

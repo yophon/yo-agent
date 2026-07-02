@@ -15,7 +15,7 @@ import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ApprovalDecision, EventEnvelope, Id, PermissionMode } from '@yo-agent/protocol';
-import { SPINNER_FRAMES, fmtInt, riskColor, statusBar, summarizeInput } from '../tui-format';
+import { SPINNER_FRAMES, fmtInt, riskColor, statusBar } from '../tui-format';
 import { initialState, reduce, type Block, type UiAction, type UiState } from './model';
 import { routeKey, type KeyCommand } from './keymap';
 import { renderBlock, type RenderOpts } from './render/blocks';

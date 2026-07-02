@@ -25,32 +25,6 @@ export function shortPath(p: string, home = process.env.HOME): string {
   return p;
 }
 
-/** 工具输出预览：去尾空白、取末 maxLines 行、每行截断到 maxCols。 */
-export function previewOutput(text: string, maxLines = 8, maxCols = 120): string[] {
-  const trimmed = text.replace(/\s+$/, '');
-  if (!trimmed) return [];
-  const lines = trimmed.split('\n');
-  const tail = lines.slice(-maxLines);
-  return tail.map((l) => (l.length > maxCols ? l.slice(0, maxCols - 1) + '…' : l));
-}
-
-/** 工具入参单行摘要（事件未给 summary 时回退用）。 */
-export function summarizeInput(input: unknown, max = 100): string {
-  if (input == null) return '';
-  if (typeof input === 'string') return input.length > max ? input.slice(0, max - 1) + '…' : input;
-  try {
-    const s = JSON.stringify(input);
-    return s.length > max ? s.slice(0, max - 1) + '…' : s;
-  } catch {
-    return '';
-  }
-}
-
-/** 工具状态图标。 */
-export function toolIcon(status: 'ok' | 'error' | undefined): string {
-  return status === 'ok' ? '✓' : status === 'error' ? '✗' : '·';
-}
-
 export type Tone = 'info' | 'warn' | 'error' | 'dim' | 'success';
 
 /** ink 颜色名（risk → 颜色）。 */
@@ -91,22 +65,3 @@ export function statusBar(o: StatusBarInput): string {
 
 /** spinner 帧（盲文转轮）。 */
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-export const SLASH_HELP = [
-  '可用命令：',
-  '  /help          显示本帮助',
-  '  /clear         清空可视记录（不影响会话历史）',
-  '  /model         显示当前模型与可用模型',
-  '  /cwd           显示工作目录',
-  '  /exit, /quit   退出',
-  '快捷键：Enter 发送 · 运行中 Enter 追加引导(steer) · Esc/Ctrl+C 中断当前轮 · ↑↓ 历史 · ←→/Ctrl+A/E 移动光标 · Ctrl+U 清空',
-].join('\n');
-
-/** 已知 slash 命令集合（用于判定是否进会话）。 */
-export const SLASH_COMMANDS = ['/help', '/clear', '/model', '/cwd', '/exit', '/quit'] as const;
-export type SlashCommand = (typeof SLASH_COMMANDS)[number];
-
-export function parseSlash(text: string): SlashCommand | null {
-  const head = text.trim().split(/\s+/)[0] ?? '';
-  return (SLASH_COMMANDS as readonly string[]).includes(head) ? (head as SlashCommand) : null;
-}

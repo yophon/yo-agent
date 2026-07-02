@@ -1,15 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  fmtInt,
-  fmtCost,
-  shortPath,
-  previewOutput,
-  summarizeInput,
-  toolIcon,
-  riskColor,
-  statusBar,
-  parseSlash,
-} from '@yo-agent/surface-cli';
+import { fmtInt, fmtCost, shortPath, riskColor, statusBar } from '@yo-agent/surface-cli';
 
 describe('4.5 — tui-format 纯函数', () => {
   it('fmtInt：千/百万缩写', () => {
@@ -33,24 +23,7 @@ describe('4.5 — tui-format 纯函数', () => {
     expect(shortPath('/etc/x', '/home/u')).toBe('/etc/x');
   });
 
-  it('previewOutput：取末 N 行 + 每行截断', () => {
-    expect(previewOutput('')).toEqual([]);
-    expect(previewOutput('a\nb\nc\n\n')).toEqual(['a', 'b', 'c']);
-    expect(previewOutput('1\n2\n3\n4', 2)).toEqual(['3', '4']);
-    expect(previewOutput('x'.repeat(10), 8, 5)).toEqual(['xxxx…']);
-  });
-
-  it('summarizeInput：字符串/对象/截断', () => {
-    expect(summarizeInput(null)).toBe('');
-    expect(summarizeInput('hi')).toBe('hi');
-    expect(summarizeInput({ a: 1 })).toBe('{"a":1}');
-    expect(summarizeInput('y'.repeat(200)).endsWith('…')).toBe(true);
-  });
-
-  it('toolIcon / riskColor', () => {
-    expect(toolIcon(undefined)).toBe('·');
-    expect(toolIcon('ok')).toBe('✓');
-    expect(toolIcon('error')).toBe('✗');
+  it('riskColor', () => {
     expect(riskColor('low')).toBe('green');
     expect(riskColor('high')).toBe('red');
     expect(riskColor('unknown')).toBe('magenta');
@@ -65,12 +38,5 @@ describe('4.5 — tui-format 纯函数', () => {
     expect(s).toContain('$0.02');
     expect(s).toContain('/tmp/x');
     expect(s).not.toContain('cache'); // cacheTok=0 不显示
-  });
-
-  it('parseSlash：识别已知命令、忽略未知', () => {
-    expect(parseSlash('/help')).toBe('/help');
-    expect(parseSlash('/model anthropic')).toBe('/model');
-    expect(parseSlash('/nope')).toBeNull();
-    expect(parseSlash('hello')).toBeNull();
   });
 });
