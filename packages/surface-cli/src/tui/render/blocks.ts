@@ -53,6 +53,17 @@ export function styledLine(line: StyledLine, key: string, prefix = ''): React.Re
 }
 const lineEl = styledLine;
 
+/**
+ * memo 化区块视图(4.7e):区块对象不可变(reducer 变更即换新对象),按引用比较即可命中。
+ * 避免 spinner tick/编辑器击键等无关重渲反复对长 markdown 全文重解析。
+ */
+export const BlockView = React.memo(
+  (props: { block: Block; opts: RenderOpts }): React.ReactElement => renderBlock(props.block, props.opts),
+  (prev, next) =>
+    prev.block === next.block && prev.opts.width === next.opts.width && prev.opts.verbose === next.opts.verbose,
+);
+BlockView.displayName = 'BlockView';
+
 export function renderBlock(b: Block, opts: RenderOpts = DEFAULT_OPTS): React.ReactElement {
   switch (b.kind) {
     case 'user':

@@ -16,10 +16,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import type { Id, PermissionMode } from '@yo-agent/protocol';
-import { SPINNER_FRAMES, statusBar } from '../tui-format';
+import { statusBar } from '../tui-format';
 import { initialState, reduce, type Block, type UiAction, type UiState } from './model';
 import { routeKey } from './keymap';
-import { renderBlock, type RenderOpts } from './render/blocks';
+import { BlockView, type RenderOpts } from './render/blocks';
 import { renderFooter } from './render/footer';
 import * as ed from './input/editor';
 import { PersistentHistory } from './input/history';
@@ -103,14 +103,28 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   const filesLoadingRef = useRef(false);
   const lastTokenRef = useRef<string | null>(null);
 
+  // 同一 (text, cursor, files, 抑制) 的补全在一次按键内会被路由/执行/渲染多处查询,缓存一份(4.7e)。
+  const menuCacheRef = useRef<{
+    text: string;
+    cursor: number;
+    files: string[] | null;
+    suppressed: string | null;
+    result: Completion | null;
+  } | null>(null);
   const computeMenu = (edState: ed.EditorState): Completion | null => {
+    const files = filesBox.current;
+    const suppressed = stateRef.current.menu.suppressedToken;
+    const c = menuCacheRef.current;
+    if (c && c.text === edState.text && c.cursor === edState.cursor && c.files === files && c.suppressed === suppressed) {
+      return c.result;
+    }
     const comp = computeCompletion(edState.text, edState.cursor, {
-      commands: commandsRef.current.map((c) => ({ name: c.name, desc: c.desc })),
-      files: filesBox.current,
+      commands: commandsRef.current.map((cm) => ({ name: cm.name, desc: cm.desc })),
+      files,
     });
-    if (!comp) return null;
-    if (stateRef.current.menu.suppressedToken === comp.token) return null;
-    return comp;
+    const result = comp && suppressed !== comp.token ? comp : null;
+    menuCacheRef.current = { text: edState.text, cursor: edState.cursor, files, suppressed, result };
+    return result;
   };
   const completion = computeMenu(editorBox.value);
   // token 变化 → 重置选中、解除抑制;触发文件清单懒加载。
@@ -138,17 +152,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   const rejectConfirm = useArmedConfirm();
   const exitConfirm = useArmedConfirm();
 
-  // spinner 动画帧 + 本轮起始时刻(活动行耗时,UI 本地时钟)。
-  const [spin, setSpin] = useState(0);
+  // 本轮起始时刻(活动行耗时,UI 本地时钟;spinner tick 在 footer 的 ActivityLine 自持,4.7e)。
   const runStartedAtRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!state.running) {
-      runStartedAtRef.current = null;
-      return;
-    }
-    runStartedAtRef.current ??= Date.now();
-    const t = setInterval(() => setSpin((s) => (s + 1) % SPINNER_FRAMES.length), 80);
-    return () => clearInterval(t);
+    if (!state.running) runStartedAtRef.current = null;
+    else runStartedAtRef.current ??= Date.now();
   }, [state.running]);
 
   // ── 副作用:提交/订阅 ────────────────────────────────────────────────
@@ -303,10 +311,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       }
       const s = stateRef.current;
       const cur = editorBox.current;
+      const menu = computeMenu(cur);
       const cmd = routeKey(ev.ch, ev.key, {
         approvalOpen: s.approval !== null,
         pickerOpen: s.picker !== null,
-        menuOpen: computeMenu(cur) !== null && (computeMenu(cur)?.items.length ?? 0) > 0,
+        menuOpen: menu !== null && menu.items.length > 0,
         guideActive: s.pendingGuide !== null,
         running: s.running,
         bufferEmpty: cur.text.length === 0,
@@ -340,8 +349,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     filesLoading: completion?.kind === 'file' && filesBox.value === null,
     exitArmed: exitConfirm.armed,
     rejectArmed: rejectConfirm.armed,
-    spinFrame: SPINNER_FRAMES[spin]!,
-    elapsedSec: runStartedAtRef.current ? Math.floor((Date.now() - runStartedAtRef.current) / 1000) : 0,
+    runStartedAt: runStartedAtRef.current,
   });
 
   const renderOpts: RenderOpts = { width: columns, verbose: verboseBox.value };
@@ -349,9 +357,13 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   return h(
     Box,
     { flexDirection: 'column' },
-    h(Static, { key: 'static', items: state.committed, children: (b: unknown) => renderBlock(b as Block, renderOpts) }),
+    h(Static, {
+      key: 'static',
+      items: state.committed,
+      children: (b: unknown) => h(BlockView, { key: (b as Block).id, block: b as Block, opts: renderOpts }),
+    }),
     liveBlocks.length
-      ? h(Box, { key: 'live', flexDirection: 'column' }, ...liveBlocks.map((b) => renderBlock(b, renderOpts)))
+      ? h(Box, { key: 'live', flexDirection: 'column' }, ...liveBlocks.map((b) => h(BlockView, { key: b.id, block: b, opts: renderOpts })))
       : null,
     h(
       Text,
