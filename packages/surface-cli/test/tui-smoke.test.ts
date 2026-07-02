@@ -347,3 +347,77 @@ describe('CliApp 4.6b(多行输入 / 粘贴 / 退出保护)', () => {
     unmount();
   });
 });
+
+describe('CliApp 4.6d(slash 菜单 / @文件补全 / 新命令)', () => {
+  it('输入 / 弹补全菜单;/mo + Tab 补全为 /model;Enter 执行', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '', model: 'gpt-5.5' }));
+    await tick();
+    stdin.write('/mo');
+    await tick();
+    expect(lastFrame()).toContain('/model'); // 菜单候选
+    stdin.write('\t'); // Tab 接受
+    await tick();
+    stdin.write(ENTER); // 完整命令名 → 直接执行
+    await tick();
+    expect(lastFrame()).toContain('当前模型');
+    expect(kernel.submitted).toEqual([]); // 未当 prompt 提交
+    unmount();
+  });
+
+  it('@ 文件补全:注入清单,模糊选中后插入路径', async () => {
+    const kernel = new RecordingKernel();
+    const fileLister = async () => ['src/app.ts', 'src/kernel.ts'];
+    const { lastFrame, stdin, unmount } = render(
+      React.createElement(CliApp, { kernel, sessionId: 's', prompt: '', fileLister }),
+    );
+    await tick();
+    stdin.write('看下 @ker');
+    await tick();
+    await tick(); // 等懒加载文件清单
+    expect(lastFrame()).toContain('src/kernel.ts'); // 菜单候选
+    stdin.write('\t');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['看下 @src/kernel.ts']); // 提交时 trim 尾空格
+    unmount();
+  });
+
+  it('/cost 输出用量流水;/mcp 空态提示;未知命令警告', async () => {
+    const kernel = new FakeKernel([
+      ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, costUsd: 0.02 } }),
+    ]);
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'go' }));
+    await tick();
+    stdin.write('/cost');
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain('用量明细');
+    expect(lastFrame()).toContain('↑100 ↓50');
+    stdin.write('/nope');
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain('未知命令');
+    unmount();
+  });
+
+  it('/new:开新会话并切换订阅', async () => {
+    class NewSessionKernel extends RecordingKernel {
+      readonly started: string[] = [];
+      async startSession(): Promise<string> {
+        this.started.push('s2');
+        return 's2';
+      }
+    }
+    const kernel = new NewSessionKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('/new');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.started).toEqual(['s2']);
+    expect(lastFrame()).toContain('已开新会话');
+    unmount();
+  });
+});

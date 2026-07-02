@@ -27,6 +27,10 @@ export interface KeyLike {
 export interface KeyContext {
   /** 审批面板打开(最高优先,吞其余输入)。 */
   approvalOpen: boolean;
+  /** 通用选择器打开(次优先,吞其余输入;/model /resume 等)。 */
+  pickerOpen: boolean;
+  /** 补全菜单打开(只截获 ↑↓/Tab/Enter/Esc,其余落回编辑器继续过滤)。 */
+  menuOpen: boolean;
   /** 当前轮运行中(影响 Ctrl+C / Esc 语义)。 */
   running: boolean;
   /** 输入缓冲为空(Ctrl+D 退出判据)。 */
@@ -62,6 +66,14 @@ export type KeyCommand =
   | { type: 'history-next' }
   | { type: 'backspace' }
   | { type: 'toggle-verbose' }
+  | { type: 'picker-up' }
+  | { type: 'picker-down' }
+  | { type: 'picker-confirm' }
+  | { type: 'picker-cancel' }
+  | { type: 'menu-up' }
+  | { type: 'menu-down' }
+  | { type: 'menu-accept' }
+  | { type: 'menu-close' }
   | { type: 'insert'; text: string };
 
 /** 无命令(吞掉或忽略)。 */
@@ -75,6 +87,25 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): Routed {
     if (key.return) return { type: 'approval-confirm' };
     if (key.escape) return { type: 'approval-reject' };
     return null;
+  }
+
+  // ①.5 通用选择器:同审批,吞其余输入。
+  if (ctx.pickerOpen) {
+    if (key.upArrow) return { type: 'picker-up' };
+    if (key.downArrow) return { type: 'picker-down' };
+    if (key.return) return { type: 'picker-confirm' };
+    if (key.escape) return { type: 'picker-cancel' };
+    if (key.ctrl && ch === 'c') return { type: 'picker-cancel' };
+    return null;
+  }
+
+  // ①.7 补全菜单:只截获导航/接受/关闭,其余落回编辑器继续过滤。
+  if (ctx.menuOpen) {
+    if (key.upArrow) return { type: 'menu-up' };
+    if (key.downArrow) return { type: 'menu-down' };
+    if (key.tab) return { type: 'menu-accept' };
+    if (key.return) return { type: 'menu-accept' };
+    if (key.escape) return { type: 'menu-close' };
   }
 
   // ② Ctrl+C / Esc:运行中中断;空闲 Ctrl+C 请求退出、Esc 清空输入。

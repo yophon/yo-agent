@@ -69,6 +69,10 @@ export interface UiState {
   seq: number;
   /** 活动行动作词(4.6c):思考中 / 读取 x / 执行 y / 等待审批。 */
   activity: string;
+  /** 每轮用量流水(/cost)。 */
+  costLog: UsageTotals[];
+  /** MCP server 连接状态快照(/mcp)。 */
+  mcpStatus: Record<string, { status: string; toolCount?: number; error?: string }>;
   /** 本轮 TurnStarted 的事件时戳(轮摘要算耗时;server-time 基准)。 */
   turnStartedTs: number | null;
 }
@@ -97,6 +101,8 @@ export function initialState(opts: InitialStateOpts): UiState {
     liveUsage: ZERO_USAGE,
     seq: 0,
     activity: '思考中',
+    costLog: [],
+    mcpStatus: {},
     turnStartedTs: null,
   };
 }
@@ -247,7 +253,16 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
     case 'ContextCompacted':
       return pushLive(state, { kind: 'notice', tone: 'info', text: `上下文压缩:省 ${fmtInt(e.tokensSaved)} tokens` });
     case 'McpServerStatus':
-      return pushLive(state, { kind: 'notice', tone: 'dim', text: `[mcp] ${e.server} → ${e.status}` });
+      return pushLive(
+        {
+          ...state,
+          mcpStatus: {
+            ...state.mcpStatus,
+            [e.server]: { status: e.status, toolCount: e.toolCount, error: e.error },
+          },
+        },
+        { kind: 'notice', tone: 'dim', text: `[mcp] ${e.server} → ${e.status}` },
+      );
     case 'ApiRetry':
       return pushLive(state, {
         kind: 'notice',
@@ -300,7 +315,13 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
         cacheTok: state.totals.cacheTok + u.cacheReadTokens,
         costUsd: state.totals.costUsd + (u.costUsd ?? e.costUsd ?? 0),
       };
-      const flushed = flushLive({ ...state, totals, liveUsage: ZERO_USAGE });
+      const turnUsage: UsageTotals = {
+        inTok: u.inputTokens,
+        outTok: u.outputTokens,
+        cacheTok: u.cacheReadTokens,
+        costUsd: u.costUsd ?? e.costUsd ?? 0,
+      };
+      const flushed = flushLive({ ...state, totals, liveUsage: ZERO_USAGE, costLog: [...state.costLog, turnUsage] });
       // 去噪(4.6c):正常完成只留一条 dim 轮摘要(耗时 · token · 成本);中断才发声。
       let done = flushed;
       if (e.stopReason === 'interrupted') {
