@@ -7,7 +7,7 @@
  * 本 hook 把三件套收敛为一个返回值:读走 `.current`(恒最新),写走 `set()`(同步改
  * ref + 触发重渲),渲染取值直接用 `.value`。
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface SyncedRef<T> {
   /** 同帧同步可见的最新值(事件闭包内读这个)。 */
@@ -30,6 +30,49 @@ export function useSyncedRef<T>(initial: T | (() => T)): SyncedRef<T> {
     set(next: T) {
       ref.current = next;
       setValue(next);
+    },
+  };
+}
+
+/**
+ * 双击确认(4.7c):首次触发进入武装态(窗口内提示「再按一次」),窗口内再次触发才执行。
+ * 空闲 Ctrl+C/Ctrl+D 退出与审批面板 Esc 拒绝共用;任何其他按键可 disarm() 解除。
+ */
+export interface ArmedConfirm {
+  /** 渲染快照:武装中(显示「再按一次」提示)。 */
+  armed: boolean;
+  /** 未武装 → 武装并起倒计时;武装中 → 解除并执行 action。 */
+  fire(action: () => void): void;
+  /** 解除武装(倒计时一并清除;未武装时 no-op)。 */
+  disarm(): void;
+}
+
+export function useArmedConfirm(windowMs = 3000): ArmedConfirm {
+  const armed = useSyncedRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clear = (): void => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+  };
+  useEffect(() => clear, []);
+  return {
+    armed: armed.value,
+    fire(action) {
+      if (armed.current) {
+        clear();
+        armed.set(false);
+        action();
+        return;
+      }
+      armed.set(true);
+      clear();
+      timer.current = setTimeout(() => armed.set(false), windowMs);
+    },
+    disarm() {
+      clear();
+      if (armed.current) armed.set(false);
     },
   };
 }

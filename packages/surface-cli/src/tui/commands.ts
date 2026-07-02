@@ -4,9 +4,8 @@
  */
 import type { Tone } from '../tui-format';
 import { fmtCost, fmtInt } from '../tui-format';
-import type { UiState } from './model';
+import type { PickerState, UiState } from './model';
 import type { TuiKernel } from './app';
-import type { PickerState } from './render/picker';
 import type { Id, PermissionMode } from '@yo-agent/protocol';
 
 /** Shift+Tab 循环圈(bypass/ci 不进循环,仅 /mode 显式可达)。 */

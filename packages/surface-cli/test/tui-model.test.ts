@@ -226,3 +226,66 @@ describe('reducer:本地动作', () => {
     expect(s.live).toHaveLength(0);
   });
 });
+
+describe('reducer:4.7c 交互态(picker/queue/guide/menu)', () => {
+  const APPROVAL: AgentEvent = {
+    kind: 'ApprovalRequested',
+    requestId: 'r1',
+    tool: 'bash',
+    input: { command: 'rm x' },
+    risk: 'high',
+    suggestions: [],
+  };
+
+  it('picker:open/move 环绕/close;无 picker 时 move 为 no-op', () => {
+    const picker = { title: 't', items: [{ label: 'a', value: 1 }, { label: 'b', value: 2 }], selected: 0, onPick: () => {} };
+    let s = reduce(s0(), { type: 'picker-open', picker });
+    expect(s.picker?.title).toBe('t');
+    s = reduce(s, { type: 'picker-move', delta: -1 });
+    expect(s.picker?.selected).toBe(1); // 环绕到尾
+    s = reduce(s, { type: 'picker-move', delta: 1 });
+    expect(s.picker?.selected).toBe(0);
+    s = reduce(s, { type: 'picker-close' });
+    expect(s.picker).toBeNull();
+    expect(reduce(s, { type: 'picker-move', delta: 1 })).toBe(s); // no-op 返回原引用
+  });
+
+  it('queue:push/shift 队首/pop 队尾;空队 no-op', () => {
+    let s = reduce(s0(), { type: 'queue-push', text: 'a' });
+    s = reduce(s, { type: 'queue-push', text: 'b' });
+    s = reduce(s, { type: 'queue-push', text: 'c' });
+    expect(s.queue).toEqual(['a', 'b', 'c']);
+    s = reduce(s, { type: 'queue-shift' });
+    expect(s.queue).toEqual(['b', 'c']);
+    s = reduce(s, { type: 'queue-pop' });
+    expect(s.queue).toEqual(['b']);
+    s = reduce(s, { type: 'queue-shift' });
+    expect(reduce(s, { type: 'queue-shift' })).toBe(s);
+  });
+
+  it('guide:enter 把 approval 移入 pendingGuide;restore 移回;exit 清空', () => {
+    let s = ev(s0(true), APPROVAL);
+    expect(s.approval?.requestId).toBe('r1');
+    s = reduce(s, { type: 'guide-enter' });
+    expect(s.approval).toBeNull();
+    expect(s.pendingGuide?.requestId).toBe('r1');
+    s = reduce(s, { type: 'approval-restore' });
+    expect(s.approval?.requestId).toBe('r1');
+    expect(s.pendingGuide).toBeNull();
+    s = reduce(s, { type: 'guide-enter' });
+    s = reduce(s, { type: 'guide-exit' });
+    expect(s.pendingGuide).toBeNull();
+    expect(reduce(s, { type: 'guide-enter' })).toBe(reduce(s, { type: 'guide-enter' })); // approval 空时 no-op
+  });
+
+  it('menu:select/suppress;同值返回原引用(每键不空转重渲)', () => {
+    let s = reduce(s0(), { type: 'menu-select', index: 2 });
+    expect(s.menu.selected).toBe(2);
+    expect(reduce(s, { type: 'menu-select', index: 2 })).toBe(s);
+    s = reduce(s, { type: 'menu-suppress', token: '/mo' });
+    expect(s.menu.suppressedToken).toBe('/mo');
+    expect(reduce(s, { type: 'menu-suppress', token: '/mo' })).toBe(s);
+    s = reduce(s, { type: 'menu-suppress', token: null });
+    expect(s.menu.suppressedToken).toBeNull();
+  });
+});

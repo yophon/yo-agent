@@ -32,4 +32,5 @@ export {
   type SlashCommand,
 } from './tui/commands';
 export * from './tui/input/completion';
-export { renderPicker, renderCompletionMenu, type PickerItem, type PickerState } from './tui/render/picker';
+// PickerItem/PickerState 4.7c 起由 model 导出(上方 export * from './tui/model')。
+export { renderPicker, renderCompletionMenu } from './tui/render/picker';

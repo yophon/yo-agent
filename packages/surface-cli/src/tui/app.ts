@@ -1,14 +1,16 @@
 /**
- * Ink TUI 组装壳(DESIGN §7.2;4.6a 重构 / 4.6b 输入 / 4.6c 渲染 / 4.6d 命令与补全)。
+ * Ink TUI 组装壳(DESIGN §7.2;4.6a 重构 / 4.6b 输入 / 4.6c 渲染 / 4.6d 命令与补全 /
+ * 4.7b 解码层 / 4.7c 状态统一)。
  *
- * 分层:事件折叠在 model.ts(纯 reducer);raw chunk 解码在 input/decoder.ts(粘贴拦截/
- * pty 切段);按键路由在 keymap.ts(层级:审批 > 选择器 > 补全菜单 > 编辑器);多行编辑
+ * 分层:事件折叠与交互态在 model.ts(纯 reducer);raw chunk 解码在 input/decoder.ts(粘贴
+ * 拦截/pty 切段);按键路由在 keymap.ts(层级:审批 > 选择器 > 补全菜单 > 编辑器);多行编辑
  * input/editor.ts;粘贴折叠 input/paste.ts;历史 input/history.ts;补全 input/completion.ts;
  * slash 注册表 commands.ts;渲染 render/*。本文件只做:订阅内核事件、执行命令副作用、
  * 摆放区块 + 状态栏 + 输入框/审批/选择器。
  *
  * dispatch 走「ref 镜像 + 纯 reduce」:同帧多次按键/事件在 useInput 闭包里能同步读到最新
- * 状态(useState 异步批处理读不到,4.5 已踩过)。
+ * 状态(useState 异步批处理读不到,4.5 已踩过)。组件本地态(编辑器/模式等)统一走
+ * useSyncedRef(4.7c),同一约束同一解法。
  * 用 React.createElement 而非 JSX(免 tsconfig jsx 配置、保持全 .ts)。
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -20,7 +22,7 @@ import { SPINNER_FRAMES, fmtInt, riskColor, statusBar } from '../tui-format';
 import { initialState, reduce, type Block, type UiAction, type UiState } from './model';
 import { routeKey, type KeyCommand } from './keymap';
 import { renderBlock, type RenderOpts } from './render/blocks';
-import { renderCompletionMenu, renderPicker, type PickerState } from './render/picker';
+import { renderCompletionMenu, renderPicker } from './render/picker';
 import * as ed from './input/editor';
 import { PersistentHistory } from './input/history';
 import { InputDecoder } from './input/decoder';
@@ -29,6 +31,7 @@ import { acceptCompletion, computeCompletion, listFiles, type Completion } from 
 import { MODE_CYCLE, applyMode, buildCommands, findCommand, parseCommandLine, type CommandDeps } from './commands';
 import { approvalBody } from './render/approval';
 import { styledLine } from './render/blocks';
+import { useArmedConfirm, useSyncedRef } from './hooks';
 import { readFileSync } from 'node:fs';
 import type { ApprovalView } from './model';
 
@@ -98,18 +101,16 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   const columns = stdout?.columns ?? 80;
 
   // ── 会话(/new /resume 可切换)+ 会话级模型/模式(K1/K2 可变)──────────
-  const [sid, setSid] = useState<Id>(sessionId);
-  const sidRef = useRef<Id>(sessionId);
+  const sidBox = useSyncedRef<Id>(sessionId);
   const [curModel, setCurModel] = useState(model);
-  const [curMode, setCurMode] = useState<PermissionMode>(permissionMode);
-  const curModeRef = useRef<PermissionMode>(permissionMode);
+  const modeBox = useSyncedRef<PermissionMode>(permissionMode);
 
   // 上下文占用(状态栏 ctx%)与 git 分支;每轮完成/压缩后刷新。
   const [ctx, setCtx] = useState<{ usedTokens: number; usableTokens: number } | null>(null);
   const [branch, setBranch] = useState<string | undefined>(undefined);
   const refreshMeta = useCallback((): void => {
     try {
-      const c = kernel.contextState?.(sidRef.current);
+      const c = kernel.contextState?.(sidBox.current);
       if (c) setCtx(c);
     } catch {
       // 会话未知等瞬态错误忽略
@@ -131,13 +132,9 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     setState(stateRef.current);
   }, []);
 
-  // ── 编辑器(ref 镜像同理)──────────────────────────────────────────────
-  const [editor, setEditorState] = useState<ed.EditorState>(ed.EMPTY);
-  const edRef = useRef<ed.EditorState>(ed.EMPTY);
-  const setEditor = (next: ed.EditorState): void => {
-    edRef.current = next;
-    setEditorState(next);
-  };
+  // ── 编辑器(useSyncedRef:事件闭包读 .current,渲染读 .value)────────────
+  const editorBox = useSyncedRef<ed.EditorState>(ed.EMPTY);
+  const setEditor = editorBox.set;
 
   // 输入历史(仅记非 slash 的真实提问;historyFile 注入时跨进程持久)。
   const historyRef = useRef<PersistentHistory | null>(null);
@@ -148,113 +145,45 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   const decoderRef = useRef(new InputDecoder());
   const pasteStoreRef = useRef(newPasteStore());
 
-  // ── 补全(4.6d):候选由 editor 状态派生;选中/抑制为本地状态 ─────────────
+  // ── 补全(4.6d):候选由 editor 状态派生;选中/抑制在 reducer(4.7c)──────
   const commandsRef = useRef(buildCommands());
-  const [files, setFiles] = useState<string[] | null>(null);
-  const filesRef = useRef<string[] | null>(null);
+  const filesBox = useSyncedRef<string[] | null>(null);
   const filesLoadingRef = useRef(false);
-  const [menuSel, setMenuSel] = useState(0);
-  const menuSelRef = useRef(0);
-  const setMenuSelBoth = (n: number): void => {
-    menuSelRef.current = n;
-    setMenuSel(n);
-  };
-  /** Esc 关闭菜单后抑制同一 token(输入变化自动解除)。 */
-  const suppressedTokenRef = useRef<string | null>(null);
   const lastTokenRef = useRef<string | null>(null);
 
   const computeMenu = (edState: ed.EditorState): Completion | null => {
     const comp = computeCompletion(edState.text, edState.cursor, {
       commands: commandsRef.current.map((c) => ({ name: c.name, desc: c.desc })),
-      files: filesRef.current,
+      files: filesBox.current,
     });
     if (!comp) return null;
-    if (suppressedTokenRef.current === comp.token) return null;
+    if (stateRef.current.menu.suppressedToken === comp.token) return null;
     return comp;
   };
-  const completion = computeMenu(editor);
+  const completion = computeMenu(editorBox.value);
   // token 变化 → 重置选中、解除抑制;触发文件清单懒加载。
   useEffect(() => {
     const token = completion?.token ?? null;
     if (token !== lastTokenRef.current) {
       lastTokenRef.current = token;
-      setMenuSelBoth(0);
-      if (token !== null) suppressedTokenRef.current = null;
+      dispatch({ type: 'menu-select', index: 0 });
+      if (token !== null) dispatch({ type: 'menu-suppress', token: null });
     }
-    if (completion?.kind === 'file' && filesRef.current === null && !filesLoadingRef.current) {
+    if (completion?.kind === 'file' && filesBox.current === null && !filesLoadingRef.current) {
       filesLoadingRef.current = true;
       void fileLister(cwd)
-        .then((list) => {
-          filesRef.current = list;
-          setFiles(list);
-        })
-        .catch(() => {
-          filesRef.current = [];
-          setFiles([]);
-        });
+        .then((list) => filesBox.set(list))
+        .catch(() => filesBox.set([]));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completion?.token, completion?.kind]);
 
-  // ── 通用选择器(/model /mode /resume 用;4.6d 落组件与路由层)────────────
-  const [picker, setPickerState] = useState<PickerState | null>(null);
-  const pickerRef = useRef<PickerState | null>(null);
-  const setPicker = (p: PickerState | null): void => {
-    pickerRef.current = p;
-    setPickerState(p);
-  };
-
   // 推理流显隐(/reasoning;只影响 live 渲染,scrollback 不回改)。
-  const [showReasoning, setShowReasoning] = useState(true);
-  const showReasoningRef = useRef(true);
+  const reasoningBox = useSyncedRef(true);
 
-  // 排队 follow-up(4.6e):运行中 Alt+Enter 入队,正常完成后自动作为下一轮提交。
-  const [queue, setQueueState] = useState<string[]>([]);
-  const queueRef = useRef<string[]>([]);
-  const setQueue = (q: string[]): void => {
-    queueRef.current = q;
-    setQueueState(q);
-  };
-
-  // 审批「拒绝并引导」输入态 + Esc 双击拒绝防误触。
-  const [pendingGuide, setPendingGuideState] = useState<ApprovalView | null>(null);
-  const pendingGuideRef = useRef<ApprovalView | null>(null);
-  const setPendingGuide = (g: ApprovalView | null): void => {
-    pendingGuideRef.current = g;
-    setPendingGuideState(g);
-  };
-  const [rejectArmed, setRejectArmed] = useState(false);
-  const rejectArmedRef = useRef(false);
-  const rejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const disarmReject = (): void => {
-    rejectArmedRef.current = false;
-    setRejectArmed(false);
-    if (rejectTimerRef.current) clearTimeout(rejectTimerRef.current);
-  };
-
-  // 退出保护:双击 Ctrl+C/Ctrl+D(3 秒窗口)。
-  const [exitArmed, setExitArmed] = useState(false);
-  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const exitArmedRef = useRef(false);
-  const armExit = (): void => {
-    if (exitArmedRef.current) {
-      exit();
-      return;
-    }
-    exitArmedRef.current = true;
-    setExitArmed(true);
-    if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
-    exitTimerRef.current = setTimeout(() => {
-      exitArmedRef.current = false;
-      setExitArmed(false);
-    }, 3000);
-  };
-  useEffect(
-    () => () => {
-      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
-    },
-    [],
-  );
+  // 审批 Esc 双击拒绝 / 退出双击确认(Ctrl+C/Ctrl+D,3 秒窗口)。
+  const rejectConfirm = useArmedConfirm();
+  const exitConfirm = useArmedConfirm();
 
   // spinner 动画帧 + 本轮起始时刻(活动行耗时,UI 本地时钟)。
   const [spin, setSpin] = useState(0);
@@ -270,44 +199,43 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   }, [state.running]);
 
   // 工具区块展开体(Ctrl+O);只影响其后渲染(<Static> 已渲区块不回改)。
-  const [verbose, setVerbose] = useState(false);
-  const verboseRef = useRef(false);
+  const verboseBox = useSyncedRef(false);
 
   // ── 副作用:提交/命令 ────────────────────────────────────────────────
   function submit(text: string): void {
     dispatch({ type: 'submit', text });
-    void kernel.submitInput(sidRef.current, text, `tui-${Date.now()}`).catch((e) => {
+    void kernel.submitInput(sidBox.current, text, `tui-${Date.now()}`).catch((e) => {
       dispatch({ type: 'submit-failed', message: e instanceof Error ? e.message : String(e) });
     });
   }
 
   // 订阅当前会话事件;/new 切换 sid 后自动重订阅。
   useEffect(() => {
-    sidRef.current = sid;
-    return kernel.subscribe(sid, null, (env) => {
+    return kernel.subscribe(sidBox.value, null, (env) => {
       dispatch({ type: 'event', event: env.event, ts: env.ts });
       if (env.event.kind === 'ContextCompacted') refreshMeta();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kernel, sid]);
+  }, [kernel, sidBox.value]);
 
   // ctx% / git 分支:挂载 + 每轮完成后刷新。
   useEffect(() => {
     refreshMeta();
-  }, [refreshMeta, state.turns, sid]);
+  }, [refreshMeta, state.turns, sidBox.value]);
 
   // 排队 follow-up:正常完成(end_turn)后自动出队提交;中断/失败保留待手动。
   useEffect(() => {
-    if (state.running || !queueRef.current.length) return;
+    const q = stateRef.current.queue;
+    if (state.running || !q.length) return;
     if (state.lastStop !== 'end_turn') {
-      if (state.lastStop) dispatch({ type: 'notice', tone: 'warn', text: `已排队 ${queueRef.current.length} 条保留(↑ 取回或直接回车发送)` });
+      if (state.lastStop) dispatch({ type: 'notice', tone: 'warn', text: `已排队 ${q.length} 条保留(↑ 取回或直接回车发送)` });
       return;
     }
-    const [next, ...rest] = queueRef.current;
-    setQueue(rest);
-    historyRef.current!.push(next!);
+    const next = q[0]!;
+    dispatch({ type: 'queue-shift' });
+    historyRef.current!.push(next);
     histIdxRef.current = historyRef.current!.list().length;
-    submit(next!);
+    submit(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.running, state.turns]);
 
@@ -327,7 +255,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     initRef.current = true;
     if (prompt.trim().length > 0) {
       dispatch({ type: 'submit', text: prompt });
-      void kernel.submitInput(sidRef.current, prompt, `tui-${Date.now()}`).catch(() => {});
+      void kernel.submitInput(sidBox.current, prompt, `tui-${Date.now()}`).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -344,30 +272,27 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   // slash 命令依赖注入。
   const commandDeps: CommandDeps = {
     kernel,
-    sessionId: () => sidRef.current,
+    sessionId: () => sidBox.current,
     model: curModel,
-    mode: curMode,
+    mode: modeBox.value,
     cwd,
     getState: () => stateRef.current,
     notice: (tone, text) => dispatch({ type: 'notice', tone, text }),
     clear: () => dispatch({ type: 'clear' }),
     exit,
-    openPicker: (p) => setPicker(p),
+    openPicker: (p) => dispatch({ type: 'picker-open', picker: p }),
     setModelUi: (m) => setCurModel(m),
-    setModeUi: (m) => {
-      curModeRef.current = m;
-      setCurMode(m);
-    },
+    setModeUi: (m) => modeBox.set(m),
     switchSession: (id) => {
-      setSid(id);
+      sidBox.set(id);
       dispatch({ type: 'clear' });
       refreshMeta();
     },
     newSession: kernel.startSession
       ? async () => {
           try {
-            const next = await kernel.startSession!({ model: curModel, cwd, permissionMode: curModeRef.current });
-            setSid(next);
+            const next = await kernel.startSession!({ model: curModel, cwd, permissionMode: modeBox.current });
+            sidBox.set(next);
             dispatch({ type: 'clear' });
             dispatch({ type: 'notice', tone: 'info', text: `已开新会话 ${String(next).slice(0, 8)}` });
           } catch (e) {
@@ -376,9 +301,8 @@ export function CliApp(props: CliAppProps): React.ReactElement {
         }
       : undefined,
     toggleReasoning: () => {
-      showReasoningRef.current = !showReasoningRef.current;
-      setShowReasoning(showReasoningRef.current);
-      return showReasoningRef.current;
+      reasoningBox.set(!reasoningBox.current);
+      return reasoningBox.current;
     },
   };
 
@@ -392,7 +316,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   }
 
   function onSubmit(): void {
-    const buf = edRef.current.text;
+    const buf = editorBox.current.text;
     // 行尾反斜杠续行(CC 惯例):替换为换行,不提交。
     if (buf.endsWith('\\')) {
       setEditor(ed.fromText(buf.slice(0, -1) + '\n'));
@@ -401,13 +325,13 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     const text = expandPastes(pasteStoreRef.current, buf).trim();
     setEditor(ed.EMPTY);
     // 审批引导输入态:回车 = 拒绝该操作 + steer 告知怎么做。
-    const g = pendingGuideRef.current;
+    const g = stateRef.current.pendingGuide;
     if (g) {
       if (!text) return; // 空输入留在引导态(Esc 返回审批)
-      setPendingGuide(null);
+      dispatch({ type: 'guide-exit' });
       kernel.decideApproval(g.requestId, 'reject_once');
       if (kernel.steer) {
-        void kernel.steer(sidRef.current, text).catch(() => {});
+        void kernel.steer(sidBox.current, text).catch(() => {});
         dispatch({ type: 'steer', text });
       }
       return;
@@ -421,7 +345,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     if (stateRef.current.running) {
       // 运行中:作为 steer 注入当前轮。
       if (kernel.steer) {
-        void kernel.steer(sidRef.current, text).catch(() => {});
+        void kernel.steer(sidBox.current, text).catch(() => {});
         dispatch({ type: 'steer', text });
       }
       return;
@@ -434,12 +358,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   /** 审批裁决(Enter/数字键共用):末位合成项 = 转「拒绝并引导」输入态。 */
   function decideApprovalAt(a: ApprovalView | null, index: number): void {
     if (!a) return;
-    disarmReject();
+    rejectConfirm.disarm();
     const total = a.suggestions.length + (a.withGuide ? 1 : 0);
     if (index < 0 || index >= total) return;
     if (a.withGuide && index === a.suggestions.length) {
-      setPendingGuide(a);
-      dispatch({ type: 'approval-clear' });
+      dispatch({ type: 'guide-enter' });
       setEditor(ed.EMPTY);
       return;
     }
@@ -450,14 +373,14 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   // ── 命令执行(keymap 路由结果 → 副作用)────────────────────────────────
   function execute(cmd: KeyCommand): void {
     const s = stateRef.current;
-    const cur = edRef.current;
+    const cur = editorBox.current;
     switch (cmd.type) {
       case 'approval-up':
-        disarmReject();
+        rejectConfirm.disarm();
         dispatch({ type: 'approval-move', delta: -1 });
         break;
       case 'approval-down':
-        disarmReject();
+        rejectConfirm.disarm();
         dispatch({ type: 'approval-move', delta: 1 });
         break;
       case 'approval-confirm':
@@ -470,103 +393,84 @@ export function CliApp(props: CliAppProps): React.ReactElement {
         const a = s.approval;
         if (!a) break;
         // Esc 双击才拒绝(防与全局 Esc 中断的肌肉记忆误触)。
-        if (!rejectArmedRef.current) {
-          rejectArmedRef.current = true;
-          setRejectArmed(true);
-          if (rejectTimerRef.current) clearTimeout(rejectTimerRef.current);
-          rejectTimerRef.current = setTimeout(disarmReject, 3000);
-          break;
-        }
-        disarmReject();
-        kernel.decideApproval(a.requestId, 'reject_once');
-        dispatch({ type: 'approval-clear' });
+        rejectConfirm.fire(() => {
+          kernel.decideApproval(a.requestId, 'reject_once');
+          dispatch({ type: 'approval-clear' });
+        });
         break;
       }
-      case 'guide-cancel': {
-        // 从引导输入态返回审批面板。
-        const g = pendingGuideRef.current;
-        if (g) {
-          setPendingGuide(null);
+      case 'guide-cancel':
+        // 从引导输入态返回审批面板(4.7c:走 reducer,不再手改 stateRef)。
+        if (s.pendingGuide) {
           setEditor(ed.EMPTY);
-          stateRef.current = { ...stateRef.current, approval: g };
-          setState(stateRef.current);
+          dispatch({ type: 'approval-restore' });
         }
         break;
-      }
       case 'cycle-mode': {
-        const idx = MODE_CYCLE.indexOf(curModeRef.current);
+        const idx = MODE_CYCLE.indexOf(modeBox.current);
         const next = MODE_CYCLE[(idx + 1) % MODE_CYCLE.length]!;
         applyMode(commandDeps, next);
         break;
       }
       case 'queue': {
-        const text = expandPastes(pasteStoreRef.current, edRef.current.text).trim();
+        const text = expandPastes(pasteStoreRef.current, cur.text).trim();
         setEditor(ed.EMPTY);
-        if (text) setQueue([...queueRef.current, text]);
+        if (text) dispatch({ type: 'queue-push', text });
         break;
       }
       case 'picker-up':
-      case 'picker-down': {
-        const p = pickerRef.current;
-        if (p) {
-          const n = p.items.length;
-          const delta = cmd.type === 'picker-up' ? -1 : 1;
-          setPicker({ ...p, selected: (p.selected + delta + n) % n });
-        }
+      case 'picker-down':
+        dispatch({ type: 'picker-move', delta: cmd.type === 'picker-up' ? -1 : 1 });
         break;
-      }
       case 'picker-confirm': {
-        const p = pickerRef.current;
+        const p = s.picker;
         if (p) {
-          setPicker(null);
+          dispatch({ type: 'picker-close' });
           p.onPick(p.items[p.selected]!.value);
         }
         break;
       }
       case 'picker-cancel':
-        setPicker(null);
+        dispatch({ type: 'picker-close' });
         break;
       case 'menu-up':
       case 'menu-down': {
-        const comp = computeMenu(edRef.current);
+        const comp = computeMenu(cur);
         if (comp?.items.length) {
           const n = comp.items.length;
           const delta = cmd.type === 'menu-up' ? -1 : 1;
-          setMenuSelBoth((menuSelRef.current + delta + n) % n);
+          dispatch({ type: 'menu-select', index: (s.menu.selected + delta + n) % n });
         }
         break;
       }
       case 'menu-accept': {
-        const comp = computeMenu(edRef.current);
-        const item = comp?.items[Math.min(menuSelRef.current, (comp?.items.length ?? 1) - 1)];
+        const comp = computeMenu(cur);
+        const item = comp?.items[Math.min(s.menu.selected, (comp?.items.length ?? 1) - 1)];
         if (comp && item) {
           // 已完整键入命令名 → 直接执行(Enter 一步到位)。
           if (comp.kind === 'slash' && item.value === comp.token) {
             onSubmit();
           } else {
-            const next = acceptCompletion(edRef.current.text, comp, item);
+            const next = acceptCompletion(cur.text, comp, item);
             setEditor(ed.fromText(next.text, next.cursor));
           }
         }
         break;
       }
       case 'menu-close': {
-        const comp = computeMenu(edRef.current);
-        if (comp) suppressedTokenRef.current = comp.token;
-        setMenuSelBoth(0);
-        // 触发重渲(抑制存于 ref)。
-        setEditor({ ...edRef.current });
+        const comp = computeMenu(cur);
+        if (comp) dispatch({ type: 'menu-suppress', token: comp.token });
+        dispatch({ type: 'menu-select', index: 0 });
         break;
       }
       case 'interrupt':
-        void kernel.interrupt?.(sidRef.current).catch(() => {});
+        void kernel.interrupt?.(sidBox.current).catch(() => {});
         break;
       case 'toggle-verbose':
-        verboseRef.current = !verboseRef.current;
-        setVerbose(verboseRef.current);
+        verboseBox.set(!verboseBox.current);
         break;
       case 'exit-request':
-        armExit();
+        exitConfirm.fire(exit);
         break;
       case 'submit':
         onSubmit();
@@ -612,10 +516,9 @@ export function CliApp(props: CliAppProps): React.ReactElement {
         break;
       case 'history-prev': {
         // 有排队消息且输入为空 → 先取回队尾编辑。
-        if (queueRef.current.length && edRef.current.text.length === 0) {
-          const q = [...queueRef.current];
-          const last = q.pop()!;
-          setQueue(q);
+        if (s.queue.length && cur.text.length === 0) {
+          const last = s.queue.at(-1)!;
+          dispatch({ type: 'queue-pop' });
           setEditor(ed.fromText(last));
           break;
         }
@@ -649,7 +552,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     // 解码(4.7b):粘贴拦截 / pty 合并 chunk 切段收在 decoder,这里只消费语义事件。
     for (const ev of decoderRef.current.feed(ch, key)) {
       if (ev.kind === 'paste') {
-        setEditor(ed.insert(edRef.current, foldPaste(pasteStoreRef.current, ed.sanitize(ev.text))));
+        setEditor(ed.insert(editorBox.current, foldPaste(pasteStoreRef.current, ed.sanitize(ev.text))));
         continue;
       }
       if (ev.kind === 'text') {
@@ -661,12 +564,12 @@ export function CliApp(props: CliAppProps): React.ReactElement {
         continue;
       }
       const s = stateRef.current;
-      const cur = edRef.current;
+      const cur = editorBox.current;
       const cmd = routeKey(ev.ch, ev.key, {
         approvalOpen: s.approval !== null,
-        pickerOpen: pickerRef.current !== null,
+        pickerOpen: s.picker !== null,
         menuOpen: computeMenu(cur) !== null && (computeMenu(cur)?.items.length ?? 0) > 0,
-        guideActive: pendingGuideRef.current !== null,
+        guideActive: s.pendingGuide !== null,
         running: s.running,
         bufferEmpty: cur.text.length === 0,
         cursorAtFirstRow: ed.cursorRow(cur) === 0,
@@ -674,11 +577,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       });
       if (cmd) {
         // 任何非退出键都解除退出确认态。
-        if (cmd.type !== 'exit-request' && exitArmedRef.current) {
-          exitArmedRef.current = false;
-          setExitArmed(false);
-          if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
-        }
+        if (cmd.type !== 'exit-request') exitConfirm.disarm();
         execute(cmd);
       }
     }
@@ -693,7 +592,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   };
   const ctxLeftPct =
     ctx && ctx.usableTokens > 0 ? Math.max(0, 100 - (ctx.usedTokens / ctx.usableTokens) * 100) : undefined;
-  const bar = statusBar({ model: curModel, mode: curMode, ...u, cwd, ctxLeftPct, branch });
+  const bar = statusBar({ model: curModel, mode: modeBox.value, ...u, cwd, ctxLeftPct, branch });
 
   const footer: React.ReactElement[] = [];
   if (state.approval) {
@@ -722,18 +621,18 @@ export function CliApp(props: CliAppProps): React.ReactElement {
             `${i === a.selected ? '❯' : ' '} ${i + 1}. ${label}`,
           ),
         ),
-        rejectArmed ? h(Text, { key: 'ra', color: 'yellow' }, '再按 Esc 拒绝') : null,
+        rejectConfirm.armed ? h(Text, { key: 'ra', color: 'yellow' }, '再按 Esc 拒绝') : null,
       ),
     );
-  } else if (pendingGuide) {
+  } else if (state.pendingGuide) {
     // 引导输入态:输入框 + 提示(Enter = 拒绝并告知;Esc 返回审批)。
     footer.push(
-      h(Text, { key: 'g', color: 'yellow' }, `⚠ 引导 ${pendingGuide.tool}:输入它该怎么做,回车 = 拒绝该操作并告知`),
-      renderInputBox(editor, columns, false),
+      h(Text, { key: 'g', color: 'yellow' }, `⚠ 引导 ${state.pendingGuide.tool}:输入它该怎么做,回车 = 拒绝该操作并告知`),
+      renderInputBox(editorBox.value, columns, false),
       h(Text, { key: 'gh', color: 'gray', dimColor: true }, 'Enter 拒绝并引导 · Esc 返回审批面板'),
     );
-  } else if (picker) {
-    footer.push(renderPicker(picker));
+  } else if (state.picker) {
+    footer.push(renderPicker(state.picker));
   } else {
     if (state.running) {
       // 活动行(4.6c):动作词 + 耗时 + 本轮出 token。
@@ -750,20 +649,20 @@ export function CliApp(props: CliAppProps): React.ReactElement {
         ),
       );
     }
-    if (queue.length) {
-      footer.push(h(Text, { key: 'q', color: 'yellow' }, `⏸ 已排队 ${queue.length} 条(完成后自动发送 · 输入框空时 ↑ 取回)`));
+    if (state.queue.length) {
+      footer.push(h(Text, { key: 'q', color: 'yellow' }, `⏸ 已排队 ${state.queue.length} 条(完成后自动发送 · 输入框空时 ↑ 取回)`));
     }
-    footer.push(renderInputBox(editor, columns, state.running));
+    footer.push(renderInputBox(editorBox.value, columns, state.running));
     if (completion) {
       footer.push(
         renderCompletionMenu(
           completion.items.map((i) => ({ label: i.label, hint: i.hint })),
-          menuSel,
-          completion.kind === 'file' && files === null,
+          state.menu.selected,
+          completion.kind === 'file' && filesBox.value === null,
         ),
       );
     }
-    const hint = exitArmed
+    const hint = exitConfirm.armed
       ? h(Text, { key: 'hint', color: 'yellow' }, '再按一次退出')
       : h(
           Text,
@@ -777,8 +676,8 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     footer.push(hint);
   }
 
-  const renderOpts: RenderOpts = { width: columns, verbose };
-  const liveBlocks = showReasoning ? state.live : state.live.filter((b) => b.kind !== 'reasoning');
+  const renderOpts: RenderOpts = { width: columns, verbose: verboseBox.value };
+  const liveBlocks = reasoningBox.value ? state.live : state.live.filter((b) => b.kind !== 'reasoning');
   return h(
     Box,
     { flexDirection: 'column' },

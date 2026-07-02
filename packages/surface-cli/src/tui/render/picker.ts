@@ -4,21 +4,9 @@
  */
 import React from 'react';
 import { Box, Text } from 'ink';
+import type { PickerState } from '../model';
 
 const h = React.createElement;
-
-export interface PickerItem<T = unknown> {
-  label: string;
-  hint?: string;
-  value: T;
-}
-
-export interface PickerState<T = unknown> {
-  title: string;
-  items: PickerItem<T>[];
-  selected: number;
-  onPick(value: T): void;
-}
 
 export function renderPicker(p: PickerState): React.ReactElement {
   const rows = p.items.map((item, i) =>

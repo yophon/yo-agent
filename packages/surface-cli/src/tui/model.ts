@@ -47,6 +47,21 @@ export interface ApprovalView {
   withGuide: boolean;
 }
 
+// ── 通用选择器(4.6d;4.7c 状态迁入 reducer,渲染在 render/picker.ts)──────
+export interface PickerItem<T = unknown> {
+  label: string;
+  hint?: string;
+  value: T;
+}
+
+export interface PickerState<T = unknown> {
+  title: string;
+  items: PickerItem<T>[];
+  selected: number;
+  /** 确认回调(副作用,reducer 只存不调;由 app 在 picker-confirm 时执行)。 */
+  onPick(value: T): void;
+}
+
 export interface UsageTotals {
   inTok: number;
   outTok: number;
@@ -79,6 +94,15 @@ export interface UiState {
   turnStartedTs: number | null;
   /** 最近一轮的结束方式(排队 follow-up 只在正常完成后自动发送)。 */
   lastStop: string | null;
+  // ── 4.7c 迁入 reducer 的交互态(此前散在 app.ts 的 useState+ref 镜像)──
+  /** 通用选择器(/model /mode /resume;与审批/引导互斥展示)。 */
+  picker: PickerState | null;
+  /** 审批「拒绝并引导」输入态(4.6e):非 null 时输入框回车 = 拒绝并 steer。 */
+  pendingGuide: ApprovalView | null;
+  /** 排队 follow-up(4.6e):运行中 Alt+Enter 入队,正常完成后自动出队提交。 */
+  queue: string[];
+  /** 补全菜单:选中下标 + Esc 关闭后抑制的 token(输入变化自动解除)。 */
+  menu: { selected: number; suppressedToken: string | null };
 }
 
 export const DEFAULT_SUGGESTIONS: ApprovalSuggestion[] = [
@@ -109,6 +133,10 @@ export function initialState(opts: InitialStateOpts): UiState {
     mcpStatus: {},
     turnStartedTs: null,
     lastStop: null,
+    picker: null,
+    pendingGuide: null,
+    queue: [],
+    menu: { selected: 0, suppressedToken: null },
   };
 }
 
@@ -124,7 +152,23 @@ export type UiAction =
   /** 运行中 steer 的回显(live dim 行)。 */
   | { type: 'steer'; text: string }
   | { type: 'approval-move'; delta: 1 | -1 }
-  | { type: 'approval-clear' };
+  | { type: 'approval-clear' }
+  // ── 4.7c:交互态动作 ──
+  | { type: 'picker-open'; picker: PickerState }
+  | { type: 'picker-move'; delta: 1 | -1 }
+  | { type: 'picker-close' }
+  | { type: 'queue-push'; text: string }
+  /** 队首出队(自动提交时,app 先读 queue[0] 再 dispatch)。 */
+  | { type: 'queue-shift' }
+  /** 队尾出队(↑ 取回编辑,app 先读 at(-1) 再 dispatch)。 */
+  | { type: 'queue-pop' }
+  /** 审批 → 「拒绝并引导」输入态。 */
+  | { type: 'guide-enter' }
+  | { type: 'guide-exit' }
+  /** 引导态 Esc 返回审批面板。 */
+  | { type: 'approval-restore' }
+  | { type: 'menu-select'; index: number }
+  | { type: 'menu-suppress'; token: string | null };
 
 // ── 内部助手(全部返回新对象,state 不就地改)─────────────────────────────
 function nextId(s: UiState): [string, UiState] {
@@ -193,6 +237,35 @@ export function reduce(state: UiState, action: UiAction): UiState {
     }
     case 'approval-clear':
       return { ...state, approval: null };
+    case 'picker-open':
+      return { ...state, picker: action.picker };
+    case 'picker-move': {
+      if (!state.picker) return state;
+      const n = state.picker.items.length;
+      const selected = (state.picker.selected + action.delta + n) % n;
+      return { ...state, picker: { ...state.picker, selected } };
+    }
+    case 'picker-close':
+      return state.picker ? { ...state, picker: null } : state;
+    case 'queue-push':
+      return { ...state, queue: [...state.queue, action.text] };
+    case 'queue-shift':
+      return state.queue.length ? { ...state, queue: state.queue.slice(1) } : state;
+    case 'queue-pop':
+      return state.queue.length ? { ...state, queue: state.queue.slice(0, -1) } : state;
+    case 'guide-enter':
+      return state.approval ? { ...state, pendingGuide: state.approval, approval: null } : state;
+    case 'guide-exit':
+      return state.pendingGuide ? { ...state, pendingGuide: null } : state;
+    case 'approval-restore':
+      return state.pendingGuide ? { ...state, approval: state.pendingGuide, pendingGuide: null } : state;
+    // 无变化时返回原 state(setState 同引用直接跳过重渲,补全每键触发不产生空转)。
+    case 'menu-select':
+      return state.menu.selected === action.index ? state : { ...state, menu: { ...state.menu, selected: action.index } };
+    case 'menu-suppress':
+      return state.menu.suppressedToken === action.token
+        ? state
+        : { ...state, menu: { ...state.menu, suppressedToken: action.token } };
     case 'event':
       return reduceEvent(state, action.event, action.ts);
     default:
