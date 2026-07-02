@@ -98,3 +98,16 @@ describe('width:显示宽度', () => {
     expect(strWidth('é')).toBe(1); // e + 组合重音
   });
 });
+
+describe('applyEditorCommand:纯编辑器命令映射(4.7d)', () => {
+  it('编辑器命令返回新状态;非编辑器命令返回 null', async () => {
+    const { applyEditorCommand, editor: ed } = await import('@yo-agent/surface-cli');
+    const st = ed.fromText('ab', 1);
+    expect(applyEditorCommand(st, { type: 'insert', text: 'X' })).toEqual(ed.fromText('aXb', 2));
+    expect(applyEditorCommand(st, { type: 'backspace' })).toEqual(ed.fromText('b', 0));
+    expect(applyEditorCommand(st, { type: 'clear-input' })).toEqual(ed.EMPTY);
+    expect(applyEditorCommand(st, { type: 'cursor-up' })).toEqual(st); // 首行上移原样(caller 已转历史)
+    expect(applyEditorCommand(st, { type: 'submit' })).toBeNull();
+    expect(applyEditorCommand(st, { type: 'interrupt' })).toBeNull();
+  });
+});

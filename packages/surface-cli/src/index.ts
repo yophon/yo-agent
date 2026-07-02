@@ -9,7 +9,8 @@ export * from './tui-format';
 export * from './tui/app';
 export * from './tui/model';
 export * from './tui/keymap';
-export { useSyncedRef, type SyncedRef } from './tui/hooks';
+export { applyEditorCommand, createExecutor, type ExecuteCtx, type Executor } from './tui/execute';
+export { useSyncedRef, useArmedConfirm, type SyncedRef, type ArmedConfirm } from './tui/hooks';
 // 输入层(4.6b):editor 命名过于通用(insert/left/up…),整体命名空间导出。
 export * as editor from './tui/input/editor';
 export { PersistentHistory, HISTORY_LIMIT } from './tui/input/history';
