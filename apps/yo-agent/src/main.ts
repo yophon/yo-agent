@@ -67,6 +67,8 @@ import type { EventEnvelope } from '@yo-agent/protocol';
 type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server' | 'acp';
 
 interface Args {
+  /** 4.6e：'last'（--continue）| 'picker'（--resume 不带 id）| 具体会话 id。 */
+  resume?: string;
   prompt: string;
   mode: Mode;
   /** rpc --listen <port>：WS server 模式（带设备鉴权），否则 stdio。 */
@@ -81,6 +83,8 @@ function parseArgs(argv: string[]): Args {
   let wantMcp = false;
   let wantAcp = false;
   let listenPort: number | undefined;
+  /** 4.6e:'last'(--continue)| 'picker'(--resume 不带 id)| 具体会话 id。 */
+  let resume: string | undefined;
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -115,6 +119,22 @@ function parseArgs(argv: string[]): Args {
       wantTui = true;
       continue;
     }
+    if (a === '--continue' || a === '-c') {
+      resume = 'last';
+      wantTui = true;
+      continue;
+    }
+    if (a === '--resume' || a === '-r') {
+      const v = argv[i + 1];
+      if (v !== undefined && !v.startsWith('-')) {
+        resume = v;
+        i++;
+      } else {
+        resume = 'picker';
+      }
+      wantTui = true;
+      continue;
+    }
     if (a === 'rpc' || a === '--rpc') {
       wantRpc = true;
       continue;
@@ -142,7 +162,7 @@ function parseArgs(argv: string[]): Args {
           : wantTui
             ? 'tui'
             : 'headless';
-  return { prompt, mode, listenPort };
+  return { prompt, mode, listenPort, resume };
 }
 
 function buildStore(): EventStore {
@@ -317,7 +337,7 @@ function installShutdown(mcpHost: McpHostManager, pluginHost?: DefaultPluginHost
 }
 
 async function main(): Promise<void> {
-  const { prompt, mode, listenPort } = parseArgs(process.argv.slice(2));
+  const { prompt, mode, listenPort, resume } = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
   const env = process.env;
 
@@ -417,13 +437,31 @@ async function main(): Promise<void> {
   await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（首轮前完成发现/注册）
   installShutdown(mcpHost, pluginHost); // SIGINT/SIGTERM 中断也回收子进程
 
-  const sessionId = await kernel.startSession({ system, model });
+  // 4.6e：--continue/--resume <id> 优先恢复持久会话（需 YO_DB）；失败回退新会话。
+  let sessionId: string | undefined;
+  let openResumePicker = false;
+  if (resume === 'picker') {
+    openResumePicker = true;
+  } else if (resume) {
+    const target =
+      resume === 'last'
+        ? (await kernel.listPersistedSessions()).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.sessionId
+        : resume;
+    if (target && (await kernel.resumeSession(target).catch(() => false))) {
+      sessionId = target;
+      console.error(`[resume] 已恢复会话 ${String(target).slice(0, 8)}`);
+    } else {
+      console.error('[resume] 无可恢复会话（需 YO_DB=路径 持久化），已开新会话');
+    }
+  }
+  sessionId ??= await kernel.startSession({ system, model });
 
   // try/finally：turn 抛错（走 main().catch→exit(1)）也回收子进程，不只 happy-path（审查 lifecycle）。
   try {
     if (mode === 'tui') {
       const mode0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.permissionMode ?? 'supervised';
-      await runTui({ kernel, sessionId, prompt, model, cwd, permissionMode: mode0 });
+      const model0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.model ?? model;
+      await runTui({ kernel, sessionId, prompt, model: model0, cwd, permissionMode: mode0, demo, openResumePicker });
       return;
     }
     const renderer = mode === 'jsonl' ? new JsonlRenderer() : new HeadlessRenderer();

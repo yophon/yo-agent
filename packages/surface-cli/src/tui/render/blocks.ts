@@ -47,10 +47,11 @@ function spanEl(sp: Span, key: number): React.ReactElement {
   );
 }
 
-/** 样式行 → 单个 <Text> 行(前缀可选)。 */
-function lineEl(line: StyledLine, key: string, prefix = ''): React.ReactElement {
+/** 样式行 → 单个 <Text> 行(前缀可选);审批面板等外部渲染也复用。 */
+export function styledLine(line: StyledLine, key: string, prefix = ''): React.ReactElement {
   return h(Text, { key }, prefix ? h(Text, { key: 'p', dimColor: true }, prefix) : null, ...line.map(spanEl));
 }
+const lineEl = styledLine;
 
 export function renderBlock(b: Block, opts: RenderOpts = DEFAULT_OPTS): React.ReactElement {
   switch (b.kind) {

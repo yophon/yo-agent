@@ -63,7 +63,7 @@ describe('CliApp（Ink 冒烟）', () => {
       React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'go', autoExit: false }),
     );
     await tick();
-    expect(lastFrame()).toContain('审批请求');
+    expect(lastFrame()).toContain('风险 high'); // 4.6e 面板头:⚠ 工具 · 风险
     expect(lastFrame()).toContain('write');
     expect(lastFrame()).toContain('允许一次');
     stdin.write(ENTER); // 默认选中第 0 项 → allow_once
@@ -116,7 +116,7 @@ class RecordingKernel implements TuiKernel {
     this.interrupted.push(s);
     this.handler?.(ev({ kind: 'TurnCompleted', stopReason: 'interrupted', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } }));
   }
-  decideApproval(): void {}
+  decideApproval(_r: Id, _d: ApprovalDecision): void {}
 }
 
 describe('CliApp REPL（多轮 / 输入框）', () => {
@@ -355,7 +355,9 @@ describe('CliApp 4.6d(slash 菜单 / @文件补全 / 新命令)', () => {
     await tick();
     stdin.write('/mo');
     await tick();
-    expect(lastFrame()).toContain('/model'); // 菜单候选
+    expect(lastFrame()).toContain('/model'); // 菜单候选(与 /mode 同列)
+    stdin.write(ESC + '[B'); // ↓ 选中 /model(短者 /mode 排前)
+    await tick();
     stdin.write('\t'); // Tab 接受
     await tick();
     stdin.write(ENTER); // 完整命令名 → 直接执行
@@ -418,6 +420,122 @@ describe('CliApp 4.6d(slash 菜单 / @文件补全 / 新命令)', () => {
     await tick();
     expect(kernel.started).toEqual(['s2']);
     expect(lastFrame()).toContain('已开新会话');
+    unmount();
+  });
+});
+
+describe('CliApp 4.6e(模式循环 / 排队 / 审批升级 / 模型切换)', () => {
+  class SeamKernel extends RecordingKernel {
+    readonly modes: string[] = [];
+    readonly models: string[] = [];
+    readonly decided: Array<{ requestId: Id; decision: ApprovalDecision }> = [];
+    constructor(autoComplete = true) {
+      super(autoComplete);
+    }
+    override decideApproval(requestId: Id, decision: ApprovalDecision): void {
+      this.decided.push({ requestId, decision });
+    }
+    setPermissionMode(_s: Id, mode: string): void {
+      this.modes.push(mode);
+    }
+    setModel(_s: Id, model: string): void {
+      this.models.push(model);
+    }
+    async listModels(): Promise<Array<{ id: string }>> {
+      return [{ id: 'model-a' }, { id: 'model-b' }];
+    }
+    emit(e: AgentEvent): void {
+      this.handler?.(ev(e));
+    }
+  }
+
+  it('Shift+Tab 循环权限模式:supervised → accept-edits(内核接缝 + 状态栏)', async () => {
+    const kernel = new SeamKernel();
+    const { lastFrame, stdin, unmount } = render(
+      React.createElement(CliApp, { kernel, sessionId: 's', prompt: '', permissionMode: 'supervised' }),
+    );
+    await tick();
+    stdin.write(ESC + '[Z'); // Shift+Tab
+    await tick();
+    expect(kernel.modes).toEqual(['accept-edits']);
+    expect(lastFrame()).toContain('accept-edits');
+    unmount();
+  });
+
+  it('运行中 Alt+Enter 排队;end_turn 后自动作为下一轮提交', async () => {
+    const kernel = new SeamKernel(false); // 不自动完成 → 停在 running
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'task1' }));
+    await tick();
+    stdin.write('followup');
+    await tick();
+    stdin.write('\x1b\r'); // Alt+Enter → 排队
+    await tick();
+    expect(lastFrame()).toContain('已排队 1 条');
+    expect(kernel.submitted).toEqual(['task1']);
+    kernel.emit({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 } });
+    await tick();
+    await tick();
+    expect(kernel.submitted).toEqual(['task1', 'followup']); // 自动出队
+    unmount();
+  });
+
+  it('审批:数字键 1 直选 allow_once;第 5 项引导 → 拒绝并 steer', async () => {
+    const kernel = new SeamKernel(false);
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'go' }));
+    await tick();
+    kernel.emit({ kind: 'ApprovalRequested', requestId: 'r1', tool: 'bash', input: { command: 'rm -rf dist' }, risk: 'high', suggestions: SUGGESTIONS });
+    await tick();
+    expect(lastFrame()).toContain('rm -rf dist'); // bash 审批显示命令全文
+    stdin.write('1'); // 数字直选 allow_once
+    await tick();
+    expect(kernel.decided).toEqual([{ requestId: 'r1', decision: 'allow_once' }]);
+
+    kernel.emit({ kind: 'ApprovalRequested', requestId: 'r2', tool: 'bash', input: { command: 'x' }, risk: 'high', suggestions: SUGGESTIONS });
+    await tick();
+    stdin.write('5'); // 合成项:拒绝并告诉它该怎么做
+    await tick();
+    expect(lastFrame()).toContain('引导 bash');
+    stdin.write('用 rg 别用 grep');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.decided.at(-1)).toEqual({ requestId: 'r2', decision: 'reject_once' });
+    expect(kernel.steered).toEqual(['用 rg 别用 grep']);
+    unmount();
+  });
+
+  it('审批 Esc 双击才拒绝:单击提示,再击拒绝', async () => {
+    const kernel = new SeamKernel(false);
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'go' }));
+    await tick();
+    kernel.emit({ kind: 'ApprovalRequested', requestId: 'r1', tool: 'write', input: {}, risk: 'medium', suggestions: SUGGESTIONS });
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain('再按 Esc 拒绝');
+    expect(kernel.decided).toEqual([]);
+    stdin.write(ESC);
+    await tick();
+    expect(kernel.decided).toEqual([{ requestId: 'r1', decision: 'reject_once' }]);
+    unmount();
+  });
+
+  it('/model:选择器切换,setModel 接缝 + 状态栏更新', async () => {
+    const kernel = new SeamKernel();
+    const { lastFrame, stdin, unmount } = render(
+      React.createElement(CliApp, { kernel, sessionId: 's', prompt: '', model: 'model-a' }),
+    );
+    await tick();
+    stdin.write('/model');
+    stdin.write(ENTER);
+    await tick();
+    await tick(); // 等 listModels
+    expect(lastFrame()).toContain('切换模型');
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.models).toEqual(['model-b']);
+    expect(lastFrame()).toContain('model-b');
     unmount();
   });
 });

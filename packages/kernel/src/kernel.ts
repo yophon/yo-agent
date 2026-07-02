@@ -314,6 +314,43 @@ export class AgentKernel implements Kernel, SubagentHost {
     return this.d.provider.listModels();
   }
 
+  // ───────────────────────── 4.6e TUI 接缝（K1-K5）─────────────────────────
+
+  /** K1：切换会话模型，下一轮生效（主路由随 s.model；fallback 链不变）。 */
+  setModel(sessionId: Id, model: string): void {
+    this.require(sessionId).model = model;
+  }
+
+  /**
+   * K2：切换权限模式（交互式本人操作，允许任意档；子 agent 派生仍走 deriveSubagentPolicy 只收紧）。
+   * 收紧时清空会话级 allow_always 缓存 —— 宽松档下的「总是允许」不得跨档存活。
+   */
+  setPermissionMode(sessionId: Id, mode: PermissionMode): void {
+    const s = this.require(sessionId);
+    const order: PermissionMode[] = ['read-only', 'supervised', 'accept-edits', 'autonomous', 'ci', 'bypass'];
+    if (order.indexOf(mode) < order.indexOf(s.permissionMode)) s.approvalCache.clear();
+    s.permissionMode = mode;
+  }
+
+  /** K3：手动压缩（/compact，跳过阈值与 min-rounds 闸门）；返回是否压成。 */
+  async compactNow(sessionId: Id): Promise<boolean> {
+    return this.doCondense(this.require(sessionId));
+  }
+
+  /** K4：上下文占用估算（状态栏 ctx%）。 */
+  contextState(sessionId: Id): { usedTokens: number; usableTokens: number } {
+    const s = this.require(sessionId);
+    return {
+      usedTokens: estimateMessagesTokens(s.messages),
+      usableTokens: this.d.usableContextTokens ?? 200_000,
+    };
+  }
+
+  /** K5：持久会话列表（/resume 选择器），委派 store。 */
+  listPersistedSessions(): Promise<SessionRow[]> {
+    return this.events.listSessions();
+  }
+
   async steer(sessionId: Id, text: string): Promise<void> {
     // 审查 cross-seam-MED：经统一 appendUserText 并入（末条为 user 则合并，否则新增）——直接 push 会在「末条已是 user
     // （注入 tool_result 那条 / 连续 steer）」时产生连续两条 user，破坏 provider 严格交替契约（400）。
@@ -376,7 +413,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       if (ex) execMap.set(d.name, ex);
     }
     // 4F fallback：本 turn 是否已 commit 成功模型（已产出）。一旦 commit，后续 step 不得换模型（防跨模型漂移）。
-    const chain = this.routeChain();
+    const chain = this.routeChain(s);
     // 审查 4F-MED：每 turn 起点回探主路由（routeIdx 归 0）——否则一次瞬时 rate_limit/network 会让会话永久弃用主路由
     //（即便主路由早已恢复）。turn 内 switch 仍递增（防本 turn 内反复打死路由）；持久错误（auth/billing）的跨 turn
     // 粘滞优化（避免每 turn 白试一次死主路由）留作后续（见 docs/PHASE-4.md 已知限制）。
@@ -677,7 +714,7 @@ export class AgentKernel implements Kernel, SubagentHost {
   }
 
   /** 压缩核心（§5.1 / 3D 结构化交接）：condense 只改送 LLM 的窗口，原始 EventLog 不删；压成则发 ContextCompacted。返回是否压成。 */
-  private async doCondense(s: SessionState, turnId: Id): Promise<boolean> {
+  private async doCondense(s: SessionState, turnId?: Id): Promise<boolean> {
     const before = estimateMessagesTokens(s.messages);
     await this.hooks.firePreCompact(this.hookCtx(s), this.hookErr(s, turnId)); // PreCompact hook（4A）
 
@@ -712,14 +749,15 @@ export class AgentKernel implements Kernel, SubagentHost {
   }
 
   /** 4F：provider fallback 链 = 主路由（deps.provider+model）+ deps.fallbacks。 */
-  private routeChain(): ProviderRoute[] {
-    const primary: ProviderRoute = { provider: this.d.provider, model: this.d.model ?? 'fake-model' };
+  private routeChain(s: SessionState): ProviderRoute[] {
+    // 4.6e K1：主路由模型跟随会话（setModel 下一轮生效）；startSession 缺省即 deps.model，行为等价。
+    const primary: ProviderRoute = { provider: this.d.provider, model: s.model };
     return [primary, ...(this.d.fallbacks ?? [])];
   }
 
   /** 4F：会话当前生效路由的模型 id（committeed/fallback 后），用于成本估算。 */
   private activeModel(s: SessionState): string {
-    const chain = this.routeChain();
+    const chain = this.routeChain(s);
     return chain[Math.min(s.routeIdx, chain.length - 1)]!.model;
   }
 

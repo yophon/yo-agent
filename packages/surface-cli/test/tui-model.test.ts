@@ -80,7 +80,7 @@ describe('reducer:审批', () => {
   it('approval-move 环绕;approval-clear 关面板', () => {
     let s = ev(s0(true), { kind: 'ApprovalRequested', requestId: 'r1', tool: 'bash', input: {}, risk: 'low', suggestions: [] });
     s = reduce(s, { type: 'approval-move', delta: -1 });
-    expect(s.approval!.selected).toBe(3); // 上移环绕到末项
+    expect(s.approval!.selected).toBe(4); // 上移环绕到末项(4 建议 + 合成「拒绝并引导」)
     s = reduce(s, { type: 'approval-move', delta: 1 });
     expect(s.approval!.selected).toBe(0);
     s = reduce(s, { type: 'approval-clear' });

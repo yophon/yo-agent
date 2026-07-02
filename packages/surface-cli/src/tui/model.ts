@@ -43,6 +43,8 @@ export interface ApprovalView {
   risk: RiskLevel;
   suggestions: ApprovalSuggestion[];
   selected: number;
+  /** 末尾合成「拒绝并告诉它该怎么做…」选项(4.6e;index = suggestions.length)。 */
+  withGuide: boolean;
 }
 
 export interface UsageTotals {
@@ -75,6 +77,8 @@ export interface UiState {
   mcpStatus: Record<string, { status: string; toolCount?: number; error?: string }>;
   /** 本轮 TurnStarted 的事件时戳(轮摘要算耗时;server-time 基准)。 */
   turnStartedTs: number | null;
+  /** 最近一轮的结束方式(排队 follow-up 只在正常完成后自动发送)。 */
+  lastStop: string | null;
 }
 
 export const DEFAULT_SUGGESTIONS: ApprovalSuggestion[] = [
@@ -104,6 +108,7 @@ export function initialState(opts: InitialStateOpts): UiState {
     costLog: [],
     mcpStatus: {},
     turnStartedTs: null,
+    lastStop: null,
   };
 }
 
@@ -182,7 +187,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
       return pushLive(state, { kind: 'notice', tone: 'dim', text: `↳ 引导:${action.text}` });
     case 'approval-move': {
       if (!state.approval) return state;
-      const n = state.approval.suggestions.length;
+      const n = state.approval.suggestions.length + (state.approval.withGuide ? 1 : 0);
       const selected = (state.approval.selected + action.delta + n) % n;
       return { ...state, approval: { ...state.approval, selected } };
     }
@@ -248,6 +253,7 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
           risk: e.risk,
           suggestions: e.suggestions.length ? e.suggestions : DEFAULT_SUGGESTIONS,
           selected: 0,
+          withGuide: true,
         },
       };
     case 'ContextCompacted':
@@ -330,12 +336,12 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
         const summary = turnSummary(state.turnStartedTs, ts, u, u.costUsd ?? e.costUsd);
         if (summary) done = pushCommitted(flushed, 'dim', summary);
       }
-      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null };
+      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null, lastStop: e.stopReason };
     }
     case 'TurnFailed': {
       const flushed = flushLive(state);
       const done = pushCommitted(flushed, 'error', `失败:${e.error.message}`);
-      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null };
+      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null, lastStop: 'failed' };
     }
     // 会话元信息不渲染。
     case 'SessionStarted':

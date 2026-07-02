@@ -75,12 +75,18 @@ export interface StatusBarInput {
   cacheTok: number;
   costUsd: number;
   cwd: string;
+  /** 上下文剩余百分比(4.6e,来自 kernel.contextState);缺省不显示。 */
+  ctxLeftPct?: number;
+  /** git 分支(纯展示);缺省不显示。 */
+  branch?: string;
 }
 
 /** 底部状态栏单行文本。 */
 export function statusBar(o: StatusBarInput): string {
   const cache = o.cacheTok > 0 ? ` (cache ${fmtInt(o.cacheTok)})` : '';
-  return `${o.model} · ${o.mode} · ↑${fmtInt(o.inTok)} ↓${fmtInt(o.outTok)}${cache} · ${fmtCost(o.costUsd)} · ${shortPath(o.cwd)}`;
+  const ctx = o.ctxLeftPct !== undefined ? ` · ctx ${Math.max(0, Math.round(o.ctxLeftPct))}%` : '';
+  const branch = o.branch ? ` · ${o.branch}` : '';
+  return `${o.model} · ${o.mode}${ctx} · ↑${fmtInt(o.inTok)} ↓${fmtInt(o.outTok)}${cache} · ${fmtCost(o.costUsd)}${branch} · ${shortPath(o.cwd)}`;
 }
 
 /** spinner 帧（盲文转轮）。 */

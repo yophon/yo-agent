@@ -19,6 +19,7 @@ export interface KeyLike {
   escape?: boolean;
   ctrl?: boolean;
   meta?: boolean;
+  shift?: boolean;
   tab?: boolean;
   backspace?: boolean;
   delete?: boolean;
@@ -31,6 +32,8 @@ export interface KeyContext {
   pickerOpen: boolean;
   /** 补全菜单打开(只截获 ↑↓/Tab/Enter/Esc,其余落回编辑器继续过滤)。 */
   menuOpen: boolean;
+  /** 审批「拒绝并引导」输入态(Esc 返回审批面板而非中断)。 */
+  guideActive: boolean;
   /** 当前轮运行中(影响 Ctrl+C / Esc 语义)。 */
   running: boolean;
   /** 输入缓冲为空(Ctrl+D 退出判据)。 */
@@ -45,6 +48,10 @@ export type KeyCommand =
   | { type: 'approval-down' }
   | { type: 'approval-confirm' }
   | { type: 'approval-reject' }
+  | { type: 'approval-choose'; index: number }
+  | { type: 'guide-cancel' }
+  | { type: 'cycle-mode' }
+  | { type: 'queue' }
   | { type: 'interrupt' }
   /** 请求退出(app 做双击确认)。 */
   | { type: 'exit-request' }
@@ -86,8 +93,12 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): Routed {
     if (key.downArrow) return { type: 'approval-down' };
     if (key.return) return { type: 'approval-confirm' };
     if (key.escape) return { type: 'approval-reject' };
+    if (/^[1-9]$/.test(ch) && !key.ctrl && !key.meta) return { type: 'approval-choose', index: Number(ch) - 1 };
     return null;
   }
+
+  // ①.2 引导输入态:Esc 返回审批面板(优先于全局中断);其余走编辑器。
+  if (ctx.guideActive && key.escape) return { type: 'guide-cancel' };
 
   // ①.5 通用选择器:同审批,吞其余输入。
   if (ctx.pickerOpen) {
@@ -112,9 +123,13 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): Routed {
   if (key.ctrl && ch === 'c') return ctx.running ? { type: 'interrupt' } : { type: 'exit-request' };
   if (key.escape) return ctx.running ? { type: 'interrupt' } : { type: 'clear-input' };
 
-  // ③ 回车提交;Alt+Enter(ch='\r' 无 return 标志)/ Ctrl+J(ch='\n')→ 换行。
+  // ②.5 Shift+Tab:循环权限模式(read-only → supervised → accept-edits → autonomous)。
+  if (key.tab && key.shift) return { type: 'cycle-mode' };
+
+  // ③ 回车提交;Alt+Enter(ch='\r' 无 return 标志):运行中排队 follow-up、空闲换行;Ctrl+J(ch='\n')恒换行。
   if (key.return) return { type: 'submit' };
-  if (ch === '\r' || ch === '\n') return { type: 'newline' };
+  if (ch === '\r') return ctx.running ? { type: 'queue' } : { type: 'newline' };
+  if (ch === '\n') return { type: 'newline' };
 
   // ④ 行内编辑(readline 惯例)。
   if (key.ctrl && ch === 'a') return { type: 'cursor-home' };

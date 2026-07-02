@@ -13,7 +13,7 @@ import type {
 } from '@yo-agent/protocol';
 import type { CanonMessage, ModelInfo, Provider } from '@yo-agent/provider';
 import type { ToolRegistry } from '@yo-agent/tools';
-import type { EventStore } from '@yo-agent/store';
+import type { EventStore, SessionRow } from '@yo-agent/store';
 import type { StartSessionOpts } from './kernel';
 
 export type SurfaceKind = 'cli' | 'rpc' | 'chat' | 'acp' | 'mcp-server';
@@ -52,6 +52,17 @@ export interface Kernel {
   endSession(sessionId: Id): void;
   /** 审批是否仍挂起（surface 跳过已决审批的 approval/request 重投）。 */
   isApprovalPending(requestId: Id): boolean;
+  // ── 4.6e TUI 接缝(K1-K5)──
+  /** 切换会话模型,下一轮生效。 */
+  setModel(sessionId: Id, model: string): void;
+  /** 切换权限模式(交互式本人操作;收紧时清 allow_always 缓存)。 */
+  setPermissionMode(sessionId: Id, mode: PermissionMode): void;
+  /** 手动压缩(跳过阈值闸门);返回是否压成。 */
+  compactNow(sessionId: Id): Promise<boolean>;
+  /** 上下文占用估算(状态栏 ctx%)。 */
+  contextState(sessionId: Id): ContextState;
+  /** 持久会话列表(/resume 选择器)。 */
+  listPersistedSessions(): Promise<SessionRow[]>;
 }
 
 export interface ContextState {
