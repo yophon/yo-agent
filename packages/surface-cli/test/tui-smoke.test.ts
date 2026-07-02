@@ -260,3 +260,89 @@ describe('CliApp 4.5（结构化渲染 / 命令 / 中断 / steer）', () => {
     unmount();
   });
 });
+
+describe('CliApp 4.6b(多行输入 / 粘贴 / 退出保护)', () => {
+  it('括号粘贴:含换行的粘贴不提交、整段入 buffer;提交发送全文', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('[200~第一行\n第二行\x1b[201~'); // ink 剥首 ESC 后的形态
+    await tick();
+    expect(kernel.submitted).toEqual([]); // 粘贴不触发提交
+    expect(lastFrame()).toContain('第一行');
+    expect(lastFrame()).toContain('第二行');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['第一行\n第二行']);
+    unmount();
+  });
+
+  it('大段粘贴折叠为占位符,提交时展开原文', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    const big = Array.from({ length: 12 }, (_, i) => `L${i}`).join('\n');
+    stdin.write(`[200~${big}\x1b[201~`);
+    await tick();
+    expect(lastFrame()).toContain('[粘贴 #1 · 12 行]');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual([big]);
+    unmount();
+  });
+
+  it('Ctrl+J 换行成多行;行尾反斜杠 + Enter 续行不提交', async () => {
+    const kernel = new RecordingKernel();
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('a');
+    stdin.write('\n'); // Ctrl+J
+    stdin.write('b\\');
+    await tick();
+    stdin.write(ENTER); // 行尾反斜杠 → 换行,不提交
+    await tick();
+    expect(kernel.submitted).toEqual([]);
+    stdin.write('c');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['a\nb\nc']);
+    unmount();
+  });
+
+  it('空闲 Ctrl+C 双击才退出:第一次提示,任意键解除;双击退出', async () => {
+    const kernel = new RecordingKernel();
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('\x03'); // Ctrl+C ①
+    await tick();
+    expect(lastFrame()).toContain('再按一次退出');
+    stdin.write('x'); // 任意键解除确认态
+    await tick();
+    expect(lastFrame()).not.toContain('再按一次退出');
+    stdin.write('\x03');
+    await tick();
+    stdin.write('\x03'); // 双击 → 退出
+    await tick();
+    stdin.write('should-be-ignored');
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual([]); // 已退出,后续输入无效(首条 x 被解除逻辑消费前已入 buffer,但未提交)
+    unmount();
+  });
+
+  it('CJK 光标编辑:← 后退格删除整个汉字', async () => {
+    const kernel = new RecordingKernel();
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('中文字');
+    await tick();
+    stdin.write(ESC + '[D'); // ← 光标到「字」前
+    await tick();
+    stdin.write('\x7f'); // 退格删「文」
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(kernel.submitted).toEqual(['中字']);
+    unmount();
+  });
+});

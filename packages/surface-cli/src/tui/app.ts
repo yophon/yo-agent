@@ -1,18 +1,21 @@
 /**
- * Ink TUI 组装壳(DESIGN §7.2,4.6a 重构):交互式多轮 REPL。
+ * Ink TUI 组装壳(DESIGN §7.2,4.6a 重构 / 4.6b 输入编辑器):交互式多轮 REPL。
  *
  * 分层:事件/交互 → UiState 的折叠在 model.ts(纯 reducer);按键 → 语义命令在 keymap.ts
- * (纯路由);区块渲染在 render/blocks.ts。本文件只做:订阅内核事件、执行命令副作用
- * (submitInput/steer/interrupt/decideApproval/exit)、摆放区块 + 状态栏 + 输入框/审批面板。
+ * (纯路由);多行编辑在 input/editor.ts(纯 buffer,字素/显示宽度);粘贴在 input/paste.ts
+ * (括号粘贴状态机 + 大段折叠);历史在 input/history.ts(JSONL 持久)。本文件只做:订阅
+ * 内核事件、执行命令副作用、摆放区块 + 状态栏 + 输入框/审批面板。
  *
  * dispatch 走「ref 镜像 + 纯 reduce」:同帧多次按键/事件在 useInput 闭包里能同步读到最新
  * 状态(useState 异步批处理读不到,4.5 已踩过)。
  *
+ * 输入框运行中也可见(4.5 反例:steer 输入不可见);审批面板打开时才隐藏。
  * 用 React.createElement 而非 JSX(免 tsconfig jsx 配置、保持全 .ts)。
- * CliApp 可被 ink-testing-library 离线冒烟;runTui 用 ink 真 render(需 TTY)。
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Static, Text, useApp, useInput } from 'ink';
+import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { ApprovalDecision, EventEnvelope, Id, PermissionMode } from '@yo-agent/protocol';
 import {
   SLASH_HELP,
@@ -25,6 +28,9 @@ import {
 import { initialState, reduce, type Block, type UiAction, type UiState } from './model';
 import { routeKey, type KeyCommand } from './keymap';
 import { renderBlock } from './render/blocks';
+import * as ed from './input/editor';
+import { PersistentHistory } from './input/history';
+import { PasteTracker, expandPastes, foldPaste, newPasteStore } from './input/paste';
 
 const h = React.createElement;
 
@@ -49,7 +55,12 @@ export interface CliAppProps {
   permissionMode?: PermissionMode;
   /** true:首轮完成即退出(单次模式 / 测试)。默认 false:多轮 REPL,持续到 /exit 或 Ctrl+C。 */
   autoExit?: boolean;
+  /** 输入历史持久化路径;缺省 null = 纯内存(runTui 注入默认 ~/.config/yo-agent/history.jsonl)。 */
+  historyFile?: string | null;
 }
+
+/** 输入框最多显示的视觉行数(超出围绕光标滚动)。 */
+const INPUT_MAX_ROWS = 10;
 
 export function CliApp(props: CliAppProps): React.ReactElement {
   const {
@@ -60,8 +71,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     cwd = process.cwd(),
     permissionMode = 'supervised',
     autoExit = false,
+    historyFile = null,
   } = props;
   const { exit } = useApp();
+  const { stdout } = useStdout();
+  const columns = stdout?.columns ?? 80;
 
   // ── 状态:纯 reducer + ref 镜像(同帧同步可见)──────────────────────────
   const [state, setState] = useState<UiState>(() =>
@@ -76,21 +90,46 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     setState(stateRef.current);
   }, []);
 
-  // ── 输入缓冲 + 光标(ref 镜像同理;4.6b 抽为多行 editor)────────────────
-  const [input, setInput] = useState('');
-  const [cursor, setCursor] = useState(0);
-  const inputRef = useRef('');
-  const cursorRef = useRef(0);
-  const setBuf = (next: string, cur = next.length): void => {
-    inputRef.current = next;
-    cursorRef.current = Math.max(0, Math.min(cur, next.length));
-    setInput(next);
-    setCursor(cursorRef.current);
+  // ── 编辑器(ref 镜像同理)──────────────────────────────────────────────
+  const [editor, setEditorState] = useState<ed.EditorState>(ed.EMPTY);
+  const edRef = useRef<ed.EditorState>(ed.EMPTY);
+  const setEditor = (next: ed.EditorState): void => {
+    edRef.current = next;
+    setEditorState(next);
   };
 
-  // 输入历史(仅记非 slash 的真实提问;4.6b 持久化)。
-  const historyRef = useRef<string[]>([]);
-  const histIdxRef = useRef(0);
+  // 输入历史(仅记非 slash 的真实提问;historyFile 注入时跨进程持久)。
+  const historyRef = useRef<PersistentHistory | null>(null);
+  historyRef.current ??= PersistentHistory.load(historyFile, cwd);
+  const histIdxRef = useRef(historyRef.current.list().length);
+
+  // 粘贴:括号粘贴累积器 + 大段折叠登记表。
+  const pasteTrackerRef = useRef(new PasteTracker());
+  const pasteStoreRef = useRef(newPasteStore());
+
+  // 退出保护:双击 Ctrl+C/Ctrl+D(3 秒窗口)。
+  const [exitArmed, setExitArmed] = useState(false);
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exitArmedRef = useRef(false);
+  const armExit = (): void => {
+    if (exitArmedRef.current) {
+      exit();
+      return;
+    }
+    exitArmedRef.current = true;
+    setExitArmed(true);
+    if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+    exitTimerRef.current = setTimeout(() => {
+      exitArmedRef.current = false;
+      setExitArmed(false);
+    }, 3000);
+  };
+  useEffect(
+    () => () => {
+      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+    },
+    [],
+  );
 
   // spinner 动画帧。
   const [spin, setSpin] = useState(0);
@@ -159,8 +198,14 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   }
 
   function onSubmit(): void {
-    const text = inputRef.current.trim();
-    setBuf('');
+    const buf = edRef.current.text;
+    // 行尾反斜杠续行(CC 惯例):替换为换行,不提交。
+    if (buf.endsWith('\\')) {
+      setEditor(ed.fromText(buf.slice(0, -1) + '\n'));
+      return;
+    }
+    const text = expandPastes(pasteStoreRef.current, buf).trim();
+    setEditor(ed.EMPTY);
     if (!text) return;
     const slash = parseSlash(text);
     if (slash) {
@@ -175,14 +220,15 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       }
       return;
     }
-    historyRef.current.push(text);
-    histIdxRef.current = historyRef.current.length;
+    historyRef.current!.push(text);
+    histIdxRef.current = historyRef.current!.list().length;
     submit(text);
   }
 
   // ── 命令执行(keymap 路由结果 → 副作用)────────────────────────────────
   function execute(cmd: KeyCommand): void {
     const s = stateRef.current;
+    const cur = edRef.current;
     switch (cmd.type) {
       case 'approval-up':
         dispatch({ type: 'approval-move', delta: -1 });
@@ -209,62 +255,105 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       case 'interrupt':
         void kernel.interrupt?.(sessionId).catch(() => {});
         break;
-      case 'exit':
-        exit();
+      case 'exit-request':
+        armExit();
         break;
       case 'submit':
         onSubmit();
         break;
+      case 'newline':
+        setEditor(ed.newline(cur));
+        break;
       case 'clear-input':
-        setBuf('');
+        setEditor(ed.EMPTY);
         break;
       case 'cursor-home':
-        setBuf(inputRef.current, 0);
+        setEditor(ed.lineHome(cur));
         break;
       case 'cursor-end':
-        setBuf(inputRef.current, inputRef.current.length);
+        setEditor(ed.lineEnd(cur));
         break;
       case 'cursor-left':
-        setBuf(inputRef.current, cursorRef.current - 1);
+        setEditor(ed.left(cur));
         break;
       case 'cursor-right':
-        setBuf(inputRef.current, cursorRef.current + 1);
+        setEditor(ed.right(cur));
+        break;
+      case 'cursor-up':
+        setEditor(ed.up(cur) ?? cur);
+        break;
+      case 'cursor-down':
+        setEditor(ed.down(cur) ?? cur);
+        break;
+      case 'word-left':
+        setEditor(ed.wordLeft(cur));
+        break;
+      case 'word-right':
+        setEditor(ed.wordRight(cur));
+        break;
+      case 'delete-word-back':
+        setEditor(ed.deleteWordBack(cur));
+        break;
+      case 'kill-line-end':
+        setEditor(ed.killToLineEnd(cur));
+        break;
+      case 'delete-forward':
+        setEditor(ed.deleteForward(cur));
         break;
       case 'history-prev': {
-        const hist = historyRef.current;
+        const hist = historyRef.current!.list();
         if (histIdxRef.current > 0) {
           histIdxRef.current -= 1;
-          setBuf(hist[histIdxRef.current] ?? '');
+          setEditor(ed.fromText(hist[histIdxRef.current] ?? ''));
         }
         break;
       }
       case 'history-next': {
-        const hist = historyRef.current;
+        const hist = historyRef.current!.list();
         if (histIdxRef.current < hist.length) {
           histIdxRef.current += 1;
-          setBuf(histIdxRef.current < hist.length ? hist[histIdxRef.current]! : '');
+          setEditor(ed.fromText(histIdxRef.current < hist.length ? hist[histIdxRef.current]! : ''));
         }
         break;
       }
-      case 'backspace': {
-        const cur = cursorRef.current;
-        if (cur > 0) setBuf(inputRef.current.slice(0, cur - 1) + inputRef.current.slice(cur), cur - 1);
+      case 'backspace':
+        setEditor(ed.backspace(cur));
         break;
-      }
-      case 'insert': {
-        const cur = cursorRef.current;
-        setBuf(inputRef.current.slice(0, cur) + cmd.text + inputRef.current.slice(cur), cur + cmd.text.length);
+      case 'insert':
+        setEditor(ed.insert(cur, cmd.text));
         break;
-      }
       default:
         break;
     }
   }
 
   useInput((ch, key) => {
+    // ⓪ 括号粘贴拦截(keymap 之前):粘贴态内回车/Tab 等一律当字面量累积。
+    const feed = pasteTrackerRef.current.feed(ch, { keyReturn: key.return, keyTab: key.tab });
+    if (feed.consumed) {
+      if (feed.done !== null) {
+        setEditor(ed.insert(edRef.current, foldPaste(pasteStoreRef.current, ed.sanitize(feed.done))));
+      }
+      return;
+    }
     const s = stateRef.current;
-    const cmd = routeKey(ch, key, { approvalOpen: s.approval !== null, running: s.running });
-    if (cmd) execute(cmd);
+    const cur = edRef.current;
+    const cmd = routeKey(ch, key, {
+      approvalOpen: s.approval !== null,
+      running: s.running,
+      bufferEmpty: cur.text.length === 0,
+      cursorAtFirstRow: ed.cursorRow(cur) === 0,
+      cursorAtLastRow: ed.cursorRow(cur) === ed.rowCount(cur) - 1,
+    });
+    if (cmd) {
+      // 任何非退出键都解除退出确认态。
+      if (cmd.type !== 'exit-request' && exitArmedRef.current) {
+        exitArmedRef.current = false;
+        setExitArmed(false);
+        if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+      }
+      execute(cmd);
+    }
   });
 
   // ── 渲染 ──────────────────────────────────────────────────────────────
@@ -276,24 +365,35 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   };
   const bar = statusBar({ model, mode: permissionMode, ...u, cwd });
 
-  let footer: React.ReactElement;
+  const footer: React.ReactElement[] = [];
   if (state.approval) {
     const a = state.approval;
-    footer = h(
-      Box,
-      { key: 'approval', flexDirection: 'column', marginTop: 1, borderStyle: 'round', borderColor: riskColor(a.risk), paddingX: 1 },
-      h(Text, { key: 'hdr', color: riskColor(a.risk) }, `⚠ 审批请求:${a.tool}  [风险 ${a.risk}]  (↑↓ 选择,Enter 确认,Esc 拒绝)`),
-      h(Text, { key: 'in', color: 'gray' }, `  ${summarizeInput(a.input)}`),
-      ...a.suggestions.map((sug, i) =>
-        h(Text, { key: sug.decision, color: i === a.selected ? 'green' : undefined }, `${i === a.selected ? '❯ ' : '  '}${sug.label ?? sug.decision}`),
+    footer.push(
+      h(
+        Box,
+        { key: 'approval', flexDirection: 'column', marginTop: 1, borderStyle: 'round', borderColor: riskColor(a.risk), paddingX: 1 },
+        h(Text, { key: 'hdr', color: riskColor(a.risk) }, `⚠ 审批请求:${a.tool}  [风险 ${a.risk}]  (↑↓ 选择,Enter 确认,Esc 拒绝)`),
+        h(Text, { key: 'in', color: 'gray' }, `  ${summarizeInput(a.input)}`),
+        ...a.suggestions.map((sug, i) =>
+          h(Text, { key: sug.decision, color: i === a.selected ? 'green' : undefined }, `${i === a.selected ? '❯ ' : '  '}${sug.label ?? sug.decision}`),
+        ),
       ),
     );
-  } else if (state.running) {
-    footer = h(Text, { key: 'busy', color: 'gray' }, `${SPINNER_FRAMES[spin]} 运行中…(Esc/Ctrl+C 中断,可直接输入引导后回车)`);
   } else {
-    const before = input.slice(0, cursor);
-    const after = input.slice(cursor);
-    footer = h(Text, { key: 'prompt' }, h(Text, { color: 'cyan' }, '› '), before, h(Text, { inverse: true }, after.slice(0, 1) || ' '), after.slice(1));
+    if (state.running) {
+      footer.push(
+        h(Text, { key: 'busy', color: 'gray' }, `${SPINNER_FRAMES[spin]} 运行中…(Esc/Ctrl+C 中断,可直接输入引导后回车)`),
+      );
+    }
+    footer.push(renderInputBox(editor, columns, state.running));
+    const hint = exitArmed
+      ? h(Text, { key: 'hint', color: 'yellow' }, '再按一次退出')
+      : h(
+          Text,
+          { key: 'hint', color: 'gray', dimColor: true },
+          state.running ? 'Enter 引导当前轮 · Esc 中断' : 'Enter 发送 · Alt+Enter/Ctrl+J 换行 · ↑↓ 历史 · /help 命令',
+        );
+    footer.push(hint);
   }
 
   return h(
@@ -302,14 +402,49 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     h(Static, { key: 'static', items: state.committed, children: (b: unknown) => renderBlock(b as Block) }),
     state.live.length ? h(Box, { key: 'live', flexDirection: 'column' }, ...state.live.map(renderBlock)) : null,
     h(Text, { key: 'bar', color: 'gray', dimColor: true }, bar),
-    footer,
+    ...footer,
+  );
+}
+
+/** 多行输入框:边框圆角,首行 '› ' 前缀;超高围绕光标滚动;光标字素反白。 */
+function renderInputBox(editor: ed.EditorState, columns: number, running: boolean): React.ReactElement {
+  // 可用文本宽度 = 终端列 - 边框(2) - 内边距(2) - 前缀(2),下限 10。
+  const usable = Math.max(10, columns - 6);
+  const all = ed.layout(editor, usable);
+  let lines = all;
+  let offset = 0;
+  if (all.length > INPUT_MAX_ROWS) {
+    const cursorAt = Math.max(0, all.findIndex((l) => l.hasCursor));
+    offset = Math.min(Math.max(0, cursorAt - INPUT_MAX_ROWS + 1), all.length - INPUT_MAX_ROWS);
+    lines = all.slice(offset, offset + INPUT_MAX_ROWS);
+  }
+  const rows = lines.map((line, i) => {
+    const prefix = offset + i === 0 ? h(Text, { key: 'p', color: 'cyan' }, '› ') : h(Text, { key: 'p' }, '  ');
+    if (!line.hasCursor) return h(Text, { key: 'l' + i }, prefix, line.text);
+    const { before, at, after } = ed.splitAtCursor(line.text, line.cursorUnits);
+    return h(Text, { key: 'l' + i }, prefix, before, h(Text, { inverse: true }, at), after);
+  });
+  return h(
+    Box,
+    { key: 'input', flexDirection: 'column', borderStyle: 'round', borderColor: running ? 'gray' : 'cyan', paddingX: 1 },
+    ...rows,
   );
 }
 
 /** 真 render(需 TTY)。headless / jsonl 模式不应走这里。 */
 export async function runTui(props: CliAppProps): Promise<void> {
   const { render } = await import('ink');
-  // exitOnCtrlC:false → Ctrl+C 交给组件(运行中中断当前轮,空闲才退出)。
-  const instance = render(h(CliApp, props), { exitOnCtrlC: false });
-  await instance.waitUntilExit();
+  // 括号粘贴:粘贴包上 ESC[200~/201~ 定界(含换行的粘贴不再被当成回车提交)。
+  process.stdout.write('\x1b[?2004h');
+  // 历史默认 ~/.config/yo-agent/history.jsonl;YO_HISTORY 覆盖,YO_HISTORY='' 关闭。
+  const envHist = process.env.YO_HISTORY;
+  const historyFile =
+    props.historyFile !== undefined ? props.historyFile : envHist !== undefined ? envHist || null : join(homedir(), '.config', 'yo-agent', 'history.jsonl');
+  try {
+    // exitOnCtrlC:false → Ctrl+C 交给组件(运行中中断当前轮,空闲双击退出)。
+    const instance = render(h(CliApp, { ...props, historyFile }), { exitOnCtrlC: false });
+    await instance.waitUntilExit();
+  } finally {
+    process.stdout.write('\x1b[?2004l');
+  }
 }
