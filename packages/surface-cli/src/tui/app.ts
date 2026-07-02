@@ -1,10 +1,11 @@
 /**
  * Ink TUI 组装壳(DESIGN §7.2;4.6a 重构 / 4.6b 输入 / 4.6c 渲染 / 4.6d 命令与补全)。
  *
- * 分层:事件折叠在 model.ts(纯 reducer);按键路由在 keymap.ts(层级:审批 > 选择器 >
- * 补全菜单 > 编辑器);多行编辑 input/editor.ts;粘贴 input/paste.ts;历史 input/history.ts;
- * 补全 input/completion.ts;slash 注册表 commands.ts;渲染 render/*。本文件只做:订阅内核
- * 事件、执行命令副作用、摆放区块 + 状态栏 + 输入框/审批/选择器。
+ * 分层:事件折叠在 model.ts(纯 reducer);raw chunk 解码在 input/decoder.ts(粘贴拦截/
+ * pty 切段);按键路由在 keymap.ts(层级:审批 > 选择器 > 补全菜单 > 编辑器);多行编辑
+ * input/editor.ts;粘贴折叠 input/paste.ts;历史 input/history.ts;补全 input/completion.ts;
+ * slash 注册表 commands.ts;渲染 render/*。本文件只做:订阅内核事件、执行命令副作用、
+ * 摆放区块 + 状态栏 + 输入框/审批/选择器。
  *
  * dispatch 走「ref 镜像 + 纯 reduce」:同帧多次按键/事件在 useInput 闭包里能同步读到最新
  * 状态(useState 异步批处理读不到,4.5 已踩过)。
@@ -22,7 +23,8 @@ import { renderBlock, type RenderOpts } from './render/blocks';
 import { renderCompletionMenu, renderPicker, type PickerState } from './render/picker';
 import * as ed from './input/editor';
 import { PersistentHistory } from './input/history';
-import { PasteTracker, expandPastes, foldPaste, newPasteStore } from './input/paste';
+import { InputDecoder } from './input/decoder';
+import { expandPastes, foldPaste, newPasteStore } from './input/paste';
 import { acceptCompletion, computeCompletion, listFiles, type Completion } from './input/completion';
 import { MODE_CYCLE, applyMode, buildCommands, findCommand, parseCommandLine, type CommandDeps } from './commands';
 import { approvalBody } from './render/approval';
@@ -142,8 +144,8 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   historyRef.current ??= PersistentHistory.load(historyFile, cwd);
   const histIdxRef = useRef(historyRef.current.list().length);
 
-  // 粘贴:括号粘贴累积器 + 大段折叠登记表。
-  const pasteTrackerRef = useRef(new PasteTracker());
+  // 输入解码(4.7b):raw chunk → 语义事件(粘贴拦截/pty 切段收在 decoder);折叠登记表。
+  const decoderRef = useRef(new InputDecoder());
   const pasteStoreRef = useRef(newPasteStore());
 
   // ── 补全(4.6d):候选由 editor 状态派生;选中/抑制为本地状态 ─────────────
@@ -644,44 +646,41 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   }
 
   useInput((ch, key) => {
-    // ⓪ 括号粘贴拦截(keymap 之前):粘贴态内回车/Tab 等一律当字面量累积。
-    const feed = pasteTrackerRef.current.feed(ch, { keyReturn: key.return, keyTab: key.tab });
-    if (feed.consumed) {
-      if (feed.done !== null) {
-        setEditor(ed.insert(edRef.current, foldPaste(pasteStoreRef.current, ed.sanitize(feed.done))));
+    // 解码(4.7b):粘贴拦截 / pty 合并 chunk 切段收在 decoder,这里只消费语义事件。
+    for (const ev of decoderRef.current.feed(ch, key)) {
+      if (ev.kind === 'paste') {
+        setEditor(ed.insert(edRef.current, foldPaste(pasteStoreRef.current, ed.sanitize(ev.text))));
+        continue;
       }
-      return;
-    }
-    // ①' 多字符 chunk 含回车(pty 合并 / 极快输入;真粘贴已被 ① 拦截):按换行切段,段间视为 Enter。
-    // 无括号粘贴的老终端粘贴多行会逐行提交 —— 已知取舍,现代终端全部走 ①。
-    if (!key.return && ch.length > 1 && /[\r\n]/.test(ch)) {
-      const parts = ch.split(/\r\n|\r|\n/);
-      for (let i = 0; i < parts.length; i++) {
-        if (parts[i]) execute({ type: 'insert', text: parts[i]! });
-        if (i < parts.length - 1) execute({ type: 'submit' });
+      if (ev.kind === 'text') {
+        execute({ type: 'insert', text: ev.text });
+        continue;
       }
-      return;
-    }
-    const s = stateRef.current;
-    const cur = edRef.current;
-    const cmd = routeKey(ch, key, {
-      approvalOpen: s.approval !== null,
-      pickerOpen: pickerRef.current !== null,
-      menuOpen: computeMenu(cur) !== null && (computeMenu(cur)?.items.length ?? 0) > 0,
-      guideActive: pendingGuideRef.current !== null,
-      running: s.running,
-      bufferEmpty: cur.text.length === 0,
-      cursorAtFirstRow: ed.cursorRow(cur) === 0,
-      cursorAtLastRow: ed.cursorRow(cur) === ed.rowCount(cur) - 1,
-    });
-    if (cmd) {
-      // 任何非退出键都解除退出确认态。
-      if (cmd.type !== 'exit-request' && exitArmedRef.current) {
-        exitArmedRef.current = false;
-        setExitArmed(false);
-        if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+      if (ev.kind === 'enter') {
+        execute({ type: 'submit' });
+        continue;
       }
-      execute(cmd);
+      const s = stateRef.current;
+      const cur = edRef.current;
+      const cmd = routeKey(ev.ch, ev.key, {
+        approvalOpen: s.approval !== null,
+        pickerOpen: pickerRef.current !== null,
+        menuOpen: computeMenu(cur) !== null && (computeMenu(cur)?.items.length ?? 0) > 0,
+        guideActive: pendingGuideRef.current !== null,
+        running: s.running,
+        bufferEmpty: cur.text.length === 0,
+        cursorAtFirstRow: ed.cursorRow(cur) === 0,
+        cursorAtLastRow: ed.cursorRow(cur) === ed.rowCount(cur) - 1,
+      });
+      if (cmd) {
+        // 任何非退出键都解除退出确认态。
+        if (cmd.type !== 'exit-request' && exitArmedRef.current) {
+          exitArmedRef.current = false;
+          setExitArmed(false);
+          if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+        }
+        execute(cmd);
+      }
     }
   });
 

@@ -2,39 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  PasteTracker,
-  PersistentHistory,
-  expandPastes,
-  foldPaste,
-  newPasteStore,
-} from '@yo-agent/surface-cli';
-
-describe('PasteTracker:括号粘贴状态机', () => {
-  it('单 chunk 完整粘贴(ink 剥首 ESC 形态):一次产出全文', () => {
-    const t = new PasteTracker();
-    const r = t.feed('[200~hello\nworld\x1b[201~');
-    expect(r).toEqual({ done: 'hello\nworld', consumed: true });
-    expect(t.active).toBe(false);
-  });
-
-  it('多 chunk:开始 → 累积(回车/Tab 当字面量)→ 结束', () => {
-    const t = new PasteTracker();
-    expect(t.feed('[200~line1')).toEqual({ done: null, consumed: true });
-    expect(t.active).toBe(true);
-    expect(t.feed('', { keyReturn: true })).toEqual({ done: null, consumed: true }); // 粘贴内回车不提交
-    expect(t.feed('line2')).toEqual({ done: null, consumed: true });
-    const r = t.feed('[201~'); // 结束标记单独成 chunk 被剥 ESC
-    expect(r.done).toBe('line1\rline2');
-    expect(t.active).toBe(false);
-  });
-
-  it('非粘贴输入不消费;含原始 ESC 的开始标记也识别', () => {
-    const t = new PasteTracker();
-    expect(t.feed('hello')).toEqual({ done: null, consumed: false });
-    expect(t.feed('\x1b[200~x\x1b[201~').done).toBe('x');
-  });
-});
+import { PersistentHistory, expandPastes, foldPaste, newPasteStore } from '@yo-agent/surface-cli';
 
 describe('foldPaste/expandPastes:大段折叠', () => {
   it('>10 行折叠为占位符,提交时展开;短粘贴原样', () => {
