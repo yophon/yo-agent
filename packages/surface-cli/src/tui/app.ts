@@ -652,6 +652,16 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       }
       return;
     }
+    // ①' 多字符 chunk 含回车(pty 合并 / 极快输入;真粘贴已被 ① 拦截):按换行切段,段间视为 Enter。
+    // 无括号粘贴的老终端粘贴多行会逐行提交 —— 已知取舍,现代终端全部走 ①。
+    if (!key.return && ch.length > 1 && /[\r\n]/.test(ch)) {
+      const parts = ch.split(/\r\n|\r|\n/);
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i]) execute({ type: 'insert', text: parts[i]! });
+        if (i < parts.length - 1) execute({ type: 'submit' });
+      }
+      return;
+    }
     const s = stateRef.current;
     const cur = edRef.current;
     const cmd = routeKey(ch, key, {

@@ -539,3 +539,18 @@ describe('CliApp 4.6e(模式循环 / 排队 / 审批升级 / 模型切换)', () 
     unmount();
   });
 });
+
+describe('CliApp 4.6 收口(pty chunk 合并)', () => {
+  it('一个 chunk 内的「文本+回车」按段提交(真机 pty 合并场景)', async () => {
+    const kernel = new RecordingKernel();
+    const { stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));
+    await tick();
+    stdin.write('hi\r'); // 文本与回车合并成单 chunk 到达
+    await tick();
+    expect(kernel.submitted).toEqual(['hi']);
+    stdin.write('a\rb\r'); // 两段各自提交
+    await tick();
+    expect(kernel.submitted).toEqual(['hi', 'a', 'b']);
+    unmount();
+  });
+});
