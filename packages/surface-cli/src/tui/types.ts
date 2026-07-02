@@ -23,6 +23,11 @@ export interface TuiKernel {
     ReadonlyArray<{ sessionId: Id; model: string; workspacePath: string; lastActiveAt: number }>
   >;
   resumeSession?(sessionId: Id): Promise<boolean>;
+  // ── 4.7f 历史回放接缝 ──
+  /** 已落库事件流(/resume 回放;缺省时恢复会话不回放,仅接续新事件)。 */
+  events?: { read(sessionId: Id): AsyncIterable<EventEnvelope> };
+  /** 审批是否仍挂起(回放跳过已决审批的 ApprovalRequested;缺省一律跳过)。 */
+  isApprovalPending?(requestId: Id): boolean;
 }
 
 export interface CliAppProps {
@@ -44,4 +49,6 @@ export interface CliAppProps {
   demo?: boolean;
   /** 启动即打开 /resume 选择器(`yoagent --resume` 不带 id)。 */
   openResumePicker?: boolean;
+  /** 挂载即回放历史事件(`--resume <id>/last` 已恢复的会话,4.7f)。 */
+  replayOnMount?: boolean;
 }

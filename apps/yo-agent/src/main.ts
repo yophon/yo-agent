@@ -454,6 +454,8 @@ async function main(): Promise<void> {
       console.error('[resume] 无可恢复会话（需 YO_DB=路径 持久化），已开新会话');
     }
   }
+  // 4.7f:恢复成功的会话在 TUI 挂载时回放历史(不再空屏)。
+  const replayOnMount = sessionId !== undefined;
   sessionId ??= await kernel.startSession({ system, model });
 
   // try/finally：turn 抛错（走 main().catch→exit(1)）也回收子进程，不只 happy-path（审查 lifecycle）。
@@ -461,7 +463,7 @@ async function main(): Promise<void> {
     if (mode === 'tui') {
       const mode0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.permissionMode ?? 'supervised';
       const model0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.model ?? model;
-      await runTui({ kernel, sessionId, prompt, model: model0, cwd, permissionMode: mode0, demo, openResumePicker });
+      await runTui({ kernel, sessionId, prompt, model: model0, cwd, permissionMode: mode0, demo, openResumePicker, replayOnMount });
       return;
     }
     const renderer = mode === 'jsonl' ? new JsonlRenderer() : new HeadlessRenderer();

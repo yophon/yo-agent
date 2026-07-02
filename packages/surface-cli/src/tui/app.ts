@@ -48,6 +48,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     fileLister = listFiles,
     demo = false,
     openResumePicker = false,
+    replayOnMount = false,
   } = props;
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -176,6 +177,26 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kernel, sidBox.value]);
 
+  // 历史回放(4.7f):恢复会话时把已落库事件折叠进区块(不再空屏)。
+  // 已决审批的 ApprovalRequested 跳过(isApprovalPending 缺省一律跳);失败静默,仍可继续对话。
+  const replaySession = useCallback(
+    async (id: Id): Promise<void> => {
+      if (!kernel.events?.read) return;
+      try {
+        for await (const env of kernel.events.read(id)) {
+          if (env.event.kind === 'ApprovalRequested' && !(kernel.isApprovalPending?.(env.event.requestId) ?? false)) {
+            continue;
+          }
+          dispatch({ type: 'event', event: env.event, ts: env.ts });
+        }
+      } catch {
+        // 读库失败不阻断会话
+      }
+      dispatch({ type: 'replay-end' });
+    },
+    [kernel, dispatch],
+  );
+
   // ctx% / git 分支:挂载 + 每轮完成后刷新。
   useEffect(() => {
     refreshMeta();
@@ -197,11 +218,13 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.running, state.turns]);
 
-  // `yoagent --resume` 不带 id:挂载即打开会话选择器。
+  // `yoagent --resume` 不带 id:挂载即打开会话选择器;`--resume <id>/last`:挂载即回放历史。
   useEffect(() => {
     if (openResumePicker) {
       const cmd = findCommand(commandsRef.current, '/resume');
       if (cmd) void cmd.run(commandDeps, '');
+    } else if (replayOnMount) {
+      void replaySession(sidBox.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -244,6 +267,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     switchSession: (id) => {
       sidBox.set(id);
       dispatch({ type: 'clear' });
+      void replaySession(id);
       refreshMeta();
     },
     newSession: kernel.startSession

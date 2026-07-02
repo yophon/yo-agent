@@ -99,6 +99,8 @@ export interface UiState {
   picker: PickerState | null;
   /** 审批「拒绝并引导」输入态(4.6e):非 null 时输入框回车 = 拒绝并 steer。 */
   pendingGuide: ApprovalView | null;
+  /** 并发审批排队(4.7f):面板/引导被占时后到的请求入队,裁决后逐个呈现。 */
+  approvalQueue: ApprovalView[];
   /** 排队 follow-up(4.6e):运行中 Alt+Enter 入队,正常完成后自动出队提交。 */
   queue: string[];
   /** 补全菜单:选中下标 + Esc 关闭后抑制的 token(输入变化自动解除)。 */
@@ -135,6 +137,7 @@ export function initialState(opts: InitialStateOpts): UiState {
     lastStop: null,
     picker: null,
     pendingGuide: null,
+    approvalQueue: [],
     queue: [],
     menu: { selected: 0, suppressedToken: null },
   };
@@ -168,7 +171,9 @@ export type UiAction =
   /** 引导态 Esc 返回审批面板。 */
   | { type: 'approval-restore' }
   | { type: 'menu-select'; index: number }
-  | { type: 'menu-suppress'; token: string | null };
+  | { type: 'menu-suppress'; token: string | null }
+  /** 历史回放结束(4.7f):live 收进 committed(尾部未完轮不悬挂)。 */
+  | { type: 'replay-end' };
 
 // ── 内部助手(全部返回新对象,state 不就地改)─────────────────────────────
 function nextId(s: UiState): [string, UiState] {
@@ -210,6 +215,13 @@ function flushLive(s: UiState): UiState {
   return { ...s, committed: [...s.committed, ...s.live], live: [] };
 }
 
+/** 审批位空出后从排队队首递补(4.7f);面板/引导仍被占或队空则原样。 */
+function promoteApproval(s: UiState): UiState {
+  if (s.approval || s.pendingGuide || !s.approvalQueue.length) return s;
+  const [next, ...rest] = s.approvalQueue;
+  return { ...s, approval: next!, approvalQueue: rest };
+}
+
 // ── reducer ──────────────────────────────────────────────────────────────
 export function reduce(state: UiState, action: UiAction): UiState {
   switch (action.type) {
@@ -236,7 +248,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
       return { ...state, approval: { ...state.approval, selected } };
     }
     case 'approval-clear':
-      return { ...state, approval: null };
+      return promoteApproval({ ...state, approval: null });
+    case 'replay-end':
+      return flushLive(state);
     case 'picker-open':
       return { ...state, picker: action.picker };
     case 'picker-move': {
@@ -256,7 +270,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
     case 'guide-enter':
       return state.approval ? { ...state, pendingGuide: state.approval, approval: null } : state;
     case 'guide-exit':
-      return state.pendingGuide ? { ...state, pendingGuide: null } : state;
+      return state.pendingGuide ? promoteApproval({ ...state, pendingGuide: null }) : state;
     case 'approval-restore':
       return state.pendingGuide ? { ...state, approval: state.pendingGuide, pendingGuide: null } : state;
     // 无变化时返回原 state(setState 同引用直接跳过重渲,补全每键触发不产生空转)。
@@ -315,20 +329,22 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
       }));
     case 'ToolCallCompleted':
       return patchTool(state, e.id, (t) => ({ ...t, status: e.status, truncatedToPath: e.truncatedToPath }));
-    case 'ApprovalRequested':
-      return {
-        ...state,
-        activity: '等待审批',
-        approval: {
-          requestId: e.requestId,
-          tool: e.tool,
-          input: e.input,
-          risk: e.risk,
-          suggestions: e.suggestions.length ? e.suggestions : DEFAULT_SUGGESTIONS,
-          selected: 0,
-          withGuide: true,
-        },
+    case 'ApprovalRequested': {
+      const view: ApprovalView = {
+        requestId: e.requestId,
+        tool: e.tool,
+        input: e.input,
+        risk: e.risk,
+        suggestions: e.suggestions.length ? e.suggestions : DEFAULT_SUGGESTIONS,
+        selected: 0,
+        withGuide: true,
       };
+      // 面板/引导被占 → 入队(4.7f),不再互相覆盖;裁决后 promoteApproval 递补。
+      if (state.approval || state.pendingGuide) {
+        return { ...state, activity: '等待审批', approvalQueue: [...state.approvalQueue, view] };
+      }
+      return { ...state, activity: '等待审批', approval: view };
+    }
     case 'ContextCompacted':
       return pushLive(state, { kind: 'notice', tone: 'info', text: `上下文压缩:省 ${fmtInt(e.tokensSaved)} tokens` });
     case 'McpServerStatus':
@@ -409,12 +425,31 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
         const summary = turnSummary(state.turnStartedTs, ts, u, u.costUsd ?? e.costUsd);
         if (summary) done = pushCommitted(flushed, 'dim', summary);
       }
-      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null, lastStop: e.stopReason };
+      // 轮结束:悬挂的审批/引导/排队审批全部作废(请求已随轮终止,面板留着只会误导)。
+      return {
+        ...done,
+        running: false,
+        turns: done.turns + 1,
+        turnStartedTs: null,
+        lastStop: e.stopReason,
+        approval: null,
+        pendingGuide: null,
+        approvalQueue: [],
+      };
     }
     case 'TurnFailed': {
       const flushed = flushLive(state);
       const done = pushCommitted(flushed, 'error', `失败:${e.error.message}`);
-      return { ...done, running: false, turns: done.turns + 1, turnStartedTs: null, lastStop: 'failed' };
+      return {
+        ...done,
+        running: false,
+        turns: done.turns + 1,
+        turnStartedTs: null,
+        lastStop: 'failed',
+        approval: null,
+        pendingGuide: null,
+        approvalQueue: [],
+      };
     }
     // 会话元信息不渲染。
     case 'SessionStarted':

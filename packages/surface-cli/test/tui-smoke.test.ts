@@ -17,13 +17,14 @@ function ev(event: AgentEvent): EventEnvelope {
 class FakeKernel implements TuiKernel {
   private handler: ((env: EventEnvelope) => void) | null = null;
   readonly decided: Array<{ requestId: Id; decision: ApprovalDecision }> = [];
-  constructor(private readonly events: EventEnvelope[]) {}
+  // 4.7f 起 TuiKernel.events 是历史回放接缝,脚本字段改名 script 避撞。
+  constructor(private readonly script: EventEnvelope[]) {}
   subscribe(_s: Id, _c: number | null, handler: (env: EventEnvelope) => void): () => void {
     this.handler = handler;
     return () => {};
   }
   async submitInput(): Promise<unknown> {
-    for (const e of this.events) this.handler?.(e);
+    for (const e of this.script) this.handler?.(e);
     return { turnId: 't' };
   }
   decideApproval(requestId: Id, decision: ApprovalDecision): void {
@@ -551,6 +552,32 @@ describe('CliApp 4.6 收口(pty chunk 合并)', () => {
     stdin.write('a\rb\r'); // 两段各自提交
     await tick();
     expect(kernel.submitted).toEqual(['hi', 'a', 'b']);
+    unmount();
+  });
+});
+
+describe('CliApp 4.7f(/resume 历史回放)', () => {
+  it('replayOnMount:已落库事件折叠进区块;已决审批不重投面板', async () => {
+    const history: EventEnvelope[] = [
+      ev({ kind: 'TurnStarted', turnId: 't1', promptIdemKey: 'k1' }),
+      ev({ kind: 'AssistantText', delta: '历史回答内容' }),
+      ev({ kind: 'ApprovalRequested', requestId: 'dead-req', tool: 'bash', input: {}, risk: 'high', suggestions: SUGGESTIONS }),
+      ev({ kind: 'TurnCompleted', stopReason: 'end_turn', usage: { inputTokens: 3, outputTokens: 2, cacheReadTokens: 0 } }),
+    ];
+    const kernel = new FakeKernel([]);
+    (kernel as TuiKernel).events = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *read() {
+        for (const e of history) yield e;
+      },
+    };
+    (kernel as TuiKernel).isApprovalPending = () => false;
+    const { lastFrame, unmount } = render(
+      React.createElement(CliApp, { kernel, sessionId: 's', prompt: '', replayOnMount: true }),
+    );
+    await tick();
+    expect(lastFrame()).toContain('历史回答内容');
+    expect(lastFrame()).not.toContain('风险 high'); // 已决审批不重投
     unmount();
   });
 });

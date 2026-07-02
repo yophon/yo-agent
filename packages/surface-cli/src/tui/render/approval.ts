@@ -62,8 +62,8 @@ export function approvalBody(tool: string, input: unknown): StyledLine[] {
   }
 }
 
-/** 审批面板整体:风险色边框 + 正文 + 选项列表 + Esc 双击提示。 */
-export function renderApprovalPanel(a: ApprovalView, rejectArmed: boolean): React.ReactElement {
+/** 审批面板整体:风险色边框 + 正文 + 选项列表 + 排队计数 + Esc 双击提示。 */
+export function renderApprovalPanel(a: ApprovalView, rejectArmed: boolean, queuedCount = 0): React.ReactElement {
   const options = [
     ...a.suggestions.map((sug) => sug.label ?? sug.decision),
     ...(a.withGuide ? ['拒绝并告诉它该怎么做…'] : []),
@@ -87,6 +87,7 @@ export function renderApprovalPanel(a: ApprovalView, rejectArmed: boolean): Reac
         `${i === a.selected ? '❯' : ' '} ${i + 1}. ${label}`,
       ),
     ),
+    queuedCount > 0 ? h(Text, { key: 'qc', dimColor: true }, `还有 ${queuedCount} 个审批排队中`) : null,
     rejectArmed ? h(Text, { key: 'ra', color: 'yellow' }, '再按 Esc 拒绝') : null,
   );
 }

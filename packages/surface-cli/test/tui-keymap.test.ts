@@ -14,9 +14,11 @@ describe('keymap:审批层最高优先且吞键', () => {
     expect(routeKey('', { return: true }, approving)).toEqual({ type: 'approval-confirm' });
     expect(routeKey('', { escape: true }, approving)).toEqual({ type: 'approval-reject' });
   });
-  it('其余输入被吞(可见字符 / Ctrl+C 都不外泄)', () => {
+  it('其余输入被吞(可见字符不外泄;Ctrl+C 4.7f 起放行为中断/退出)', () => {
     expect(routeKey('a', {}, approving)).toBeNull();
-    expect(routeKey('c', { ctrl: true }, approving)).toBeNull();
+    expect(routeKey('c', { ctrl: true }, approving)).toEqual(
+      approving.running ? { type: 'interrupt' } : { type: 'exit-request' },
+    );
   });
 });
 
@@ -74,5 +76,22 @@ describe('keymap:编辑/词操作/行移/历史', () => {
     expect(routeKey('x', { ctrl: true }, idle)).toBeNull();
     expect(routeKey('x', { meta: true }, idle)).toBeNull();
     expect(routeKey('', {}, idle)).toBeNull();
+  });
+});
+
+describe('keymap:4.7f 审批面板放行 Ctrl+C', () => {
+  const ctx = {
+    approvalOpen: true,
+    pickerOpen: false,
+    menuOpen: false,
+    guideActive: false,
+    bufferEmpty: true,
+    cursorAtFirstRow: true,
+    cursorAtLastRow: true,
+  };
+  it('运行中 Ctrl+C → interrupt;空闲 → exit-request;其余仍被吞', () => {
+    expect(routeKey('c', { ctrl: true }, { ...ctx, running: true })).toEqual({ type: 'interrupt' });
+    expect(routeKey('c', { ctrl: true }, { ...ctx, running: false })).toEqual({ type: 'exit-request' });
+    expect(routeKey('x', {}, { ...ctx, running: true })).toBeNull(); // 可见字符仍被面板吞
   });
 });

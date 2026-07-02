@@ -87,8 +87,9 @@ export type KeyCommand =
 export type Routed = KeyCommand | null;
 
 export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): Routed {
-  // ① 审批面板:方向/回车/Esc 裁决,其余吞掉。
+  // ① 审批面板:方向/回车/Esc 裁决;Ctrl+C 放行(4.7f:中断/退出不被吞死);其余吞掉。
   if (ctx.approvalOpen) {
+    if (key.ctrl && ch === 'c') return ctx.running ? { type: 'interrupt' } : { type: 'exit-request' };
     if (key.upArrow) return { type: 'approval-up' };
     if (key.downArrow) return { type: 'approval-down' };
     if (key.return) return { type: 'approval-confirm' };

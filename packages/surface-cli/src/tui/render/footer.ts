@@ -53,7 +53,7 @@ export function renderFooter(f: FooterInput): React.ReactElement[] {
   const footer: React.ReactElement[] = [];
 
   if (state.approval) {
-    footer.push(renderApprovalPanel(state.approval, f.rejectArmed));
+    footer.push(renderApprovalPanel(state.approval, f.rejectArmed, state.approvalQueue.length));
     return footer;
   }
 

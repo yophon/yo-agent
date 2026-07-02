@@ -289,3 +289,50 @@ describe('reducer:4.7c 交互态(picker/queue/guide/menu)', () => {
     expect(s.menu.suppressedToken).toBeNull();
   });
 });
+
+describe('reducer:4.7f 审批队列 / 轮结束清扫 / replay-end', () => {
+  const req = (id: string): AgentEvent => ({
+    kind: 'ApprovalRequested',
+    requestId: id,
+    tool: 'bash',
+    input: {},
+    risk: 'high',
+    suggestions: [],
+  });
+
+  it('并发审批入队不覆盖;裁决后递补;guide 占位时同样排队', () => {
+    let s = ev(s0(true), req('r1'));
+    s = ev(s, req('r2'));
+    s = ev(s, req('r3'));
+    expect(s.approval?.requestId).toBe('r1'); // 面板仍是第一个
+    expect(s.approvalQueue.map((a) => a.requestId)).toEqual(['r2', 'r3']);
+    s = reduce(s, { type: 'approval-clear' }); // 裁决 r1 → r2 递补
+    expect(s.approval?.requestId).toBe('r2');
+    expect(s.approvalQueue.map((a) => a.requestId)).toEqual(['r3']);
+    s = reduce(s, { type: 'guide-enter' }); // r2 转引导,r3 不递补(引导占位)
+    expect(s.approval).toBeNull();
+    s = ev(s, req('r4'));
+    expect(s.approvalQueue.map((a) => a.requestId)).toEqual(['r3', 'r4']);
+    s = reduce(s, { type: 'guide-exit' }); // 引导结束 → r3 递补
+    expect(s.approval?.requestId).toBe('r3');
+  });
+
+  it('轮结束(完成/失败)清空悬挂审批与队列', () => {
+    let s = ev(s0(true), req('r1'));
+    s = ev(s, req('r2'));
+    s = ev(s, DONE);
+    expect(s.approval).toBeNull();
+    expect(s.approvalQueue).toEqual([]);
+    let f = ev(s0(true), req('r3'));
+    f = ev(f, { kind: 'TurnFailed', error: { message: 'boom' } });
+    expect(f.approval).toBeNull();
+  });
+
+  it('replay-end:live 收进 committed(尾部未完轮不悬挂)', () => {
+    let s = ev(s0(false), { kind: 'AssistantText', delta: '回放中的半截输出' });
+    expect(s.live).toHaveLength(1);
+    s = reduce(s, { type: 'replay-end' });
+    expect(s.live).toHaveLength(0);
+    expect(lastCommitted(s)).toMatchObject({ kind: 'assistant', text: '回放中的半截输出' });
+  });
+});
