@@ -1,0 +1,106 @@
+#!/usr/bin/expect -f
+# 4.6 收口真机 PTY 冒烟(需 ~/.config/yo-agent/config.env 配真实 key;yoagent 已 install:cli)。
+# 矩阵:REPL 启动 → 括号粘贴不提交 → /help → Shift+Tab 权限循环 → slash 补全菜单 →
+#       真实一轮(轮摘要)→ /cost → /exit;再验 YO_DB + --continue 跨进程恢复。
+# 用法:expect scripts/tui-smoke.exp <工作目录>
+
+set timeout 30
+set workdir [lindex $argv 0]
+if {$workdir eq ""} { set workdir "/tmp/yo-tui-smoke" }
+file mkdir $workdir
+set dbfile "$workdir/smoke.sqlite"
+
+proc stage {name} { puts "\n\033\[36m── PTY 冒烟:$name ──\033\[0m" }
+proc die {msg} { puts "\033\[31m✗ $msg\033\[0m"; exit 1 }
+# 文本与回车必须分 chunk:同 chunk 的 \r 会被输入框按「粘贴内换行」处理(防误提交语义)。
+proc typeline {text} { send -- $text; sleep 0.15; send -- "\r"; sleep 0.1 }
+
+# ── 会话 ①:交互矩阵 ────────────────────────────────────────────────────
+stage "启动 REPL"
+cd $workdir
+spawn env YO_DB=$dbfile yoagent --tui
+expect {
+  -re {yo-agent ·} {}
+  timeout { die "未见 banner" }
+}
+expect {
+  "›" {}
+  timeout { die "未见输入提示符" }
+}
+
+stage "括号粘贴:含换行不提交"
+send -- "\x1b\[200~第一粘贴行\n第二粘贴行\x1b\[201~"
+expect {
+  "第二粘贴行" {}
+  timeout { die "粘贴未回显" }
+}
+send -- "\x15" ;# Ctrl+U 清空
+
+stage "/help 渲染命令表"
+typeline "/help"
+expect {
+  "可用命令" {}
+  timeout { die "/help 无输出" }
+}
+
+stage "Shift+Tab 循环权限模式"
+send -- "\x1b\[Z"
+expect {
+  "accept-edits" {}
+  timeout { die "Shift+Tab 未切换到 accept-edits" }
+}
+send -- "\x1b\[Z" ;# autonomous
+send -- "\x1b\[Z" ;# read-only
+send -- "\x1b\[Z" ;# 回 supervised
+expect {
+  -re {权限模式 → supervised} {}
+  timeout { die "未循环回 supervised" }
+}
+
+stage "slash 补全菜单"
+send -- "/co"
+expect {
+  "/cost" {}
+  timeout { die "补全菜单未显示 /cost" }
+}
+send -- "\x1b" ;# Esc 关菜单
+send -- "\x15" ;# Ctrl+U 清空
+
+stage "真实一轮(等待轮摘要)"
+set timeout 90
+typeline "只回答一个数字,不要标点:1+1=?"
+expect {
+  -re {· ↑[0-9]} {}
+  timeout { die "真实一轮未完成(无轮摘要)" }
+}
+set timeout 30
+
+stage "/cost 用量明细"
+typeline "/cost"
+expect {
+  "用量明细" {}
+  timeout { die "/cost 无输出" }
+}
+
+stage "/exit 退出"
+typeline "/exit"
+expect {
+  eof {}
+  timeout { die "/exit 未退出" }
+}
+
+# ── 会话 ②:--continue 跨进程恢复 ────────────────────────────────────────
+stage "--continue 恢复上一会话"
+spawn env YO_DB=$dbfile yoagent --continue
+expect {
+  -re {\[resume\] 已恢复会话} {}
+  timeout { die "--continue 未恢复会话" }
+}
+expect {
+  "›" {}
+  timeout { die "恢复后未进输入态" }
+}
+typeline "/exit"
+expect eof
+
+puts "\n\033\[32m✓ PTY 冒烟矩阵全关卡通过\033\[0m"
