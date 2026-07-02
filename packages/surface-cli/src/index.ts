@@ -6,4 +6,6 @@ export * from './jsonl';
 export * from './headless';
 export * from './compose';
 export * from './tui-format';
-export * from './app';
+export * from './tui/app';
+export * from './tui/model';
+export * from './tui/keymap';
