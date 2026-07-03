@@ -56,11 +56,15 @@ export function parseSkill(text: string, fallbackName: string, source?: string):
   };
 }
 
+/** skill/recipe 加载告警回调（4.9b）：解析失败/超限/空文件不再「三不见」，由调用方接 stderr。 */
+export type LoadWarn = (msg: string) => void;
+
 /**
  * 从多个目录加载 skills（后面的目录同名覆盖前面 → 约定：global 在前、project 在后，project 优先）。
  * 支持 `<dir>/<name>.md` 与 `<dir>/<name>/SKILL.md` 两式。目录不存在/不可读 → 跳过（不抛）。
+ * onWarn（4.9b）：单文件超限/为空/不可读时告警（曾经静默跳过——技能无声消失，feedback/4.8 病根 2）。
  */
-export async function loadSkills(dirs: Array<{ dir: string; source?: string }>): Promise<Skill[]> {
+export async function loadSkills(dirs: Array<{ dir: string; source?: string }>, onWarn?: LoadWarn): Promise<Skill[]> {
   const byName = new Map<string, Skill>();
   for (const { dir, source } of dirs) {
     let entries: string[];
@@ -76,13 +80,14 @@ export async function loadSkills(dirs: Array<{ dir: string; source?: string }>):
       try {
         const st = await stat(full);
         if (st.isDirectory()) {
-          text = await tryRead(join(full, 'SKILL.md'));
+          // 目录式：无 SKILL.md 是常态（非技能目录），tryRead 对缺失静默；有但坏（超限/空/不可读）才告警。
+          text = await tryRead(join(full, 'SKILL.md'), onWarn);
           fallbackName = entry;
         } else if (entry.toLowerCase().endsWith('.md')) {
-          text = await tryRead(full);
+          text = await tryRead(full, onWarn);
         }
-      } catch {
-        /* 单条失败不影响其余 */
+      } catch (e) {
+        onWarn?.(`[skills] 读取 ${full} 失败，已跳过：${e instanceof Error ? e.message : String(e)}`);
       }
       if (text == null) continue;
       const skill = parseSkill(text, fallbackName, source);
@@ -102,12 +107,26 @@ export function renderSkillSummaries(skills: Skill[]): string {
 /** skill/recipe 单文件读取上限（审查 4D-LOW：不可信 workspace 放数 GB .md 会 OOM 撑爆启动）。 */
 export const MAX_SKILL_FILE_BYTES = 1024 * 1024; // 1 MiB
 
-async function tryRead(path: string): Promise<string | null> {
+async function tryRead(path: string, onWarn?: LoadWarn): Promise<string | null> {
+  let size: number;
   try {
-    const st = await stat(path);
-    if (st.size > MAX_SKILL_FILE_BYTES) return null; // 超限跳过（防 OOM DoS），由调用方按需告警
-    return (await readFile(path, 'utf8')).trim() || null;
+    size = (await stat(path)).size;
   } catch {
+    return null; // 不存在（目录式无 SKILL.md 是常态）→ 静默跳过
+  }
+  if (size > MAX_SKILL_FILE_BYTES) {
+    onWarn?.(`[skills] 跳过 ${path}：超过 ${MAX_SKILL_FILE_BYTES} 字节上限（防 OOM）`);
+    return null;
+  }
+  try {
+    const text = (await readFile(path, 'utf8')).trim();
+    if (!text) {
+      onWarn?.(`[skills] 跳过 ${path}：内容为空`);
+      return null;
+    }
+    return text;
+  } catch (e) {
+    onWarn?.(`[skills] 读取 ${path} 失败，已跳过：${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
 }

@@ -130,6 +130,13 @@ export interface SubagentManagerOpts {
   defaultMaxTurns?: number;
   /** profile → recipe（4D）：提供工具白名单/权限模式/model/prompt 请求，仍经 deriveSubagentPolicy 收紧。 */
   recipeFor?: (profile: string) => Recipe | undefined;
+  /** 可用画像名枚举（4.9b）：未知 profile 的可行动错误据此列清单（仅 recipeFor 已接线时校验）。 */
+  profileNames?: () => string[];
+  /**
+   * 已知模型 id 枚举（4.9b，ModelCatalog 同 provider 清单）：非空且不含解析后的模型 → **早失败**回
+   * 可行动错误，不透传给上游烧一次 404。空/缺省 → 不校验（目录未收录当前 provider 时不误伤）。
+   */
+  knownModels?: () => string[];
 }
 
 /**
@@ -189,18 +196,33 @@ export class DefaultSubagentManager implements SubagentManager {
       return { childSessionId, done: Promise.resolve({ summary, isError: true }) };
     }
 
+    // recipe（4D）：请求工具白名单/权限模式/model/prompt —— 仍经 deriveSubagentPolicy 与 parent 取交集/更严者（只收紧）。
+    const recipe = this.o.recipeFor?.(opts.profile);
+    // 4.9b 未知画像早失败（对齐 skill_activate 可行动错误范式）：仅画像系统已接线（recipeFor 存在）时校验；
+    // 空串/default 恒放行（沿用父会话派生）。不再静默降级成无画像子 agent（feedback/4.8 病根 2）。
+    if (this.o.recipeFor && recipe === undefined && opts.profile && opts.profile !== 'default') {
+      const known = ['default', ...(this.o.profileNames?.() ?? [])];
+      const summary = `[子 agent 拒绝] 未知画像「${opts.profile}」（可用：${known.join(', ')}；留空沿用 default）`;
+      return { childSessionId, done: Promise.resolve({ summary, isError: true }) };
+    }
+    // 4.9b 空串归一化：空/空白 model 不再穿透 ?? 兜底直达 provider 400。
+    const model = (opts.model?.trim() || undefined) ?? (recipe?.model?.trim() || undefined) ?? this.o.defaultModel ?? 'fake-model';
+    // 4.9b 未知模型早失败：目录清单非空且不含解析后的模型（含 recipe 里的手误）→ 可行动错误，不烧上游 404。
+    const knownModels = this.o.knownModels?.() ?? [];
+    if (knownModels.length > 0 && !knownModels.includes(model)) {
+      const summary = `[子 agent 拒绝] 未知模型「${model}」（可用：${knownModels.join(', ')}；留空沿用主 agent 模型）`;
+      return { childSessionId, done: Promise.resolve({ summary, isError: true }) };
+    }
+
     this.depthOf.set(childSessionId, depth);
     const parentMode = this.o.parentModeOf?.(opts.parentSessionId) ?? 'supervised';
     const parentTools = this.o.parentToolsOf?.(opts.parentSessionId) ?? [];
-    // recipe（4D）：请求工具白名单/权限模式/model/prompt —— 仍经 deriveSubagentPolicy 与 parent 取交集/更严者（只收紧）。
-    const recipe = this.o.recipeFor?.(opts.profile);
     const derived = deriveSubagentPolicy({
       parentMode,
       parentTools,
       ...(recipe?.permissionMode ? { requestedMode: recipe.permissionMode } : {}),
       ...(recipe?.tools ? { requestedTools: recipe.tools } : {}),
     });
-    const model = opts.model ?? recipe?.model ?? this.o.defaultModel ?? 'fake-model';
     const spec: SubagentRunSpec = {
       childSessionId,
       parentSessionId: opts.parentSessionId,

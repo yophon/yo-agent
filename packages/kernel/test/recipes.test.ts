@@ -74,8 +74,9 @@ describe('4D — recipe 驱动子 agent（仍经 deriveSubagentPolicy 只收紧�
     expect(captured?.model).toBe('cheap');
     expect(captured?.systemPrompt).toBe('RECIPE PROMPT');
 
-    // 未知 profile → 无 recipe → 从 parent 派生（spawn 剥离）
-    await mgr.run({ parentSessionId: 'p' as Id, profile: 'unknown', task: 'T', mode: 'foreground' });
+    // 4.9b：画像系统已接线（recipeFor 存在）时，未知 profile 不再静默降级 → 可行动错误（见 subagent-validate.test.ts）；
+    // default/空串仍从 parent 派生（spawn 剥离）。
+    await mgr.run({ parentSessionId: 'p' as Id, profile: 'default', task: 'T', mode: 'foreground' });
     expect(captured?.toolAllowlist).toEqual(['read', 'write']);
     expect(captured?.permissionMode).toBe('autonomous');
     expect(captured?.systemPrompt).toBeUndefined();

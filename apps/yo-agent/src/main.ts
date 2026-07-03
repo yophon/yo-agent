@@ -104,14 +104,22 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   // global 在前、project 在后（project 同名覆盖）。提交 git 即全队共享。
   const wsRoot = findWorkspaceRoot(opts.cwd);
   const home = homedir();
-  const skills: Skill[] = await loadSkills([
-    { dir: join(home, '.yo-agent', 'skills'), source: 'global' },
-    { dir: join(wsRoot, '.yo-agent', 'skills'), source: 'project' },
-  ]);
-  const recipes: Map<string, Recipe> = await loadRecipes([
-    { dir: join(home, '.yo-agent', 'agents'), source: 'global' },
-    { dir: join(wsRoot, '.yo-agent', 'agents'), source: 'project' },
-  ]);
+  // 4.9b：加载失败可见——坏文件/超限/非法字段出 stderr 告警（与 plugin/mcp 日志口径一致），不再三不见。
+  const loadWarn = (m: string): void => console.error(m);
+  const skills: Skill[] = await loadSkills(
+    [
+      { dir: join(home, '.yo-agent', 'skills'), source: 'global' },
+      { dir: join(wsRoot, '.yo-agent', 'skills'), source: 'project' },
+    ],
+    loadWarn,
+  );
+  const recipes: Map<string, Recipe> = await loadRecipes(
+    [
+      { dir: join(home, '.yo-agent', 'agents'), source: 'global' },
+      { dir: join(wsRoot, '.yo-agent', 'agents'), source: 'project' },
+    ],
+    loadWarn,
+  );
   const skillByName = new Map(skills.map((s) => [s.name, s]));
   if (skills.length > 0) tools.register(makeSkillActivateTool((n) => skillByName.get(n), () => [...skillByName.keys()]));
   // MCP host：外部 server 工具经 3A 护栏注册进同一 registry；连接健康标志喂 kernel.toolFlags
@@ -216,6 +224,8 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     cwdOf: () => opts.cwd,
     defaultModel: model,
     recipeFor: (profile) => recipes.get(profile), // 4D：子 agent 画像（工具/权限/model/prompt 请求，仍经 deriveSubagentPolicy 收紧）
+    profileNames: () => [...recipes.keys()], // 4.9b：未知画像的可行动错误列此清单
+    knownModels: () => modelsFor(model).map((m) => m.id), // 4.9b：未知模型早失败（目录未收录当前 provider → 空表不校验）
   });
   // 4.9a：描述枚举可用画像 + 同 provider 模型目录（注册时点值，与 system prompt 目录同源）。
   tools.register(
@@ -375,16 +385,24 @@ async function main(): Promise<void> {
   // 手动记忆主路（3E）：`#remember <文本>` 落盘 MEMORY.md + 写结构化 MemoryStore，不耗 LLM 轮次。
   const remember = parseRememberDirective(prompt);
   if (remember) {
-    const line = await appendMemoryLine(workspaceRoot, remember.content);
-    const memStore: MemoryStore = process.env.YO_DB ? SqliteMemoryStore.open(process.env.YO_DB) : new InMemoryMemoryStore();
-    await memStore.writeMemory({
-      workspacePath: workspaceRoot,
-      key: memoryKeyFor(remember.content),
-      content: remember.content,
-      updatedAt: Date.now(),
-      source: 'remember',
-    });
-    console.error(`[记忆] 已写入 ${workspaceRoot}/MEMORY.md：${line}`);
+    // 4.9b：写失败给可行动提示而非裸栈崩进程（只读文件系统/权限/磁盘满都可能命中）。
+    try {
+      const line = await appendMemoryLine(workspaceRoot, remember.content);
+      const memStore: MemoryStore = process.env.YO_DB ? SqliteMemoryStore.open(process.env.YO_DB) : new InMemoryMemoryStore();
+      await memStore.writeMemory({
+        workspacePath: workspaceRoot,
+        key: memoryKeyFor(remember.content),
+        content: remember.content,
+        updatedAt: Date.now(),
+        source: 'remember',
+      });
+      console.error(`[记忆] 已写入 ${workspaceRoot}/MEMORY.md：${line}`);
+    } catch (e) {
+      console.error(
+        `[记忆] 写入失败：${e instanceof Error ? e.message : String(e)}。请检查 ${join(workspaceRoot, 'MEMORY.md')} 的写权限与磁盘空间后重试。`,
+      );
+      process.exitCode = 1;
+    }
     return;
   }
 

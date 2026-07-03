@@ -77,15 +77,17 @@ export function makeSubagentSpawnTool(manager: SubagentSpawner, opts: SubagentSp
       async *execute(input, ctx: ToolContext) {
         const task = strField(input, 'task');
         if (!task.trim()) throw new Error('subagent_spawn：task 不能为空');
-        const profile = strField(input, 'profile', 'default');
+        // 4.9b 守卫收紧：空/空白 profile 归一为 default、空/空白 model 直接省略（不把空串传进管理器）。
+        const profile = strField(input, 'profile', 'default').trim() || 'default';
         const mode = strField(input, 'mode', 'foreground') === 'background' ? 'background' : 'foreground';
-        const model = (input as Record<string, unknown> | null)?.model;
+        const modelRaw = (input as Record<string, unknown> | null)?.model;
+        const model = modelRaw == null ? '' : String(modelRaw).trim();
         const req: SubagentSpawnRequest = {
           parentSessionId: ctx.sessionId,
           profile,
           task,
           mode,
-          ...(model != null ? { model: String(model) } : {}),
+          ...(model ? { model } : {}),
         };
         if (mode === 'background') {
           const { childSessionId } = await manager.spawn(req);
