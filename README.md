@@ -19,6 +19,7 @@
 ｜ ✅ **Phase 4.6 交付**（TUI 重设计，五切片 4.6a-e）：surface-cli 分层重构（纯 reducer + keymap 路由 + `tui/` 分层，行为等价）+ 多行输入编辑器（字素簇/括号粘贴/持久历史/退出保护）+ 渲染语言（markdown/diff/工具专属视图 + 去噪 + 活动行）+ 命令系统与补全（slash 注册表 + 补全菜单 + @文件 + 通用选择器）+ 内核接缝 K1-K5（会话/模式/审批升级 + 排队 follow-up）—— 见 [`docs/PHASE-4.6.md`](docs/PHASE-4.6.md)。
 ｜ ✅ **Phase 4.7 交付**（TUI 架构收敛，六切片 4.7a-f）：输入解码固化为纯状态机 `input/decoder.ts`（ink 私有行为依赖收拢单文件）+ 交互态统一进 reducer + 拆解 app.ts（853→430 行，执行器/契约/footer 各归其位）+ 渲染性能（BlockView memo + spinner tick 隔离 + computeMenu 缓存）+ 功能补口（/resume 历史回放 + 审批队列化 + 审批面板放行 Ctrl+C）—— 见 [`docs/PHASE-4.7.md`](docs/PHASE-4.7.md)。
 ｜ ✅ **Phase 4.8 交付**（工程卫生与基建补课，五切片 4.8a-e）：README 对齐 + **Biome lint 落地**（linter-only，recommended + react domain，失效 eslint-disable 清零）+ **coverage 度量**（v8，首测全仓行覆盖 85.5%）/apps 纳入测试收集（parseArgs 抽纯函数补测）+ **GitHub Actions CI**（frozen install → typecheck → lint → schema 生成+漂移校验 → test）+ zod 统一单约束/TUI 静默降级出 notice —— 见 [`docs/PHASE-4.8.md`](docs/PHASE-4.8.md)。
+｜ 📋 **Phase 4.9 已立项待开工**（Agent 自知与失败可交互，六切片 4.9a-f）：起因真机反馈 [`docs/feedback/4.8.md`](docs/feedback/4.8.md)（LLM 裸猜模型名 404 / 子代理审批静默失败），三路审计定三病根（自知信息只给人不给 LLM / 失败静默化 / 建好未接线）——计划见 [`docs/PHASE-4.9.md`](docs/PHASE-4.9.md)；顺延事项候选池见 [`docs/PHASE-4.10.md`](docs/PHASE-4.10.md)。
 验证门全绿：`pnpm run check` = typecheck + lint + gen:schema + **572 测试（68 文件，1 真机冒烟门控跳过）**。
 
 - **Phase 0**（[`PHASE-0.md`](docs/PHASE-0.md)）协议单一事实源 `@yo-agent/protocol` 冻结：`AgentEvent`（20 变体）+ JSON-RPC 方法表 + cursor/resume，zod 定义、导出 JSON Schema（可 gen 多语言 binding 给任意客户端）；四接口冻结。
@@ -46,7 +47,7 @@ yo-agent/
 │  ├─ surface-mcp/  # McpServerSurface（yo-agent 作 MCP server 被编排）+ MCP host（挂外部 MCP server 用其工具）
 │  └─ surface-acp/  # AcpSurface：被 Zed/JetBrains 经 ACP 接管（Phase 3F）
 ├─ apps/yo-agent/   # CLI 入口：--tui / headless / rpc / rpc --listen <port>(WS) / mcp-server
-└─ docs/{DESIGN,PHASE-0…4,4.5,4.6,4.7,4.8}.md + research/
+└─ docs/{DESIGN,PHASE-0…4,4.5…4.10}.md + feedback/ + research/
 ```
 
 ## 快速开始

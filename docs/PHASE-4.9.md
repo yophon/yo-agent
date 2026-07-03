@@ -111,10 +111,12 @@
 ## 2. 非目标(顺延)
 
 - checkpoint 对 LLM 暴露 + 回滚工具、todo 跨轮持久与未完成提醒、成本查询工具——【中】级自知项,
-  留 4.10 或与之相关的功能阶段。
+  进 [`PHASE-4.10.md`](PHASE-4.10.md) 候选池 §C。
 - auto-memory 自动蒸馏管线(Phase N 既定)、向量检索(Phase 6)。
-- MCP prompts 的 CLI slash 注册(4.9f 标注可顺延)。
+- MCP prompts 的 CLI slash 注册(4.9f 标注可顺延,进 4.10 候选池)。
 - 不做 system prompt 的全面重写/人设工程——本阶段只补「事实性自知」,提示词风格不动。
+- 收口时按 ADR-14 节奏评估是否触发大阶段统一对抗式审查(4.5 起的 TUI + 本阶段审批上浮/注入面
+  均未审,见 [`PHASE-4.10.md`](PHASE-4.10.md) §E)。
 
 ## 3. 里程碑
 
