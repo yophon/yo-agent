@@ -124,6 +124,15 @@ interface SessionState {
   currentTurnId?: Id;
   /** 当前 provider 路由下标（4F fallback 链）：0=主路由；fallback switch 后递增并**粘滞**（跨 turn 不回探死掉的主路由）。 */
   routeIdx: number;
+  /**
+   * 动态状态提醒队列（4.9d）：toolset 漂移/MCP 状态变化/权限切档/上下文满度的一句话提醒，
+   * 入队去重、step 顶并入消息窗口——工具不再无声蒸发、切档对 LLM 可见（替代 system 行过期问题）。
+   */
+  pendingStatusNotes: string[];
+  /** 上一 turn 的可见工具名单（toolset diff 基准）；首 turn 无基准不注入。 */
+  lastToolsetNames?: string[];
+  /** 上下文满度已提醒标志（降回阈下自动重置，再次跨阈重报，不逐 step 刷屏）。 */
+  ctxHighNoted: boolean;
 }
 
 interface ToolCallAccum {
@@ -192,6 +201,8 @@ export class AgentKernel implements Kernel, SubagentHost {
       emitChain: Promise.resolve(),
       pendingSteering: [],
       routeIdx: 0,
+      pendingStatusNotes: [],
+      ctxHighNoted: false,
     };
     this.sessions.set(id, s);
     await this.emit(s, {
@@ -239,6 +250,8 @@ export class AgentKernel implements Kernel, SubagentHost {
       emitChain: Promise.resolve(),
       pendingSteering: [],
       routeIdx: 0,
+      pendingStatusNotes: [],
+      ctxHighNoted: false,
     };
     this.sessions.set(sessionId, s);
     return true;
@@ -341,6 +354,10 @@ export class AgentKernel implements Kernel, SubagentHost {
     const s = this.require(sessionId);
     const order: PermissionMode[] = ['read-only', 'supervised', 'accept-edits', 'autonomous', 'ci', 'bypass'];
     if (order.indexOf(mode) < order.indexOf(s.permissionMode)) s.approvalCache.clear();
+    // 4.9d：切档对 LLM 可见（下一 step 注入），替代 system 行起点值过期问题。
+    if (mode !== s.permissionMode) {
+      this.pushStatusNote(s, `[系统状态] 权限模式已切换：${s.permissionMode} → ${mode}（system 提示中的起点值已过期，以本行为准）`);
+    }
     s.permissionMode = mode;
   }
 
@@ -412,6 +429,9 @@ export class AgentKernel implements Kernel, SubagentHost {
     // turn 内工具集 snapshot（§15.4）：起点求值一次、整个 turn 固定——
     // MCP 工具中途增删（3C TTL/熔断）不漂移本 turn 的 prompt 工具前缀、不破 prompt cache。
     const toolset = this.d.tools.resolveAvailable(this.toolCtx(s));
+    // 4.9d toolset diff：相对上 turn 消失/新增的工具注入一句解释（MCP 熔断、插件崩溃、信任变化统一收口）。
+    // diff 基准随 turn 滚动 → 同一变化只报一次（自去重）；首 turn 无基准不注入。
+    this.noteToolsetDiff(s, toolset.map((d) => d.name));
     const toolSpecs: ToolSpec[] = toolset.map((d) => ({
       name: d.name,
       description: d.description,
@@ -438,6 +458,9 @@ export class AgentKernel implements Kernel, SubagentHost {
       }
       // 异步 steering 注入（4C）：把已完成的后台子 agent 结果并入下一次推理的消息窗口（§2.5），不阻塞主 turn。
       this.drainSteering(s);
+      // 4.9d 状态提醒注入接缝：上下文满度评估 + 抽干状态队列（toolset diff/MCP 变化/切档），并入下一次推理窗口。
+      this.noteContextFullness(s);
+      this.drainStatusNotes(s);
 
       let text = '';
       let toolCalls: ToolCallAccum[] = [];
@@ -900,6 +923,13 @@ export class AgentKernel implements Kernel, SubagentHost {
         // 世代号变化（连接/重连/list_changed 重建）→ 同名工具身份可能已变（rug-pull）：
         // 失效该 server 的会话审批缓存，强制变更后的同名工具重新走 ApprovalGate（审查 SEC-8）。
         if (!prev || prev.epoch !== epoch) this.invalidateMcpApprovals(s, info.server);
+        // 4.9d：状态**变化**顺手转 LLM 提醒（仅 turn 内且真变化时——startSession 的基线快照不注入，避免噪声）。
+        if (turnId && prev && prev.status !== info.status) {
+          this.pushStatusNote(
+            s,
+            `[系统状态] MCP server「${info.server}」→ ${info.status}${info.status === 'failed' ? '（熔断冷却中，其工具暂不可见，稍后自动恢复）' : ''}`,
+          );
+        }
         s.lastMcpStatus.set(info.server, { status: info.status, epoch });
         await this.emit(
           s,
@@ -913,6 +943,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       if (!seen.has(server) && prev.status !== 'disconnected') {
         this.invalidateMcpApprovals(s, server); // 断连后再连可能换实现 → 同样失效审批缓存
         s.lastMcpStatus.set(server, { status: 'disconnected', epoch: prev.epoch });
+        if (turnId) this.pushStatusNote(s, `[系统状态] MCP server「${server}」已断开，其工具暂不可见`);
         await this.emit(s, { kind: 'McpServerStatus', server, status: 'disconnected' }, turnId);
       }
     }
@@ -1048,6 +1079,47 @@ export class AgentKernel implements Kernel, SubagentHost {
   private drainSteering(s: SessionState): void {
     if (s.pendingSteering.length === 0) return;
     this.appendUserText(s, s.pendingSteering.splice(0).join('\n\n'));
+  }
+
+  // ───────────────────────── 动态状态提醒（4.9d）─────────────────────────
+
+  /** 入队一条状态提醒（同文去重——同一状态不重复刷屏）。 */
+  private pushStatusNote(s: SessionState, note: string): void {
+    if (!s.pendingStatusNotes.includes(note)) s.pendingStatusNotes.push(note);
+  }
+
+  /** toolset diff（4.9d）：相对上 turn 消失/新增的工具注入一句解释；基准随 turn 滚动（同一变化只报一次）。 */
+  private noteToolsetDiff(s: SessionState, names: string[]): void {
+    const prev = s.lastToolsetNames;
+    s.lastToolsetNames = names;
+    if (!prev) return; // 首 turn 无基准
+    const prevSet = new Set(prev);
+    const curSet = new Set(names);
+    const removed = prev.filter((n) => !curSet.has(n));
+    const added = names.filter((n) => !prevSet.has(n));
+    if (removed.length === 0 && added.length === 0) return;
+    const parts: string[] = [];
+    if (removed.length > 0) parts.push(`消失：${removed.join('、')}（可能因 MCP 熔断/断连、插件崩溃或信任变化，勿再调用）`);
+    if (added.length > 0) parts.push(`新增：${added.join('、')}`);
+    this.pushStatusNote(s, `[系统状态] 本 turn 可用工具集相对上 turn 变化——${parts.join('；')}`);
+  }
+
+  /** 上下文满度提醒（4.9d）：跨过 70% 阈值注入一次「已用 X%」，LLM 可主动收敛；降回阈下重置、再跨重报。 */
+  private noteContextFullness(s: SessionState): void {
+    const usable = this.d.usableContextTokens ?? 200_000;
+    const pct = estimateMessagesTokens(s.messages) / usable;
+    if (pct >= 0.7 && !s.ctxHighNoted) {
+      s.ctxHighNoted = true;
+      this.pushStatusNote(s, `[系统状态] 上下文已用 ${Math.round(pct * 100)}%（接近压缩阈值）——请收敛输出、优先完成结论，冗长内容交给子 agent 或落盘`);
+    } else if (pct < 0.7 && s.ctxHighNoted) {
+      s.ctxHighNoted = false; // 压缩后降回阈下 → 允许下次跨阈重报
+    }
+  }
+
+  /** 抽干状态提醒队列（4.9d）：并入末条 user（同 drainSteering 的交替保护），仅在 step 顶调用。 */
+  private drainStatusNotes(s: SessionState): void {
+    if (s.pendingStatusNotes.length === 0) return;
+    this.appendUserText(s, s.pendingStatusNotes.splice(0).join('\n'));
   }
 
   /** 把文本并入消息窗口的**末条 user**（保 user/assistant 严格交替）；末条非 user 则新增一条 user。 */
