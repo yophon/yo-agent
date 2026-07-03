@@ -20,7 +20,7 @@ import type { ToolContext, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools
 import { sanitizeMcpServerName } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
 import { ResumeBuffer } from '@yo-agent/store';
-import type { ApprovalGate, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
+import type { ApprovalGate, ApprovalOutcome, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
 import { assessRisk } from './risk';
 import { DefaultPolicyEngine } from './policy';
 import type { PolicyEngine } from './policy';
@@ -142,10 +142,7 @@ export class AgentKernel implements Kernel, SubagentHost {
   private readonly sessions = new Map<Id, SessionState>();
   /** 内存 ring：服务实时重连缺口（§6.3 / §10.1）；跨进程（新内核）为空 → 走 EventLog gap 溢出降级。 */
   private readonly resumeBuffer: ResumeBuffer;
-  private readonly pendingApprovals = new Map<
-    Id,
-    (decision: { decision: ApprovalDecision; updatedInput?: unknown }) => void
-  >();
+  private readonly pendingApprovals = new Map<Id, (outcome: ApprovalOutcome) => void>();
   /** 权限闸门（4A）：缺省 DefaultPolicyEngine —— supervised 档对非 never 工具恒 'ask'，等价既有行为。 */
   private readonly policy: PolicyEngine;
   /** 生命周期 Hook 总线（4A）：缺省空 → 无 hook 注册时全部触发为 no-op，运行时行为不变。 */
@@ -604,10 +601,11 @@ export class AgentKernel implements Kernel, SubagentHost {
             toolName: tc.name,
           });
           if (gate === 'deny') {
+            // 4.9c 文案富化：带当前档位 + 引导，LLM 不再自由脑补拒因。
             toolResults.push({
               type: 'tool_result',
               toolUseId: tc.id,
-              content: `权限模式（${s.permissionMode}）拒绝该工具调用`,
+              content: `权限模式（${s.permissionMode}）拒绝该工具调用。该工具在当前档位不可用；用户可用 /mode 切换更宽档位后重试，或改用当前档位允许的工具。`,
               isError: true,
               name: tc.name,
             });
@@ -618,18 +616,30 @@ export class AgentKernel implements Kernel, SubagentHost {
             const cached = s.approvalCache.get(tc.name);
             let decision: ApprovalDecision;
             let updatedInput: unknown;
+            let autoReason: ApprovalOutcome['autoReason'];
             if (cached) {
               decision = cached === 'allow' ? 'allow_always' : 'reject_always';
             } else {
               const r = await this.requestApproval(s, tc.id, tc.name, input, risk, turnId);
               decision = r.decision;
               updatedInput = r.updatedInput;
+              autoReason = r.autoReason;
               if (decision === 'allow_always') s.approvalCache.set(tc.name, 'allow');
               else if (decision === 'reject_always') s.approvalCache.set(tc.name, 'reject');
             }
             await this.hooks.fireApproval(this.hookCtx(s), { tool: tc.name, risk, decision }, this.hookErr(s, turnId)); // OnApproval hook（4A）
             if (decision === 'reject_once' || decision === 'reject_always') {
-              toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: '用户拒绝了该工具调用', isError: true, name: tc.name });
+              // 4.9c 审批语义修正：超时/非交互自动拒与用户真拒文案分流——不再谎称「用户拒绝了」（kernel.ts:817 病根）。
+              const content =
+                autoReason === 'timeout'
+                  ? `审批超时（${Math.round((this.d.approvalTimeoutMs ?? 0) / 1000)} 秒无人响应）自动拒绝该工具调用——这不是用户的明确拒绝。可先做无需审批的部分，稍后再试或等用户回应。`
+                  : autoReason === 'noninteractive'
+                    ? `非交互环境自动拒绝该工具调用（无人可批；当前权限模式：${s.permissionMode}）。请改用无需审批的工具完成任务，并在结果中说明该步骤被跳过。`
+                    : `用户拒绝了该工具调用（当前权限模式：${s.permissionMode}）。未经用户要求不要原样重试；用户可用 /mode 切换档位或重新发起。`;
+              if (autoReason === 'timeout') {
+                await this.emit(s, { kind: 'Error', message: `审批超时，已自动拒绝工具 ${tc.name}` }, turnId); // surface 同步提示
+              }
+              toolResults.push({ type: 'tool_result', toolUseId: tc.id, content, isError: true, name: tc.name });
               continue;
             }
             // modify：用户改参数后放行 → 用 updatedInput 覆盖（同步回传给 LLM 的 tool_use.input）。
@@ -811,8 +821,8 @@ export class AgentKernel implements Kernel, SubagentHost {
     tool: string,
     input: unknown,
     risk: RiskLevel,
-    turnId: Id,
-  ): Promise<{ decision: ApprovalDecision; updatedInput?: unknown }> {
+    turnId?: Id,
+  ): Promise<ApprovalOutcome> {
     const requestId = randomUUID();
     const suggestions: ApprovalSuggestion[] = [
       { decision: 'allow_once', label: '允许一次' },
@@ -825,12 +835,13 @@ export class AgentKernel implements Kernel, SubagentHost {
     if (this.d.interactiveApproval && !this.d.approvalGate) {
       s.pendingApprovalIds.add(requestId);
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const decided = new Promise<{ decision: ApprovalDecision; updatedInput?: unknown }>((resolve) => {
-        this.pendingApprovals.set(requestId, ({ decision, updatedInput }) => resolve({ decision, updatedInput }));
+      const decided = new Promise<ApprovalOutcome>((resolve) => {
+        this.pendingApprovals.set(requestId, (outcome) => resolve(outcome));
         const ms = this.d.approvalTimeoutMs;
         if (ms && ms > 0) {
+          // 4.9c 审批语义修正：超时 resolve 带独立归因——tool_result/surface 可区分「超时自动拒」与「用户真拒」。
           timer = setTimeout(() => {
-            if (this.pendingApprovals.delete(requestId)) resolve({ decision: 'reject_once' });
+            if (this.pendingApprovals.delete(requestId)) resolve({ decision: 'reject_once', autoReason: 'timeout' });
           }, ms);
         }
       });
@@ -843,12 +854,27 @@ export class AgentKernel implements Kernel, SubagentHost {
         s.pendingApprovalIds.delete(requestId);
       }
     }
-    // gate / 非交互：emit 后由 gate 决定 / headless 默认拒绝。
+    // gate / 非交互：emit 后由 gate 决定 / headless 默认拒绝（带 noninteractive 归因，不再谎称「用户拒绝」）。
     await this.emit(s, { kind: 'ApprovalRequested', requestId, toolCallId, tool, input, risk, suggestions }, turnId);
     if (this.d.approvalGate) {
       return await this.d.approvalGate.request({ sessionId: s.id, tool, input, risk });
     }
-    return { decision: 'reject_once' };
+    return { decision: 'reject_once', autoReason: 'noninteractive' };
+  }
+
+  /**
+   * 子代理审批上浮（4.9c）：子内核的代理 ApprovalGate 经此在**父会话**登记 pending + emit ApprovalRequested——
+   * 复用 pendingApprovals/decideApproval 全套，TUI/RPC 现有审批面板零改动接管；批完 resolve 回子内核。
+   * 父会话非交互（headless）→ 走父 approvalGate 或 noninteractive 默认拒；父会话已驱逐 → 同拒。
+   * 超时语义与主循环一致（approvalTimeoutMs → autoReason:'timeout'）。
+   */
+  async relayApproval(
+    parentSessionId: Id,
+    req: { tool: string; input: unknown; risk: RiskLevel },
+  ): Promise<ApprovalOutcome> {
+    const s = this.sessions.get(parentSessionId);
+    if (!s) return { decision: 'reject_once', autoReason: 'noninteractive' };
+    return this.requestApproval(s, `subagent-${randomUUID()}`, req.tool, req.input, req.risk, s.currentTurnId);
   }
 
   /**

@@ -1,13 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
-import type { Id, PermissionMode } from '@yo-agent/protocol';
+import type { Id, PermissionMode, RiskLevel } from '@yo-agent/protocol';
 import type { Provider } from '@yo-agent/provider';
 import type { ToolRegistry } from '@yo-agent/tools';
 import { AllowlistToolRegistry, SUBAGENT_SPAWN_TOOL } from '@yo-agent/tools';
 import type { EventStore } from '@yo-agent/store';
 import { AgentKernel } from './kernel';
-import type { Condenser, LoopBreaker, SubagentManager, SubagentSpawnOpts } from './index';
+import type { ApprovalOutcome, Condenser, LoopBreaker, SubagentManager, SubagentSpawnOpts } from './index';
 import type { Recipe } from './recipes';
+
+/**
+ * 子代理审批上浮接缝（4.9c）：子内核/worker 的审批请求转调父内核（kernel.relayApproval），
+ * 在父会话弹审批面板；无人可批时由父内核带 noninteractive 归因默认拒。
+ */
+export type SubagentApprovalRelay = (
+  parentSessionId: Id,
+  req: { tool: string; input: unknown; risk: RiskLevel },
+) => Promise<ApprovalOutcome>;
 
 /**
  * 子 agent（DESIGN §2.5 / ADR-17）：派生独立上下文的探索型 agent，**只回 SubagentResult{summary}** 防主上下文污染，
@@ -298,6 +307,11 @@ export interface ChildAgentDeps {
   usableContextTokens?: number;
   /** profile → 子 agent system prompt（4D recipe 接入点）。 */
   systemFor?: (profile: string) => string | undefined;
+  /**
+   * 审批上浮（4.9c）：提供则子内核挂代理 ApprovalGate，ask 档审批转到父会话弹面板（不再写死默认拒）。
+   * 缺省 → 旧行为：子 agent 非交互默认拒（带 noninteractive 归因文案）。
+   */
+  parentApproval?: SubagentApprovalRelay;
 }
 
 /**
@@ -316,6 +330,14 @@ export async function runChildAgent(
   signal?: AbortSignal,
 ): Promise<SubagentRunResult> {
   const childTools = new AllowlistToolRegistry(deps.registry, spec.toolAllowlist);
+  // 4.9c 审批上浮：子内核 ask 档审批经代理 gate 转调父内核（父会话弹面板，批完 resolve 回来）——
+  // 不再写死默认拒（feedback/4.8 反馈②：子代理无权限静默失败）。无 relay → 父内核侧 noninteractive 归因默认拒。
+  const gate = deps.parentApproval
+    ? {
+        request: (req: { sessionId: Id; tool: string; input: unknown; risk: RiskLevel }) =>
+          deps.parentApproval!(spec.parentSessionId, { tool: req.tool, input: req.input, risk: req.risk }),
+      }
+    : undefined;
   const kernel = new AgentKernel({
     store: deps.store,
     provider: deps.provider,
@@ -326,8 +348,10 @@ export async function runChildAgent(
     cwd: spec.cwd,
     maxStepsPerTurn: spec.maxTurns,
     ...(deps.usableContextTokens != null ? { usableContextTokens: deps.usableContextTokens } : {}),
-    // 子 agent 无人审批：非交互（ask 档默认拒），保证派生权限不被「无人值守」放大成静默放行。
+    // 子内核自身不挂起等审批（interactiveApproval:false）：ask 档经上面的代理 gate 上浮父会话；
+    // 无 gate 时默认拒（带归因），派生权限不被「无人值守」放大成静默放行。
     interactiveApproval: false,
+    ...(gate ? { approvalGate: gate } : {}),
   });
   const system = spec.systemPrompt ?? deps.systemFor?.(spec.profile);
   await kernel.startSession({
@@ -368,6 +392,34 @@ export interface WorkerRunnerOpts {
   entry: string | URL;
   /** 传给 worker 的环境；缺省按白名单从 process.env 过滤（剥离 secret）。传 null 则给空环境。 */
   env?: NodeJS.ProcessEnv | null;
+  /**
+   * 跨线程审批 relay（4.9c）：worker 内子内核无法直连父 pendingApprovals，经消息协议
+   * （{@link SubagentWorkerApprovalRequest} / {@link SubagentWorkerApprovalDecision}）往返——
+   * worker 发 approval_request，本 runner 调此 relay（生产接 kernel.relayApproval，超时语义与主循环一致），
+   * 把结果 postMessage 回 worker。缺省 → 一律回 noninteractive 拒。
+   */
+  approval?: (req: { tool: string; input: unknown; risk: RiskLevel }) => Promise<ApprovalOutcome>;
+}
+
+/** worker → 主线程的审批请求帧（4.9c 跨线程审批 RPC）。 */
+export interface SubagentWorkerApprovalRequest {
+  type: 'approval_request';
+  /** worker 侧生成的关联 id（decision 帧原样带回）。 */
+  id: string;
+  tool: string;
+  input: unknown;
+  risk: RiskLevel;
+}
+
+/** 主线程 → worker 的审批结果帧。 */
+export interface SubagentWorkerApprovalDecision extends ApprovalOutcome {
+  type: 'approval_decision';
+  id: string;
+}
+
+function isApprovalRequest(msg: unknown): msg is SubagentWorkerApprovalRequest {
+  const m = msg as { type?: unknown; id?: unknown; tool?: unknown } | null;
+  return !!m && m.type === 'approval_request' && typeof m.id === 'string' && typeof m.tool === 'string';
 }
 
 /**
@@ -404,6 +456,26 @@ export class WorkerSubagentRunner implements SubagentRunner {
       };
       signal?.addEventListener('abort', onAbort, { once: true });
       worker.on('message', (msg) => {
+        // 4.9c 跨线程审批 RPC：approval_request 帧不当结果——转 relay，把决定 postMessage 回 worker。
+        if (isApprovalRequest(msg)) {
+          const reply = (outcome: ApprovalOutcome): void => {
+            const frame: SubagentWorkerApprovalDecision = { type: 'approval_decision', id: msg.id, ...outcome };
+            try {
+              worker.postMessage(frame);
+            } catch {
+              /* worker 已退出 → 决定无处送达，静默（worker 生命周期兜底在 exit 分支） */
+            }
+          };
+          if (!this.opts.approval) {
+            reply({ decision: 'reject_once', autoReason: 'noninteractive' });
+            return;
+          }
+          this.opts.approval({ tool: msg.tool, input: msg.input, risk: msg.risk }).then(
+            (outcome) => reply(outcome),
+            () => reply({ decision: 'reject_once', autoReason: 'noninteractive' }), // relay 抛错 fail-closed
+          );
+          return;
+        }
         result = normalizeMessage(msg);
       });
       worker.on('error', (err) => finish(() => reject(err instanceof Error ? err : new Error(String(err)))));

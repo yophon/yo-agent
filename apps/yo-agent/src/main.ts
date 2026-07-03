@@ -218,6 +218,9 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       loopBreaker: () => new HistoryLoopBreaker(),
       condenser: () => buildCondenser(opts.env, provider, model),
       usableContextTokens: usableContextTokens(model, catalog),
+      // 4.9c 审批上浮：子代理 ask 档审批转父会话弹面板（TUI/RPC 零改动接管），批完 resolve 回子内核；
+      // headless 父会话无人可批 → noninteractive 归因默认拒（不再谎称「用户拒绝」）。
+      parentApproval: (pid, req) => kernel.relayApproval(pid, req),
     }),
     parentToolsOf: (sid) => tools.resolveAvailable({ sessionId: sid, cwd: opts.cwd, flags: allFlags() }).map((d) => d.name),
     parentModeOf: (sid) => kernel.listSessions().find((s) => s.sessionId === sid)?.permissionMode ?? 'supervised',

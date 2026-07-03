@@ -101,13 +101,23 @@ export interface LoopBreaker {
   check(call: ToolCallRef): 'ok' | 'warn' | 'break';
 }
 
+/** 自动拒绝归因（4.9c 审批语义修正）：timeout=审批超时无人响应；noninteractive=非交互环境无人可批。缺省=真人决策。 */
+export type ApprovalAutoReason = 'timeout' | 'noninteractive';
+
+/** 审批结果（4.9c）：autoReason 区分「自动拒绝」与「用户真拒」——tool_result 文案不再谎称「用户拒绝了」。 */
+export interface ApprovalOutcome {
+  decision: ApprovalDecision;
+  updatedInput?: unknown;
+  autoReason?: ApprovalAutoReason;
+}
+
 export interface ApprovalGate {
   request(req: {
     sessionId: Id;
     tool: string;
     input: unknown;
     risk: RiskLevel;
-  }): Promise<{ decision: ApprovalDecision; updatedInput?: unknown }>;
+  }): Promise<ApprovalOutcome>;
 }
 
 /** L3 checkpoint（§3.4，ShadowGitCheckpointer 结构化满足）：edit 类工具成功后快照工作区。 */
