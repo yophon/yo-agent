@@ -20,7 +20,6 @@ import {
   loadConventionFiles,
   loadRecipes,
   loadSkills,
-  memoryKeyFor,
   parseRememberDirective,
   readGitBranch,
   renderEnvBlock,
@@ -32,16 +31,15 @@ import {
   composeSystemSections,
 } from '@yo-agent/kernel';
 import type { Kernel, Recipe, Skill } from '@yo-agent/kernel';
-import {
-  InMemoryMemoryStore,
-  MemoryEventStore,
-  ShadowGitCheckpointer,
-  SqliteEventStore,
-  SqliteMemoryStore,
-} from '@yo-agent/store';
-import type { MemoryStore } from '@yo-agent/store';
+import { MemoryEventStore, ShadowGitCheckpointer, SqliteEventStore } from '@yo-agent/store';
 import type { EventStore } from '@yo-agent/store';
-import { InMemoryToolRegistry, builtinTools, makeSkillActivateTool, makeSubagentSpawnTool } from '@yo-agent/tools';
+import {
+  InMemoryToolRegistry,
+  builtinTools,
+  makeMemoryWriteTool,
+  makeSkillActivateTool,
+  makeSubagentSpawnTool,
+} from '@yo-agent/tools';
 import { ModelCatalog } from '@yo-agent/provider';
 import {
   HeadlessRenderer,
@@ -122,6 +120,20 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   );
   const skillByName = new Map(skills.map((s) => [s.name, s]));
   if (skills.length > 0) tools.register(makeSkillActivateTool((n) => skillByName.get(n), () => [...skillByName.keys()]));
+  // 4.9e 记忆写闭环：LLM 经 memory_write 写 MEMORY.md（与 #remember 同一落盘主路，幂等查重）。
+  // 写失败带可行动信息上抛（工具错误回 LLM，可转告用户）。MEMORY.md 是单一事实源——
+  // 结构化 MemoryStore（DB 轨）自 4.9e 起不再双写，保留给 Phase 6 向量检索再启用。
+  tools.register(
+    makeMemoryWriteTool(async (content) => {
+      try {
+        return await appendMemoryLine(wsRoot, content);
+      } catch (e) {
+        throw new Error(
+          `写入长期记忆失败：${e instanceof Error ? e.message : String(e)}。请检查 ${join(wsRoot, 'MEMORY.md')} 的写权限与磁盘空间`,
+        );
+      }
+    }),
+  );
   // MCP host：外部 server 工具经 3A 护栏注册进同一 registry；连接健康标志喂 kernel.toolFlags
   //（熔断/未连接 → 工具经 availability configFlag 从 resolveAvailable 消失）。连接在 main() 引导。
   const mcpHost = new McpHostManager({
@@ -174,7 +186,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
         permissionMode: info.permissionMode,
       }),
       renderModelSection(info.model, modelsFor(info.model)),
-      renderMemoryPreamble({ workspaceRoot: wsRoot }),
+      renderMemoryPreamble({ workspaceRoot: wsRoot, writeTool: 'memory_write' }), // 4.9e：告知 agent 侧写入手段
       renderProfileSection(
         [...recipes.values()].map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}) })),
       ),
@@ -389,17 +401,10 @@ async function main(): Promise<void> {
   const remember = parseRememberDirective(prompt);
   if (remember) {
     // 4.9b：写失败给可行动提示而非裸栈崩进程（只读文件系统/权限/磁盘满都可能命中）。
+    // 4.9e：砍掉 MemoryStore 双写——MEMORY.md 是单一事实源（可 git 共享）；DB 轨保留给 Phase 6 向量检索。
     try {
-      const line = await appendMemoryLine(workspaceRoot, remember.content);
-      const memStore: MemoryStore = process.env.YO_DB ? SqliteMemoryStore.open(process.env.YO_DB) : new InMemoryMemoryStore();
-      await memStore.writeMemory({
-        workspacePath: workspaceRoot,
-        key: memoryKeyFor(remember.content),
-        content: remember.content,
-        updatedAt: Date.now(),
-        source: 'remember',
-      });
-      console.error(`[记忆] 已写入 ${workspaceRoot}/MEMORY.md：${line}`);
+      const { line, deduped } = await appendMemoryLine(workspaceRoot, remember.content);
+      console.error(deduped ? `[记忆] 已存在同内容，跳过（幂等）：${line}` : `[记忆] 已写入 ${workspaceRoot}/MEMORY.md：${line}`);
     } catch (e) {
       console.error(
         `[记忆] 写入失败：${e instanceof Error ? e.message : String(e)}。请检查 ${join(workspaceRoot, 'MEMORY.md')} 的写权限与磁盘空间后重试。`,

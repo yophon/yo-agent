@@ -205,19 +205,24 @@ export function parseRememberDirective(input: string): { content: string } | nul
 
 /**
  * 向 workspaceRoot 的 MEMORY.md 追加一条记忆条目（落盘主路，§15.5）。文件不存在则建索引骨架。
- * 返回写入的行。下次会话经 loadConventionFiles 两级懒加载读回。
+ * 4.9e 幂等：append 前按内容键（memoryKeyFor 同构的整行比对）查重——重复写不再无脑堆行，
+ * 返回 deduped=true 且不动文件。下次会话经 loadConventionFiles 两级懒加载读回。
  */
 export async function appendMemoryLine(
   workspaceRoot: string,
   content: string,
   memoryFilename = 'MEMORY.md',
-): Promise<string> {
+): Promise<{ line: string; deduped: boolean }> {
   const file = join(workspaceRoot, memoryFilename);
   const line = `- ${content.replace(/\s*\n\s*/g, ' ')}`;
   const existing = await tryRead(file);
+  // 幂等查重：同内容归一化后整行相同（memoryKeyFor 是内容的确定性函数 → 整行比对与键比对等价）。
+  if (existing && existing.split('\n').some((l) => l.trim() === line)) {
+    return { line, deduped: true };
+  }
   const body = existing ? `${existing}\n${line}\n` : `# MEMORY\n\n${line}\n`;
   await writeFile(file, body, 'utf8');
-  return line;
+  return { line, deduped: false };
 }
 
 /** 从内容派生稳定记忆键（djb2，幂等：同内容同键 → MemoryStore upsert 覆盖，不重复堆积）。 */

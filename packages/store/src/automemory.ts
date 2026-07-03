@@ -6,6 +6,9 @@
  * 调用方传入 workspacePath）。命名为 MemoryStore / automemory.ts，与既有 `MemoryEventStore` 区分。
  *
  * 本文件持久层不引入时钟：`updatedAt` 由调用方戳入（保持确定性可测；workflow 外的常规代码可用 Date.now）。
+ *
+ * 4.9e 收口决策：记忆的**单一事实源是 MEMORY.md**（可 git 共享），CLI 主路（#remember / memory_write）
+ * 自 4.9e 起不再双写本 store——「双写单读」死数据病根关闭。本模块保留给 Phase 6 向量检索/结构化查询再启用。
  */
 import { createRequire } from 'node:module';
 

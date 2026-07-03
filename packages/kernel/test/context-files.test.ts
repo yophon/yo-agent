@@ -233,6 +233,22 @@ describe('3E — 手动 #remember 落盘主路', () => {
     }
   });
 
+  it('appendMemoryLine 幂等（4.9e）：重复写同内容不堆行，deduped=true；再写新内容照常追加读回', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'yo-dedupe-'));
+    try {
+      const first = await appendMemoryLine(base, '同一条事实');
+      expect(first.deduped).toBe(false);
+      const again = await appendMemoryLine(base, '同一条事实');
+      expect(again).toEqual({ line: '- 同一条事实', deduped: true });
+      await appendMemoryLine(base, '另一条');
+      const out = await loadConventionFiles(base, { workspaceRoot: base });
+      expect(out.split('- 同一条事实').length - 1).toBe(1); // 不重复堆行
+      expect(out).toContain('- 另一条'); // 下会话读回（loadConventionFiles 即会话加载路）
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   it('memoryKeyFor 幂等：同内容同键、不同内容不同键', () => {
     expect(memoryKeyFor('abc')).toBe(memoryKeyFor('abc'));
     expect(memoryKeyFor('abc')).not.toBe(memoryKeyFor('abd'));
