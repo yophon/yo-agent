@@ -9,7 +9,7 @@ import { MemoryEventStore } from '@yo-agent/store';
 import { InMemoryToolRegistry } from '@yo-agent/tools';
 import type { ToolContext } from '@yo-agent/tools';
 import { FakeProvider, textTurn, toolCallTurn } from '@yo-agent/provider';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   McpHostManager,
   CircuitBreaker,

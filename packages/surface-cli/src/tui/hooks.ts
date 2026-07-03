@@ -56,6 +56,7 @@ export function useArmedConfirm(windowMs = 3000): ArmedConfirm {
       timer.current = null;
     }
   };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 仅卸载时清定时器;clear 每渲染重建但语义恒定
   useEffect(() => clear, []);
   return {
     armed: armed.value,

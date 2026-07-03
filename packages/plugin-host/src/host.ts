@@ -392,6 +392,7 @@ export class DefaultPluginHost {
 
   // ───────────────────────── Hook 跨进程兑现 ─────────────────────────
 
+  // biome-ignore lint/suspicious/noConfusingVoidType: 与 kernel Hooks.onPreToolUse 的 void 契约对齐
   private async firePreToolUse(ctx: HookContext, payload: PreToolUsePayload): Promise<PreToolUseDecision | void> {
     let input = payload.input;
     let rewritten = false;

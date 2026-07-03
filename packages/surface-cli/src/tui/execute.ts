@@ -92,7 +92,7 @@ export function createExecutor(ctx: ExecuteCtx): Executor {
     const buf = ctx.editor().text;
     // 行尾反斜杠续行(CC 惯例):替换为换行,不提交。
     if (buf.endsWith('\\')) {
-      ctx.setEditor(ed.fromText(buf.slice(0, -1) + '\n'));
+      ctx.setEditor(ed.fromText(`${buf.slice(0, -1)}\n`));
       return;
     }
     const text = ctx.expandPastes(buf).trim();

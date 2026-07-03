@@ -309,7 +309,7 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '.yo-agent']);
 
 /** 递归列文件（限 root 内，跳过 SKIP_DIRS，预算上限防超大树）；root 为文件则直接产出。 */
 async function* walkFiles(root: string): AsyncIterable<string> {
-  let st;
+  let st: Awaited<ReturnType<typeof stat>>;
   try {
     st = await stat(root);
   } catch {
@@ -321,7 +321,7 @@ async function* walkFiles(root: string): AsyncIterable<string> {
   }
   let budget = 5000;
   async function* rec(dir: string): AsyncIterable<string> {
-    let entries;
+    let entries: import('node:fs').Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {

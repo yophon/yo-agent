@@ -10,13 +10,15 @@
   "packageManager": "pnpm@10.23.0",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
+    "lint": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
     "gen:schema": "tsx packages/protocol/scripts/gen-schema.ts",
-    "check": "pnpm run typecheck && pnpm run gen:schema && pnpm run test",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run gen:schema && pnpm run test",
     "install:cli": "tsx scripts/install-cli.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

@@ -71,7 +71,7 @@ export function renderBlock(b: Block, opts: RenderOpts = DEFAULT_OPTS): React.Re
       return h(Box, { key: b.id, flexDirection: 'column', marginTop: 1 }, h(Text, { color: 'cyan' }, `› ${b.text}`));
     case 'assistant': {
       const lines = renderMarkdown(b.text, opts.width);
-      return h(Box, { key: b.id, flexDirection: 'column' }, ...lines.map((l, i) => lineEl(l, 'm' + i)));
+      return h(Box, { key: b.id, flexDirection: 'column' }, ...lines.map((l, i) => lineEl(l, `m${i}`)));
     }
     case 'reasoning':
       return h(Text, { key: b.id, color: 'gray', dimColor: true }, `💭 ${b.text}`);
@@ -84,7 +84,7 @@ export function renderBlock(b: Block, opts: RenderOpts = DEFAULT_OPTS): React.Re
         h(Text, { key: 'h' }, h(Text, { key: 'dot', color: dotColor }, '⏺ '), view.head),
       ];
       view.body.forEach((line, i) => {
-        children.push(lineEl(line, 'b' + i, i === 0 ? '  ⎿ ' : '    '));
+        children.push(lineEl(line, `b${i}`, i === 0 ? '  ⎿ ' : '    '));
       });
       if (b.truncatedToPath) {
         children.push(h(Text, { key: 't', color: 'gray', dimColor: true }, `    …输出已截断,完整见 ${b.truncatedToPath}`));
@@ -96,7 +96,7 @@ export function renderBlock(b: Block, opts: RenderOpts = DEFAULT_OPTS): React.Re
         const mark = t.status === 'completed' ? '☑' : t.status === 'in_progress' ? '◐' : '☐';
         return h(
           Text,
-          { key: 'i' + i, bold: t.status === 'in_progress', dimColor: t.status === 'completed' },
+          { key: `i${i}`, bold: t.status === 'in_progress', dimColor: t.status === 'completed' },
           `${mark} ${t.text}`,
         );
       });
@@ -105,7 +105,7 @@ export function renderBlock(b: Block, opts: RenderOpts = DEFAULT_OPTS): React.Re
     case 'plan': {
       const rows = b.steps.map((s, i) => {
         const mark = s.status === 'completed' ? '☑' : s.status === 'in_progress' ? '◐' : '☐';
-        return h(Text, { key: 's' + i, dimColor: s.status === 'completed' }, `  ${mark} ${i + 1}. ${s.text}`);
+        return h(Text, { key: `s${i}`, dimColor: s.status === 'completed' }, `  ${mark} ${i + 1}. ${s.text}`);
       });
       return h(Box, { key: b.id, flexDirection: 'column' }, h(Text, { color: 'cyan' }, '☰ 计划'), ...rows);
     }

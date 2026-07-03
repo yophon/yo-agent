@@ -64,11 +64,12 @@ export class JsonlStreamChannel implements MessageChannel {
   private closeHandler: (() => void) | null = null;
   private closed = false;
 
-  constructor(private readonly input: Readable, private readonly output: Writable) {
+  constructor(input: Readable, private readonly output: Writable) {
     input.setEncoding('utf8');
     input.on('data', (chunk: string) => {
       this.buf += chunk;
       let idx: number;
+      // biome-ignore lint/suspicious/noAssignInExpressions: 流式按行切分惯用法
       while ((idx = this.buf.indexOf('\n')) >= 0) {
         const line = this.buf.slice(0, idx).trim();
         this.buf = this.buf.slice(idx + 1);
@@ -93,7 +94,7 @@ export class JsonlStreamChannel implements MessageChannel {
   send(msg: unknown): void {
     if (this.closed) return; // 断开后写入 no-op（避免 EPIPE）
     try {
-      this.output.write(JSON.stringify(msg) + '\n'); // 返回 false（背压）暂不阻塞：弱模型/慢消费端非热点路径
+      this.output.write(`${JSON.stringify(msg)}\n`); // 返回 false（背压）暂不阻塞：弱模型/慢消费端非热点路径
     } catch {
       this.markClosed();
     }

@@ -8,7 +8,7 @@ describe('editor:字素簇编辑(CJK/emoji 不劈开)', () => {
     expect(ed.backspace(st('中文'))).toEqual({ text: '中', cursor: 1 });
     expect(ed.backspace(st('a😀'))).toEqual({ text: 'a', cursor: 1 }); // 😀 = 2 code units
     const family = '👨‍👩‍👧'; // ZWJ 序列 8 units
-    expect(ed.backspace(st('x' + family))).toEqual({ text: 'x', cursor: 1 });
+    expect(ed.backspace(st(`x${family}`))).toEqual({ text: 'x', cursor: 1 });
   });
 
   it('left/right 按字素移动;不越界', () => {

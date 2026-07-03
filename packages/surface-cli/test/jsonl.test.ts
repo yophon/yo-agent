@@ -23,6 +23,6 @@ describe('jsonlLine / JsonlRenderer', () => {
     const out = { write: (s: string) => { lines.push(s); return true; } } as unknown as NodeJS.WritableStream;
     const r = new JsonlRenderer(out);
     r.render(env);
-    expect(lines).toEqual([jsonlLine(env) + '\n']);
+    expect(lines).toEqual([`${jsonlLine(env)}\n`]);
   });
 });

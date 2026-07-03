@@ -43,7 +43,7 @@ export class UnconfiguredExecBackend implements ExecBackend {
   constructor(kind: ExecBackendKind = 'local-subprocess') {
     this.kind = kind;
   }
-  // eslint-disable-next-line require-yield
+  // biome-ignore lint/correctness/useYield: 未配置后端即抛错,签名需保持 AsyncIterable 契约
   async *exec(): AsyncIterable<ExecChunk> {
     throw new Error('ExecBackend 未配置：bash/execute 工具与真实后端在 Phase 4B 落地');
   }

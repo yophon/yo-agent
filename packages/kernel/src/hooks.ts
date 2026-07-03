@@ -61,6 +61,7 @@ export interface Hooks {
   onPreToolUse?(
     ctx: HookContext,
     payload: PreToolUsePayload,
+    // biome-ignore lint/suspicious/noConfusingVoidType: hook 回调允许不返回值,换 undefined 会破坏 Promise<void> 实现方
   ): PreToolUseDecision | void | Promise<PreToolUseDecision | void>;
   onPostToolUse?(ctx: HookContext, payload: PostToolUsePayload): void | Promise<void>;
   onPreCompact?(ctx: HookContext): void | Promise<void>;
@@ -105,6 +106,7 @@ export class HookBus {
     let input = payload.input;
     for (const h of this.hooks) {
       if (!h.onPreToolUse) continue;
+      // biome-ignore lint/suspicious/noConfusingVoidType: 接住 onPreToolUse 的 void 返回
       let r: PreToolUseDecision | void;
       try {
         r = await h.onPreToolUse(ctx, { ...payload, input });

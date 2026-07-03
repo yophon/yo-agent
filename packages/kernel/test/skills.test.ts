@@ -74,7 +74,7 @@ describe('4D — loadSkills', () => {
   });
 
   it('收口 4D-LOW：超大 .md（>1MiB）被跳过，防 OOM DoS', async () => {
-    await writeFile(join(dir, 'huge.md'), '---\nname: huge\n---\n' + 'x'.repeat(1024 * 1024 + 10));
+    await writeFile(join(dir, 'huge.md'), `---\nname: huge\n---\n${'x'.repeat(1024 * 1024 + 10)}`);
     await writeFile(join(dir, 'ok.md'), '---\nname: ok\ndescription: 正常\n---\n正文');
     const skills = await loadSkills([{ dir, source: 'project' }]);
     const names = skills.map((s) => s.name);

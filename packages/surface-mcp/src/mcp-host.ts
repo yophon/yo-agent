@@ -307,7 +307,7 @@ function normalizeBlock(block: ContentBlock): string {
     case 'resource': {
       const r = block.resource as { uri?: string; text?: string; mimeType?: string } | undefined;
       if (r && typeof r.text === 'string') return r.text;
-      return `[resource ${r?.uri ?? ''}${r?.mimeType ? ' ' + r.mimeType : ''}（无内联文本）]`;
+      return `[resource ${r?.uri ?? ''}${r?.mimeType ? ` ${r.mimeType}` : ''}（无内联文本）]`;
     }
     case 'resource_link':
       return `[resource_link ${String(block.uri ?? '')}]`;

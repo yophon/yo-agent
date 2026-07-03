@@ -34,12 +34,12 @@ describe('PersistentHistory:JSONL 持久历史', () => {
     const file = join(dir, 'history.jsonl');
     writeFileSync(
       file,
-      [
+      `${[
         JSON.stringify({ ts: 1, cwd: '/a', text: 'from-a' }),
         'not-json',
         JSON.stringify({ ts: 2, cwd: '/b', text: 'from-b' }),
         JSON.stringify({ ts: 3, cwd: '/a', text: 'from-a-2' }),
-      ].join('\n') + '\n',
+      ].join('\n')}\n`,
     );
     const h = PersistentHistory.load(file, '/a');
     expect(h.list()).toEqual(['from-b', 'from-a', 'from-a-2']);

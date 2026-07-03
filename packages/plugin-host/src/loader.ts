@@ -30,7 +30,7 @@ export async function loadPluginSpecs(dirs: string[]): Promise<WorkerPluginSpec[
     }
     for (const entry of entries.sort()) {
       const full = join(dir, entry);
-      let st;
+      let st: Awaited<ReturnType<typeof stat>>;
       try {
         st = await stat(full);
       } catch {

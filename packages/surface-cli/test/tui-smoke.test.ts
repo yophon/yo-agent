@@ -6,7 +6,7 @@ import type { TuiKernel } from '@yo-agent/surface-cli';
 import type { ApprovalDecision, AgentEvent, EventEnvelope, Id } from '@yo-agent/protocol';
 
 const ESC = String.fromCharCode(27);
-const DOWN = ESC + '[B';
+const DOWN = `${ESC}[B`;
 const ENTER = '\r';
 
 function ev(event: AgentEvent): EventEnvelope {
@@ -256,7 +256,7 @@ describe('CliApp 4.5（结构化渲染 / 命令 / 中断 / steer）', () => {
     stdin.write(ENTER);
     await tick();
     expect(kernel.submitted).toEqual(['alpha']);
-    stdin.write(ESC + '[A'); // ↑
+    stdin.write(`${ESC}[A`); // ↑
     await tick();
     expect(lastFrame()).toContain('alpha'); // 召回到输入行
     unmount();
@@ -338,7 +338,7 @@ describe('CliApp 4.6b(多行输入 / 粘贴 / 退出保护)', () => {
     await tick();
     stdin.write('中文字');
     await tick();
-    stdin.write(ESC + '[D'); // ← 光标到「字」前
+    stdin.write(`${ESC}[D`); // ← 光标到「字」前
     await tick();
     stdin.write('\x7f'); // 退格删「文」
     await tick();
@@ -357,7 +357,7 @@ describe('CliApp 4.6d(slash 菜单 / @文件补全 / 新命令)', () => {
     stdin.write('/mo');
     await tick();
     expect(lastFrame()).toContain('/model'); // 菜单候选(与 /mode 同列)
-    stdin.write(ESC + '[B'); // ↓ 选中 /model(短者 /mode 排前)
+    stdin.write(`${ESC}[B`); // ↓ 选中 /model(短者 /mode 排前)
     await tick();
     stdin.write('\t'); // Tab 接受
     await tick();
@@ -456,7 +456,7 @@ describe('CliApp 4.6e(模式循环 / 排队 / 审批升级 / 模型切换)', () 
       React.createElement(CliApp, { kernel, sessionId: 's', prompt: '', permissionMode: 'supervised' }),
     );
     await tick();
-    stdin.write(ESC + '[Z'); // Shift+Tab
+    stdin.write(`${ESC}[Z`); // Shift+Tab
     await tick();
     expect(kernel.modes).toEqual(['accept-edits']);
     expect(lastFrame()).toContain('accept-edits');
@@ -566,7 +566,6 @@ describe('CliApp 4.7f(/resume 历史回放)', () => {
     ];
     const kernel = new FakeKernel([]);
     (kernel as TuiKernel).events = {
-      // eslint-disable-next-line @typescript-eslint/require-await
       async *read() {
         for (const e of history) yield e;
       },

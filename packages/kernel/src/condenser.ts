@@ -150,7 +150,9 @@ function partitionProtected(
   }
   const protectedMsgs: CanonMessage[] = [];
   const toSummarize: CanonMessage[] = [];
-  middle.forEach((m, i) => (mask[i] ? protectedMsgs : toSummarize).push(m));
+  middle.forEach((m, i) => {
+    (mask[i] ? protectedMsgs : toSummarize).push(m);
+  });
   return { protectedMsgs, toSummarize };
 }
 
@@ -206,6 +208,7 @@ export function parseHandoffSections(text: string): HandoffSummary {
   const headerRe = /^#{1,6}[ \t]*(.+?)[ \t]*$/gm;
   const headers: Array<{ key: keyof HandoffSummary | null; bodyStart: number; headerStart: number }> = [];
   let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: 标准 exec 循环惯用法
   while ((m = headerRe.exec(text)) !== null) {
     headers.push({ key: mapHandoffTitle(m[1]!), bodyStart: headerRe.lastIndex, headerStart: m.index });
   }
@@ -341,6 +344,8 @@ function renderContent(content: string | ContentBlock[]): string {
           return `[调用 ${b.name}(${safeJson(b.input)})]`;
         case 'tool_result':
           return `[结果${b.isError ? '(错误)' : ''}: ${b.content}]`;
+        default:
+          return '';
       }
     })
     .join('\n');

@@ -178,7 +178,7 @@ export type UiAction =
 // ── 内部助手(全部返回新对象,state 不就地改)─────────────────────────────
 function nextId(s: UiState): [string, UiState] {
   const seq = s.seq + 1;
-  return ['b' + seq, { ...s, seq }];
+  return [`b${seq}`, { ...s, seq }];
 }
 
 /** Omit 在联合类型上需逐成员分配,否则塌缩为公共字段。 */
@@ -301,7 +301,7 @@ const KIND_VERB: Record<string, string> = {
 function activityFor(name: string, toolKind: string, summary: string): string {
   const verb = KIND_VERB[toolKind] ?? '调用';
   const target = (summary || name).split('\n')[0] ?? '';
-  return `${verb} ${target.length > 40 ? target.slice(0, 39) + '…' : target}`;
+  return `${verb} ${target.length > 40 ? `${target.slice(0, 39)}…` : target}`;
 }
 
 function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {

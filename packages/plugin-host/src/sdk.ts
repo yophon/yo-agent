@@ -36,6 +36,7 @@ export interface PluginToolDef {
 export type PluginHookHandler = (
   ctx: PluginHookCtx,
   payload: unknown,
+  // biome-ignore lint/suspicious/noConfusingVoidType: hook 回调允许不返回值,换 undefined 会破坏 Promise<void> 实现方
 ) => PreToolUseDecision | void | Promise<PreToolUseDecision | void>;
 
 export interface PluginHookDef {

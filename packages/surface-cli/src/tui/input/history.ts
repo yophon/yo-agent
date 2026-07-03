@@ -62,7 +62,7 @@ export class PersistentHistory {
       const dir = dirname(this.file);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
       const isNew = !existsSync(this.file);
-      appendFileSync(this.file, JSON.stringify({ ts: Date.now(), cwd: this.cwd, text } satisfies HistoryEntry) + '\n');
+      appendFileSync(this.file, `${JSON.stringify({ ts: Date.now(), cwd: this.cwd, text } satisfies HistoryEntry)}\n`);
       if (isNew) chmodSync(this.file, 0o600);
       this.rotate();
     } catch {
@@ -75,6 +75,6 @@ export class PersistentHistory {
     if (!this.file) return;
     const lines = readFileSync(this.file, 'utf8').split('\n').filter(Boolean);
     if (lines.length <= HISTORY_LIMIT * 1.2) return;
-    writeFileSync(this.file, lines.slice(-HISTORY_LIMIT).join('\n') + '\n', { mode: 0o600 });
+    writeFileSync(this.file, `${lines.slice(-HISTORY_LIMIT).join('\n')}\n`, { mode: 0o600 });
   }
 }

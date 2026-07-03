@@ -87,7 +87,7 @@ export class McpServerSurface implements Surface {
     const names = okToolIds.map((id) => toolNameById.get(id) ?? id);
     const used = [...new Set(names)];
     const summary = used.length ? `\n\n[yo-agent 成功执行 ${names.length} 次工具：${used.join(', ')}]` : '';
-    const errNote = failed ? `\n\n（异常终止：${failed}${errors.length ? '；' + errors.join('；') : ''}）` : '';
+    const errNote = failed ? `\n\n（异常终止：${failed}${errors.length ? `；${errors.join('；')}` : ''}）` : '';
     const body = (text.join('').trim() || (failed ? '' : '（无输出）')) + errNote;
     return { content: [{ type: 'text', text: (body + summary).trim() || '（无输出）' }], isError: failed !== undefined };
   }

@@ -129,7 +129,7 @@ export async function listFiles(cwd: string, limit = FILE_LIST_LIMIT): Promise<s
   const acc: string[] = [];
   const walk = async (dir: string, rel: string): Promise<void> => {
     if (acc.length >= limit) return;
-    let entries;
+    let entries: import('node:fs').Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {

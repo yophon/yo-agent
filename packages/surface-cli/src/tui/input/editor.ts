@@ -48,7 +48,7 @@ export function sanitize(raw: string): string {
   return raw
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    // eslint-disable-next-line no-control-regex
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 刻意剥离 C0 控制符(粘贴防呆)
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
 

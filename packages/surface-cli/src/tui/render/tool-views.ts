@@ -26,7 +26,7 @@ const str = (input: unknown, field: string, fallback = ''): string => {
 
 const firstLine = (text: string, max = 60): string => {
   const line = text.split('\n')[0] ?? '';
-  return line.length > max ? line.slice(0, max - 1) + '…' : line;
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 };
 
 const outputLines = (b: ToolBlock): string[] => {

@@ -78,12 +78,12 @@ export function renderApprovalPanel(a: ApprovalView, rejectArmed: boolean, queue
       `⚠ ${a.tool} · 风险 ${a.risk}`,
       h(Text, { key: 'k', dimColor: true }, '  (↑↓/数字 选择 · Enter 确认 · Esc×2 拒绝)'),
     ),
-    ...body.map((line, i) => styledLine(line, 'b' + i, ' ')),
+    ...body.map((line, i) => styledLine(line, `b${i}`, ' ')),
     h(Text, { key: 'sp' }, ' '),
     ...options.map((label, i) =>
       h(
         Text,
-        { key: 'o' + i, color: i === a.selected ? 'green' : undefined },
+        { key: `o${i}`, color: i === a.selected ? 'green' : undefined },
         `${i === a.selected ? '❯' : ' '} ${i + 1}. ${label}`,
       ),
     ),

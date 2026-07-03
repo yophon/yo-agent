@@ -62,6 +62,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   // 上下文占用(状态栏 ctx%)与 git 分支;每轮完成/压缩后刷新。
   const [ctx, setCtx] = useState<{ usedTokens: number; usableTokens: number } | null>(null);
   const [branch, setBranch] = useState<string | undefined>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 闭包经 sidBox.current 读最新会话,box 包装引用刻意不入依赖
   const refreshMeta = useCallback((): void => {
     try {
       const c = kernel.contextState?.(sidBox.current);
@@ -70,7 +71,6 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       // 会话未知等瞬态错误忽略
     }
     setBranch(readGitBranch(cwd));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kernel, cwd]);
 
   // ── 状态:纯 reducer + ref 镜像(同帧同步可见)──────────────────────────
@@ -129,6 +129,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   };
   const completion = computeMenu(editorBox.value);
   // token 变化 → 重置选中、解除抑制;触发文件清单懒加载。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 刻意只按 token/kind 触发;dispatch/box/fileLister 恒定,经闭包读
   useEffect(() => {
     const token = completion?.token ?? null;
     if (token !== lastTokenRef.current) {
@@ -142,7 +143,6 @@ export function CliApp(props: CliAppProps): React.ReactElement {
         .then((list) => filesBox.set(list))
         .catch(() => filesBox.set([]));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completion?.token, completion?.kind]);
 
   // 推理流显隐(/reasoning)/工具展开(Ctrl+O):只影响其后渲染,<Static> 已渲区块不回改。
@@ -169,12 +169,12 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   }
 
   // 订阅当前会话事件;/new /resume 切换 sid 后自动重订阅。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只按 kernel/会话 id 重订阅;dispatch/refreshMeta 恒定
   useEffect(() => {
     return kernel.subscribe(sidBox.value, null, (env) => {
       dispatch({ type: 'event', event: env.event, ts: env.ts });
       if (env.event.kind === 'ContextCompacted') refreshMeta();
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kernel, sidBox.value]);
 
   // 历史回放(4.7f):恢复会话时把已落库事件折叠进区块(不再空屏)。
@@ -198,11 +198,13 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   );
 
   // ctx% / git 分支:挂载 + 每轮完成后刷新。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: state.turns/sidBox.value 是刻意的触发信号,非闭包数据依赖
   useEffect(() => {
     refreshMeta();
   }, [refreshMeta, state.turns, sidBox.value]);
 
   // 排队 follow-up:正常完成(end_turn)后自动出队提交;中断/失败保留待手动。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只按轮次完成触发;queue/lastStop 经 stateRef 同帧读,submit 恒定
   useEffect(() => {
     const q = stateRef.current.queue;
     if (state.running || !q.length) return;
@@ -215,10 +217,10 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     historyRef.current!.push(next);
     histIdxRef.current = historyRef.current!.list().length;
     submit(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.running, state.turns]);
 
   // `yoagent --resume` 不带 id:挂载即打开会话选择器;`--resume <id>/last`:挂载即回放历史。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 仅挂载时执行一次,启动参数不随渲染变化
   useEffect(() => {
     if (openResumePicker) {
       const cmd = findCommand(commandsRef.current, '/resume');
@@ -226,11 +228,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     } else if (replayOnMount) {
       void replaySession(sidBox.current);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 初始 prompt 只在首个会话提交一次。
   const initRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 初始 prompt 仅挂载时提交一次,initRef 双保险
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
@@ -238,7 +240,6 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       dispatch({ type: 'submit', text: prompt });
       void kernel.submitInput(sidBox.current, prompt, `tui-${Date.now()}`).catch(() => {});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 单次模式(autoExit):首轮完成即退出。REPL 模式(默认)回到输入态。

@@ -24,9 +24,9 @@ export function renderInputBox(editor: ed.EditorState, columns: number, running:
   }
   const rows = lines.map((line, i) => {
     const prefix = offset + i === 0 ? h(Text, { key: 'p', color: 'cyan' }, '› ') : h(Text, { key: 'p' }, '  ');
-    if (!line.hasCursor) return h(Text, { key: 'l' + i }, prefix, line.text);
+    if (!line.hasCursor) return h(Text, { key: `l${i}` }, prefix, line.text);
     const { before, at, after } = ed.splitAtCursor(line.text, line.cursorUnits);
-    return h(Text, { key: 'l' + i }, prefix, before, h(Text, { inverse: true }, at), after);
+    return h(Text, { key: `l${i}` }, prefix, before, h(Text, { inverse: true }, at), after);
   });
   return h(
     Box,

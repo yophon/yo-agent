@@ -5,7 +5,7 @@ import { InMemoryToolRegistry } from '@yo-agent/tools';
 import type { ToolContext, ToolEvent } from '@yo-agent/tools';
 import { DefaultPluginHost } from '../src/host';
 import type { PluginSpec } from '../src/host';
-import { WorkerPluginTransport, workerEntryUrl, pluginHealthFlag } from '../src';
+import { WorkerPluginTransport, workerEntryUrl, } from '../src';
 
 /**
  * 退出标准③离线达成（真 worker_threads）：故意崩溃/越权插件 → 主进程存活 + 心跳检测 + 工具降级 +

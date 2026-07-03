@@ -12,7 +12,7 @@ export function renderPicker(p: PickerState): React.ReactElement {
   const rows = p.items.map((item, i) =>
     h(
       Text,
-      { key: 'i' + i, color: i === p.selected ? 'green' : undefined },
+      { key: `i${i}`, color: i === p.selected ? 'green' : undefined },
       `${i === p.selected ? '❯ ' : '  '}${item.label}`,
       item.hint ? h(Text, { key: 'h', dimColor: true }, `  ${item.hint}`) : null,
     ),
@@ -38,7 +38,7 @@ export function renderCompletionMenu(items: MenuItemView[], selected: number, lo
   const rows = items.map((item, i) =>
     h(
       Text,
-      { key: 'm' + i, color: i === selected ? 'green' : undefined },
+      { key: `m${i}`, color: i === selected ? 'green' : undefined },
       `${i === selected ? '❯ ' : '  '}${item.label}`,
       item.hint ? h(Text, { key: 'h', dimColor: true }, `  ${item.hint}`) : null,
     ),

@@ -88,7 +88,7 @@ describe('MCP schema 清洗（防供应链：超深/超大/注入式 description
 
   it('超多属性截断', () => {
     const props: Record<string, unknown> = {};
-    for (let i = 0; i < 200; i++) props['p' + i] = { type: 'string' };
+    for (let i = 0; i < 200; i++) props[`p${i}`] = { type: 'string' };
     const out = sanitizeMcpInputSchema({ type: 'object', properties: props }, { maxProps: 10 });
     expect(Object.keys(out.properties as object).length).toBeLessThanOrEqual(10);
   });

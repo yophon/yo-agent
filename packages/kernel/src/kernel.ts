@@ -439,7 +439,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       let provErr: { message: string; category?: ErrorCategory } | undefined;
       const maxAttempts = chain.length + 3;
       let attempt = 0;
-      attemptLoop: while (true) {
+      while (true) {
         if (++attempt > maxAttempts) {
           provErr = provErr ?? { message: 'fallback 尝试超上限' };
           break;
@@ -491,23 +491,23 @@ export class AgentKernel implements Kernel, SubagentHost {
 
         if (!provErr) {
           turnCommitted = true; // 成功产出 → commit 本 turn 的模型，后续 step 不再换
-          break attemptLoop;
+          break;
         }
-        if (produced) break attemptLoop; // 已流式发出内容的错误 → 不重试（无法干净回退）
+        if (produced) break; // 已流式发出内容的错误 → 不重试（无法干净回退）
         const action = decideFallback(provErr.category, {
           hasNext: s.routeIdx < chain.length - 1,
           committed: turnCommitted,
         });
         if (action === 'compact') {
           const compacted = await this.forceCompact(s, turnId); // 同模型压缩窗口后重试
-          if (!compacted) break attemptLoop; // 压不动 → 放弃
-          continue attemptLoop;
+          if (!compacted) break; // 压不动 → 放弃
+          continue;
         }
         if (action === 'switch') {
           s.routeIdx++; // 换 key / 换 provider（粘滞，跨 turn 不回探）
-          continue attemptLoop;
+          continue;
         }
-        break attemptLoop; // fail
+        break; // fail
       }
 
       if (provErr) {

@@ -19,7 +19,7 @@ import {
   mcpExecutor,
 } from '@yo-agent/surface-mcp';
 import type { ResolvedMcpServer, SamplingHandler } from '@yo-agent/surface-mcp';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 // ───────────────────────── HTTP 传输 + OAuth fail-fast ─────────────────────────
 

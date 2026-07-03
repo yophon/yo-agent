@@ -127,7 +127,11 @@ describe('4A — 观测型 hook 异常不吞不拖垮', () => {
         throw new Error('观测崩了');
       },
     });
-    bus.register({ onStop: () => void (secondRan = true) });
+    bus.register({
+      onStop: () => {
+        secondRan = true;
+      },
+    });
     await expect(
       bus.fireStop(ctx, 'end_turn', (point, err) => {
         errors.push([point, err instanceof Error ? err.message : String(err)]);

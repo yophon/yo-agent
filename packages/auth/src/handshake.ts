@@ -3,8 +3,8 @@
  * 流程：client→hello(pubKey) → server→challenge(nonce) → client→auth(签名[+配对证明]) → server→ok/err。
  * 签名证明持有私钥（抗重放）；未受信公钥须带有效配对证明才放行（pairing）。
  */
-import { DeviceIdentity, randomNonceHex, utf8, verifySignature } from './identity';
-import { PairingGate, pairingProof } from './pairing';
+import { type DeviceIdentity, randomNonceHex, utf8, verifySignature } from './identity';
+import { type PairingGate, pairingProof } from './pairing';
 
 /** 握手只需信道的发/收（surface-rpc 的 MessageChannel 结构兼容）。 */
 export interface HandshakeChannel {

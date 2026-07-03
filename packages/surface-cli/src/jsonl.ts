@@ -11,6 +11,6 @@ export function jsonlLine(env: EventEnvelope): string {
 export class JsonlRenderer {
   constructor(private readonly out: NodeJS.WritableStream = process.stdout) {}
   render(env: EventEnvelope): void {
-    this.out.write(jsonlLine(env) + '\n');
+    this.out.write(`${jsonlLine(env)}\n`);
   }
 }

@@ -5,6 +5,7 @@
 
 let segmenter: Intl.Segmenter | null = null;
 function seg(): Intl.Segmenter {
+  // biome-ignore lint/suspicious/noAssignInExpressions: 惰性单例初始化惯用法
   return (segmenter ??= new Intl.Segmenter());
 }
 

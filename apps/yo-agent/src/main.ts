@@ -299,7 +299,7 @@ async function bootstrapMcpHost(mcpHost: McpHostManager, cwd: string, env: NodeJ
     console.error(`[mcp] 信任清单读取失败，project server 全部按未信任处理：${e instanceof Error ? e.message : String(e)}`);
     trusted = new Set();
   }
-  let servers;
+  let servers: Awaited<ReturnType<typeof loadMcpServers>>;
   try {
     servers = await loadMcpServers({
       homeDir: home,

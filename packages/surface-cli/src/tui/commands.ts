@@ -195,7 +195,7 @@ export function buildCommands(): SlashCommand[] {
           d.notice('warn', '/resume 不可用:需要持久化 store(YO_DB=路径)');
           return;
         }
-        let rows;
+        let rows: Awaited<ReturnType<NonNullable<typeof d.kernel.listPersistedSessions>>>;
         try {
           rows = await d.kernel.listPersistedSessions();
         } catch (e) {

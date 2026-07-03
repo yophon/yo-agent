@@ -8,6 +8,7 @@ export async function* sseDataLines(body: ReadableStream<Uint8Array>): AsyncIter
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let idx: number;
+    // biome-ignore lint/suspicious/noAssignInExpressions: 流式按行切分惯用法
     while ((idx = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, idx).replace(/\r$/, '');
       buf = buf.slice(idx + 1);
