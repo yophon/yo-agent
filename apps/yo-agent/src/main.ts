@@ -61,6 +61,9 @@ import {
   createStdioTransport,
   loadMcpServers,
   loadTrustedProjectServers,
+  makeMcpListResourcesTool,
+  makeMcpListServersTool,
+  makeMcpReadResourceTool,
 } from '@yo-agent/surface-mcp';
 import { DefaultPluginHost, loadPluginSpecs, workerTransportFactory } from '@yo-agent/plugin-host';
 import { PairingGate } from '@yo-agent/auth';
@@ -174,6 +177,10 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
         }))
       : [];
   };
+  // 4.9f MCP 自述与通道接线：LLM 可查已连接 server（实时熔断态 + 信任层 + 跳过名单）、列/读外部资源。
+  tools.register(makeMcpListServersTool(mcpHost, { skippedUntrusted: () => mcpSkippedUntrusted }));
+  tools.register(makeMcpListResourcesTool(mcpHost));
+  tools.register(makeMcpReadResourceTool(mcpHost));
   const systemSuffix = (info: { model: string; cwd: string; permissionMode: string }): string =>
     composeSystemSections(
       renderEnvBlock({

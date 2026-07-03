@@ -24,7 +24,7 @@ import type { SamplingHandler } from './mcp-sampling';
 import type { McpServerStatus, McpServerStatusInfo } from '@yo-agent/protocol';
 import type { RegisteredTool, ToolDescriptor, ToolEvent, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
 import { clampMcpApproval, mcpToolName, sanitizeMcpInputSchema, sanitizeMcpServerName } from '@yo-agent/tools';
-import type { ResolvedMcpServer } from './mcp-config';
+import type { McpConfigSource, ResolvedMcpServer } from './mcp-config';
 
 /** server 连接健康标志（availability configFlag）；3C 熔断/断连时撤下 → 工具从 resolveAvailable 消失。 */
 export function mcpHealthFlag(server: string): string {
@@ -33,6 +33,9 @@ export function mcpHealthFlag(server: string): string {
 
 /** 顶层 description 截断上限（与 sanitizeMcpInputSchema 的 maxStringLen 对齐，降 tool-poisoning 注入面）。 */
 const MCP_DESC_MAX = 8192;
+
+/** 传输失败/超时的行动尾句（4.9f）：熔断语义 + 下一步选项。 */
+const MCP_BREAKER_TAIL = '；该失败已计入熔断（连续失败将临时下线该 server、冷却后自动恢复），可稍后重试或改用其他工具';
 
 /** 默认 per-call 超时（§15.3，挂死远端调用上限）。 */
 export const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
@@ -99,7 +102,11 @@ export interface McpCallHooks {
   onTransportFail?(): void;
 }
 
-/** SDK Tool（`tools/list` 单项）→ ToolDescriptor，经 3A 全部护栏。 */
+/**
+ * SDK Tool（`tools/list` 单项）→ ToolDescriptor，经 3A 全部护栏。
+ * 4.9f：description 前缀来源标注「[外部 MCP server「X」提供]」——LLM 知道工具从哪来、
+ * 描述文本是外部输入（tool-poisoning 提示注入的天然折扣因子）。
+ */
 export function toolDescriptorFromMcp(
   server: string,
   tool: { name: string; description?: string; inputSchema?: unknown },
@@ -107,7 +114,7 @@ export function toolDescriptorFromMcp(
   return {
     name: mcpToolName(server, tool.name), // 命名空间隔离 + 校验
     kind: 'other',
-    description: (tool.description ?? '').slice(0, MCP_DESC_MAX),
+    description: `[外部 MCP server「${server}」提供] ${(tool.description ?? '').slice(0, MCP_DESC_MAX)}`,
     inputSchema: sanitizeMcpInputSchema(tool.inputSchema), // 限深度/属性数/字符串长，脏 schema 安全降级
     owner: 'mcp',
     availability: { configFlag: mcpHealthFlag(server) }, // 绑连接健康（3C 熔断/断连接缝）
@@ -202,7 +209,10 @@ export function mcpExecutor(
         // 仅「真正的用户中断」（ctx.signal abort 且 reason 非 TimeoutError）中性不计（审查 ATTR-3：双层超时不得被误判为中断）。
         const abortedByUser = !!ctx.signal?.aborted && (ctx.signal.reason as { name?: string } | undefined)?.name !== 'TimeoutError';
         if (!abortedByUser) hooks?.onTransportFail?.();
-        throw t.timedOut() ? new Error(`MCP 工具 ${remoteName} 调用超时（${callTimeoutMs}ms），已中止`) : e;
+        // 4.9f 行动尾句：告知已计入熔断 + 下一步选项（LLM 不再面对裸错误自由脑补）；用户中断保持原错误（中性）。
+        if (t.timedOut()) throw new Error(`MCP 工具 ${remoteName} 调用超时（${callTimeoutMs}ms），已中止${MCP_BREAKER_TAIL}`);
+        if (abortedByUser) throw e;
+        throw new Error(`MCP 工具 ${remoteName} 调用失败：${errMsg(e)}${MCP_BREAKER_TAIL}`);
       } finally {
         t.dispose();
         hooks?.onCallEnd?.();
@@ -214,7 +224,10 @@ export function mcpExecutor(
       // isError：内容承载错误详情（tool 级错误，连接健康，不计熔断）。kernel 在 catch 中以 e.message 覆盖已 yield 的输出，
       // 故错误路径必须一次性 throw 携带全文（先 yield 再 throw 会丢内容）。
       if (res.isError) {
-        throw new Error(chunks.join('\n') || `MCP 工具 ${remoteName} 返回错误（无内容）`);
+        // 4.9f：tool 级错误（连接健康、不计熔断）——尾句如实区分于传输失败，引导调参重试而非等待熔断恢复。
+        throw new Error(
+          `${chunks.join('\n') || `MCP 工具 ${remoteName} 返回错误（无内容）`}\n（该错误来自 server 内部、未计入熔断；可调整参数重试或改用其他工具）`,
+        );
       }
       // content 为空但有 structuredContent（带 outputSchema 的工具，content[] 仅 SHOULD）→ 回退结构化全文，
       // 否则 LLM 拿到空观测（审查 protocol-correctness）。成功路径与 isError 同用 join('\n') 保块边界一致。
@@ -519,6 +532,10 @@ export class McpHostManager {
   }
   connectedServers(): string[] {
     return [...this.conns.keys()];
+  }
+  /** server 的信任来源层（user/project/local；4.9f 自述用）；未在册 → undefined。 */
+  sourceOf(name: string): McpConfigSource | undefined {
+    return this.specs.get(name)?.source;
   }
   connection(name: string): McpConnection | undefined {
     return this.conns.get(name);

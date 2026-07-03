@@ -10,3 +10,4 @@ export * from './mcp-config';
 export * from './mcp-http';
 export * from './mcp-oauth';
 export * from './mcp-sampling';
+export * from './mcp-self-tools';
