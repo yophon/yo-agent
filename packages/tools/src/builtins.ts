@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { bashTool } from './bash';
+import { parallelTool } from './parallel-tool';
 import type { RegisteredTool, ToolContext } from './index';
 
 /** realpath（解析符号链接）；不存在则原样返回。 */
@@ -461,4 +462,5 @@ export const builtinTools: RegisteredTool[] = [
   todoWriteTool,
   applyPatchTool,
   bashTool,
+  parallelTool, // 批量并行调用(feedback/4.10):内核内联展开,子调用逐一过准入链
 ];

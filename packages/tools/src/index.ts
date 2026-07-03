@@ -72,3 +72,4 @@ export * from './bash';
 export * from './subagent-tool';
 export * from './skill-tool';
 export * from './memory-tool';
+export * from './parallel-tool';

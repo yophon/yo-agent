@@ -17,7 +17,7 @@ import type { CanonMessage, ChatRequest, ContentBlock, ErrorCategory, Provider, 
 import { decideFallback } from './fallback';
 import type { ProviderRoute } from './fallback';
 import type { ToolContext, ToolDescriptor, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
-import { sanitizeMcpServerName } from '@yo-agent/tools';
+import { MAX_PARALLEL_CALLS, PARALLEL_TOOL, sanitizeMcpServerName } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
 import { ResumeBuffer } from '@yo-agent/store';
 import type { ApprovalGate, ApprovalOutcome, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
@@ -590,51 +590,52 @@ export class AgentKernel implements Kernel, SubagentHost {
       if (text) assistantBlocks.push({ type: 'text', text });
       /** 每个 tool_use 的最终 tool_result，按批次位置存放（阶段 1 拒绝 / 阶段 2 执行都落这里）。 */
       const results: (ContentBlock | undefined)[] = new Array(toolCalls.length);
-      /** 阶段 1 准入通过、待执行的调用。 */
-      const plans: Array<{ idx: number; tc: ToolCallAccum; input: unknown; desc: ToolDescriptor | undefined }> = [];
+      /** parallel 展开组（feedback/4.10）：外层 tool_use 一个组，子调用结果按 part 序收敛后合并回填单条 tool_result。 */
+      const groups = new Map<number, { parts: ({ name: string; content: string; isError: boolean } | undefined)[] }>();
+      /** 阶段 1 准入通过、待执行的调用（key=事件用 id；parallel 子调用为 `外层id#序号`）。 */
+      const plans: Array<{
+        key: string;
+        name: string;
+        input: unknown;
+        desc: ToolDescriptor | undefined;
+        sink: { outerIdx: number; part?: number };
+      }> = [];
 
-      for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
-        const tc = toolCalls[tcIdx]!;
-        if (s.interrupted) break; // 中断：停止处理后续工具，不回填本轮 observation、不 compact（审查 CONC-2）
-        let input = parseJsonObject(argsById.get(tc.id) ?? '');
-        const desc = available.find((d) => d.name === tc.name);
+      /**
+       * 单调用准入（4.10b 阶段 1 提炼为闭包，parallel 子调用复用同一条链——熔断/hook/闸门/审批不可绕）。
+       * patchInput 把 hook 改写 / 审批 modify 后的入参同步回 provider 可见的 tool_use 块
+       * （外层调用改块本体；parallel 子调用改外层 input.calls[i].input，二者共享引用）。
+       */
+      type Admit =
+        | { verdict: 'ok'; input: unknown; desc: ToolDescriptor | undefined }
+        | { verdict: 'reject'; content: string }
+        | { verdict: 'loop' };
+      const admitOne = async (id: string, name: string, input0: unknown, patchInput: (v: unknown) => void): Promise<Admit> => {
+        let input = input0;
+        const desc = available.find((d) => d.name === name);
 
         // 熔断（引擎层强制）。batchId=本 step：同批多 tool_use 是并行语义，批内同参不互相计重（4.10a）。
-        const verdict = this.d.loopBreaker.check({ name: tc.name, input, kind: desc?.kind, batchId: `${turnId}:${step}` });
-        if (verdict === 'break') {
-          await this.emit(s, { kind: 'Error', message: `检测到死循环：反复调用 ${tc.name}` }, turnId);
-          await this.completeTurn(s, 'loop_detected', usage ?? zeroUsage(), turnId);
-          return;
-        }
+        const verdict = this.d.loopBreaker.check({ name, input, kind: desc?.kind, batchId: `${turnId}:${step}` });
+        if (verdict === 'break') return { verdict: 'loop' };
         if (verdict === 'warn') {
           // 4.10a warn 现役化（DESIGN §2.3「注入提醒」）：经 4.9d 状态提醒接缝给 LLM 自纠机会，不中止执行。
           // 文案不含次数 → pushStatusNote 同文去重，批内多次 warn 只提醒一次。
           this.pushStatusNote(
             s,
-            `[系统状态] 检测到你在反复以相同参数调用工具 ${tc.name}。若非刻意重试，请调整参数或换用其他方式；继续同参重复将触发死循环熔断中止本轮`,
+            `[系统状态] 检测到你在反复以相同参数调用工具 ${name}。若非刻意重试，请调整参数或换用其他方式；继续同参重复将触发死循环熔断中止本轮`,
           );
         }
-
-        assistantBlocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input });
 
         // PreToolUse hook（4A / §11）：确定性强制——拦截 / 改写 input / 放行三态，先于权限闸门与审批。
         // fail-closed：hook 抛错视为 deny（reason 可见）。无 hook 注册 → 恒 allow + input 不变（行为不变）。
         if (desc) {
-          const pre = await this.hooks.firePreToolUse(this.hookCtx(s), { tool: tc.name, kind: desc.kind, input });
+          const pre = await this.hooks.firePreToolUse(this.hookCtx(s), { tool: name, kind: desc.kind, input });
           if (pre.decision === 'deny') {
-            results[tcIdx] = {
-              type: 'tool_result',
-              toolUseId: tc.id,
-              content: `策略 hook 拒绝该工具调用${pre.reason ? `：${pre.reason}` : ''}`,
-              isError: true,
-              name: tc.name,
-            };
-            continue;
+            return { verdict: 'reject', content: `策略 hook 拒绝该工具调用${pre.reason ? `：${pre.reason}` : ''}` };
           }
           if (pre.input !== input) {
             input = pre.input;
-            const block = assistantBlocks[assistantBlocks.length - 1];
-            if (block && block.type === 'tool_use') block.input = input;
+            patchInput(input);
           }
         }
 
@@ -647,36 +648,32 @@ export class AgentKernel implements Kernel, SubagentHost {
             kind: desc.kind,
             risk,
             approval: desc.approval,
-            toolName: tc.name,
+            toolName: name,
           });
           if (gate === 'deny') {
             // 4.9c 文案富化：带当前档位 + 引导，LLM 不再自由脑补拒因。
-            results[tcIdx] = {
-              type: 'tool_result',
-              toolUseId: tc.id,
+            return {
+              verdict: 'reject',
               content: `权限模式（${s.permissionMode}）拒绝该工具调用。该工具在当前档位不可用；用户可用 /mode 切换更宽档位后重试，或改用当前档位允许的工具。`,
-              isError: true,
-              name: tc.name,
             };
-            continue;
           }
           if (gate === 'ask' && desc.approval !== 'never') {
             // allow_always/reject_always 落 session 级缓存，同名工具后续不再重复弹审批（§9.2 会话内升级）。
-            const cached = s.approvalCache.get(tc.name);
+            const cached = s.approvalCache.get(name);
             let decision: ApprovalDecision;
             let updatedInput: unknown;
             let autoReason: ApprovalOutcome['autoReason'];
             if (cached) {
               decision = cached === 'allow' ? 'allow_always' : 'reject_always';
             } else {
-              const r = await this.requestApproval(s, tc.id, tc.name, input, risk, turnId);
+              const r = await this.requestApproval(s, id, name, input, risk, turnId);
               decision = r.decision;
               updatedInput = r.updatedInput;
               autoReason = r.autoReason;
-              if (decision === 'allow_always') s.approvalCache.set(tc.name, 'allow');
-              else if (decision === 'reject_always') s.approvalCache.set(tc.name, 'reject');
+              if (decision === 'allow_always') s.approvalCache.set(name, 'allow');
+              else if (decision === 'reject_always') s.approvalCache.set(name, 'reject');
             }
-            await this.hooks.fireApproval(this.hookCtx(s), { tool: tc.name, risk, decision }, this.hookErr(s, turnId)); // OnApproval hook（4A）
+            await this.hooks.fireApproval(this.hookCtx(s), { tool: name, risk, decision }, this.hookErr(s, turnId)); // OnApproval hook（4A）
             if (decision === 'reject_once' || decision === 'reject_always') {
               // 4.9c 审批语义修正：超时/非交互自动拒与用户真拒文案分流——不再谎称「用户拒绝了」（kernel.ts:817 病根）。
               const content =
@@ -686,43 +683,128 @@ export class AgentKernel implements Kernel, SubagentHost {
                     ? `非交互环境自动拒绝该工具调用（无人可批；当前权限模式：${s.permissionMode}）。请改用无需审批的工具完成任务，并在结果中说明该步骤被跳过。`
                     : `用户拒绝了该工具调用（当前权限模式：${s.permissionMode}）。未经用户要求不要原样重试；用户可用 /mode 切换档位或重新发起。`;
               if (autoReason === 'timeout') {
-                await this.emit(s, { kind: 'Error', message: `审批超时，已自动拒绝工具 ${tc.name}` }, turnId); // surface 同步提示
+                await this.emit(s, { kind: 'Error', message: `审批超时，已自动拒绝工具 ${name}` }, turnId); // surface 同步提示
               }
-              results[tcIdx] = { type: 'tool_result', toolUseId: tc.id, content, isError: true, name: tc.name };
-              continue;
+              return { verdict: 'reject', content };
             }
             // modify：用户改参数后放行 → 用 updatedInput 覆盖（同步回传给 LLM 的 tool_use.input）。
             if (updatedInput !== undefined) {
               input = updatedInput;
-              const block = assistantBlocks[assistantBlocks.length - 1];
-              if (block && block.type === 'tool_use') block.input = updatedInput;
+              patchInput(input);
             }
           }
         }
+        return { verdict: 'ok', input, desc };
+      };
 
-        plans.push({ idx: tcIdx, tc, input, desc });
+      let loopToolName: string | null = null;
+      for (let tcIdx = 0; tcIdx < toolCalls.length && loopToolName === null; tcIdx++) {
+        const tc = toolCalls[tcIdx]!;
+        if (s.interrupted) break; // 中断：停止处理后续工具，不回填本轮 observation、不 compact（审查 CONC-2）
+        const input = parseJsonObject(argsById.get(tc.id) ?? '');
+        const block: ContentBlock = { type: 'tool_use', id: tc.id, name: tc.name, input };
+        assistantBlocks.push(block);
+
+        // parallel 批量调用展开（feedback/4.10「一劳永逸」）：模型端每响应只发 1 个 tool_call 的上游限制下，
+        // 一个 parallel 调用装下一批子调用——每个子调用逐一走 admitOne 完整准入链（不可绕），再进波次并发执行。
+        // 仅当 parallel 在本 turn 可见集时展开（profile 收窄可整体禁用）；包装器自身不做准入（纯控制流，
+        // approval:'never'，安全语义全部落在子调用上）。包装器不发自身事件，事件面只有子调用（key=外层id#序号）。
+        if (tc.name === PARALLEL_TOOL && available.some((d) => d.name === PARALLEL_TOOL)) {
+          const rawCalls = (input as { calls?: unknown } | null)?.calls;
+          const calls = Array.isArray(rawCalls) ? rawCalls : null;
+          if (!calls || calls.length === 0) {
+            results[tcIdx] = { type: 'tool_result', toolUseId: tc.id, content: 'parallel：calls 必须是非空数组，每项 {tool, input}', isError: true, name: tc.name };
+            continue;
+          }
+          if (calls.length > MAX_PARALLEL_CALLS) {
+            results[tcIdx] = { type: 'tool_result', toolUseId: tc.id, content: `parallel：calls 至多 ${MAX_PARALLEL_CALLS} 个（收到 ${calls.length}）；请分批调用`, isError: true, name: tc.name };
+            continue;
+          }
+          const parts: ({ name: string; content: string; isError: boolean } | undefined)[] = new Array(calls.length);
+          groups.set(tcIdx, { parts });
+          for (let i = 0; i < calls.length && loopToolName === null; i++) {
+            if (s.interrupted) break;
+            const c = (calls[i] ?? {}) as { tool?: unknown; input?: unknown };
+            const cname = typeof c.tool === 'string' ? c.tool : '';
+            if (!cname) {
+              parts[i] = { name: '?', content: '子调用缺少 tool 字段（每项须为 {tool, input}）', isError: true };
+              continue;
+            }
+            if (cname === PARALLEL_TOOL) {
+              parts[i] = { name: cname, content: 'parallel 不可嵌套', isError: true };
+              continue;
+            }
+            const key = `${tc.id}#${i + 1}`;
+            const a = await admitOne(key, cname, c.input ?? {}, (v) => {
+              c.input = v;
+            });
+            if (a.verdict === 'loop') {
+              loopToolName = cname;
+              break;
+            }
+            if (a.verdict === 'reject') {
+              parts[i] = { name: cname, content: a.content, isError: true };
+              continue;
+            }
+            plans.push({ key, name: cname, input: a.input, desc: a.desc, sink: { outerIdx: tcIdx, part: i } });
+          }
+          continue;
+        }
+
+        const a = await admitOne(tc.id, tc.name, input, (v) => {
+          block.input = v;
+        });
+        if (a.verdict === 'loop') {
+          loopToolName = tc.name;
+          break;
+        }
+        if (a.verdict === 'reject') {
+          results[tcIdx] = { type: 'tool_result', toolUseId: tc.id, content: a.content, isError: true, name: tc.name };
+          continue;
+        }
+        plans.push({ key: tc.id, name: tc.name, input: a.input, desc: a.desc, sink: { outerIdx: tcIdx } });
+      }
+      if (loopToolName !== null) {
+        await this.emit(s, { kind: 'Error', message: `检测到死循环：反复调用 ${loopToolName}` }, turnId);
+        await this.completeTurn(s, 'loop_detected', usage ?? zeroUsage(), turnId);
+        return;
       }
 
       // 阶段 2 执行体：每个调用独立收敛事件对（Started→Output*→Completed）与结果位。
       // 执行错误落 isError 结果不外抛（Promise.all 不会因单个工具失败 reject）；emit 抛错（store 故障）仍向外传播，与旧行为一致。
+      // deliver：独立调用直接落 results；parallel 子调用落组 parts，波后统一合并回填。
+      const deliver = (p: (typeof plans)[number], content: string, isError: boolean): void => {
+        if (p.sink.part === undefined) {
+          results[p.sink.outerIdx] = {
+            type: 'tool_result',
+            toolUseId: toolCalls[p.sink.outerIdx]!.id,
+            content,
+            isError: isError || undefined,
+            name: p.name,
+          };
+        } else {
+          const g = groups.get(p.sink.outerIdx);
+          if (g) g.parts[p.sink.part] = { name: p.name, content, isError };
+        }
+      };
       const runOne = async (p: (typeof plans)[number]): Promise<void> => {
         await this.emit(
           s,
-          { kind: 'ToolCallStarted', id: p.tc.id, name: p.tc.name, toolKind: p.desc?.kind ?? 'other', summary: p.tc.name, input: p.input },
+          { kind: 'ToolCallStarted', id: p.key, name: p.name, toolKind: p.desc?.kind ?? 'other', summary: p.name, input: p.input },
           turnId,
         );
-        const exec = execMap.get(p.tc.name);
+        const exec = execMap.get(p.name);
         if (!exec) {
-          await this.emit(s, { kind: 'ToolCallCompleted', id: p.tc.id, status: 'error' }, turnId);
-          results[p.idx] = { type: 'tool_result', toolUseId: p.tc.id, content: `工具不在本 turn 可见集：${p.tc.name}`, isError: true, name: p.tc.name };
+          await this.emit(s, { kind: 'ToolCallCompleted', id: p.key, status: 'error' }, turnId);
+          deliver(p, `工具不在本 turn 可见集：${p.name}`, true);
           return;
         }
 
         if (s.interrupted) {
           // 并发波内的中断可能落在任务入列后、执行前（signal 已 abort，对「先注册 abort 监听再跑」的 executor 永不触发）——
           // 不再起新执行，直接以中断态收敛事件对。结果在 interrupted 收尾路径本就被丢弃。
-          await this.emit(s, { kind: 'ToolCallCompleted', id: p.tc.id, status: 'error' }, turnId);
-          results[p.idx] = { type: 'tool_result', toolUseId: p.tc.id, content: '已中断', isError: true, name: p.tc.name };
+          await this.emit(s, { kind: 'ToolCallCompleted', id: p.key, status: 'error' }, turnId);
+          deliver(p, '已中断', true);
           return;
         }
 
@@ -733,7 +815,7 @@ export class AgentKernel implements Kernel, SubagentHost {
           for await (const te of exec.execute(p.input, this.toolCtx(s, call.signal))) {
             if (te.kind === 'output') {
               out += te.chunk;
-              await this.emit(s, { kind: 'ToolCallOutput', id: p.tc.id, chunk: te.chunk, exitCode: te.exitCode }, turnId);
+              await this.emit(s, { kind: 'ToolCallOutput', id: p.key, chunk: te.chunk, exitCode: te.exitCode }, turnId);
             }
           }
         } catch (e) {
@@ -742,14 +824,14 @@ export class AgentKernel implements Kernel, SubagentHost {
         } finally {
           call.dispose();
         }
-        await this.emit(s, { kind: 'ToolCallCompleted', id: p.tc.id, status: isError ? 'error' : 'ok' }, turnId);
-        results[p.idx] = { type: 'tool_result', toolUseId: p.tc.id, content: out, isError: isError || undefined, name: p.tc.name };
+        await this.emit(s, { kind: 'ToolCallCompleted', id: p.key, status: isError ? 'error' : 'ok' }, turnId);
+        deliver(p, out, isError);
 
         // PostToolUse hook（4A / §11）：观测输出（注入防护 / 审计）；抛错经 onError 上报不拖垮 turn。
         if (p.desc) {
           await this.hooks.firePostToolUse(
             this.hookCtx(s),
-            { tool: p.tc.name, kind: p.desc.kind, input: p.input, output: out, isError },
+            { tool: p.name, kind: p.desc.kind, input: p.input, output: out, isError },
             this.hookErr(s, turnId),
           );
         }
@@ -778,6 +860,22 @@ export class AgentKernel implements Kernel, SubagentHost {
             await runOne(p);
           }
         }
+      }
+      // parallel 组收敛：子结果按 calls 顺序编号合并成外层单条 tool_result（一 tool_use 一 result 的 provider 契约）。
+      // 整体 isError 仅在全部子调用失败时置位；部分失败靠每段的（出错/被拒）标注传达。
+      for (const [outerIdx, g] of groups) {
+        const total = g.parts.length;
+        const parts = g.parts.map((pt) => pt ?? { name: '?', content: '（未执行：本轮被中断）', isError: true });
+        const content = parts
+          .map((pt, i) => `[${i + 1}/${total}] ${pt.name}${pt.isError ? '（出错/被拒）' : ''}\n${pt.content}`)
+          .join('\n\n');
+        results[outerIdx] = {
+          type: 'tool_result',
+          toolUseId: toolCalls[outerIdx]!.id,
+          content,
+          isError: parts.every((pt) => pt.isError) || undefined,
+          name: PARALLEL_TOOL,
+        };
       }
       const toolResults: ContentBlock[] = results.filter((r): r is ContentBlock => r !== undefined);
 
