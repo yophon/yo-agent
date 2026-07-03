@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { routeKey, type KeyContext } from '@yo-agent/surface-cli';
 
-const base = { pickerOpen: false, menuOpen: false, guideActive: false, bufferEmpty: true, cursorAtFirstRow: true, cursorAtLastRow: true };
+const base = { pickerOpen: false, tasksOpen: false, menuOpen: false, guideActive: false, bufferEmpty: true, cursorAtFirstRow: true, cursorAtLastRow: true };
 const idle: KeyContext = { approvalOpen: false, running: false, ...base };
 const busy: KeyContext = { approvalOpen: false, running: true, ...base };
 const approving: KeyContext = { approvalOpen: true, running: true, ...base };
@@ -83,6 +83,7 @@ describe('keymap:4.7f 审批面板放行 Ctrl+C', () => {
   const ctx = {
     approvalOpen: true,
     pickerOpen: false,
+    tasksOpen: false,
     menuOpen: false,
     guideActive: false,
     bufferEmpty: true,

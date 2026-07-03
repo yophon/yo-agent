@@ -43,6 +43,8 @@ export interface CommandDeps {
   newSession?(): Promise<void>;
   /** /reasoning:推理流显隐切换,返回新状态。 */
   toggleReasoning(): boolean;
+  /** /tasks:打开子代理任务面板(4.10c;缺省时降级提示)。 */
+  openTasks?(): void;
 }
 
 /** 切权限模式(Shift+Tab 与 /mode 共用):内核接缝 + UI 同步 + 提示。 */
@@ -266,6 +268,17 @@ export function buildCommands(): SlashCommand[] {
           return `  ${n}  ${s.status}${s.toolCount !== undefined ? ` · ${s.toolCount} 工具` : ''}${s.error ? ` · ${s.error}` : ''}`;
         });
         d.notice('info', ['MCP servers:', ...rows].join('\n'));
+      },
+    },
+    {
+      name: '/tasks',
+      desc: '子代理任务面板(查看运行中/已结束子代理与其事件流)',
+      run: (d) => {
+        if (!d.openTasks) {
+          d.notice('warn', '/tasks 不可用');
+          return;
+        }
+        d.openTasks();
       },
     },
     {

@@ -13,6 +13,7 @@ import type { UiState } from '../model';
 import { renderApprovalPanel } from './approval';
 import { renderInputBox } from './input-box';
 import { renderCompletionMenu, renderPicker } from './picker';
+import { renderTasksPanel } from './tasks';
 
 const h = React.createElement;
 
@@ -69,6 +70,12 @@ export function renderFooter(f: FooterInput): React.ReactElement[] {
 
   if (state.picker) {
     footer.push(renderPicker(state.picker));
+    return footer;
+  }
+
+  if (state.tasks) {
+    // 子代理任务面板(4.10c):优先级低于审批/引导/picker(审批到来时面板让位,裁决后 tasks 仍在)。
+    footer.push(renderTasksPanel(state.tasks, state.subagentTasks));
     return footer;
   }
 

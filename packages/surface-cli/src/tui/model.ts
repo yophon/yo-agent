@@ -14,6 +14,7 @@ import type {
   TodoItem,
 } from '@yo-agent/protocol';
 import { fmtCost, fmtInt, type Tone } from '../tui-format';
+import { type SubagentTask, type TasksView, taskResolved, taskStarted } from './tasks';
 
 // ── 区块 ─────────────────────────────────────────────────────────────────
 export type Block =
@@ -105,6 +106,11 @@ export interface UiState {
   queue: string[];
   /** 补全菜单:选中下标 + Esc 关闭后抑制的 token(输入变化自动解除)。 */
   menu: { selected: number; suppressedToken: string | null };
+  // ── 4.10c 子代理任务面板 ──
+  /** 本会话子代理任务登记(SubagentStarted/Result 聚合;/tasks 面板数据源)。 */
+  subagentTasks: SubagentTask[];
+  /** 任务面板(非 null = 打开;与审批/picker 同为 footer 互斥面板)。 */
+  tasks: TasksView | null;
 }
 
 export const DEFAULT_SUGGESTIONS: ApprovalSuggestion[] = [
@@ -140,6 +146,8 @@ export function initialState(opts: InitialStateOpts): UiState {
     approvalQueue: [],
     queue: [],
     menu: { selected: 0, suppressedToken: null },
+    subagentTasks: [],
+    tasks: null,
   };
 }
 
@@ -173,7 +181,15 @@ export type UiAction =
   | { type: 'menu-select'; index: number }
   | { type: 'menu-suppress'; token: string | null }
   /** 历史回放结束(4.7f):live 收进 committed(尾部未完轮不悬挂)。 */
-  | { type: 'replay-end' };
+  | { type: 'replay-end' }
+  // ── 4.10c 子代理任务面板 ──
+  | { type: 'tasks-open' }
+  | { type: 'tasks-close' }
+  | { type: 'tasks-move'; delta: 1 | -1 }
+  /** 进入/刷新详情(事件流快照由 executor 经 kernel.events.read 异步取回)。 */
+  | { type: 'tasks-detail'; childId: string; lines: string[] }
+  /** 详情返回列表。 */
+  | { type: 'tasks-detail-close' };
 
 // ── 内部助手(全部返回新对象,state 不就地改)─────────────────────────────
 function nextId(s: UiState): [string, UiState] {
@@ -280,6 +296,22 @@ export function reduce(state: UiState, action: UiAction): UiState {
       return state.menu.suppressedToken === action.token
         ? state
         : { ...state, menu: { ...state.menu, suppressedToken: action.token } };
+    // ── 4.10c 任务面板 ──
+    case 'tasks-open':
+      return { ...state, tasks: { selected: 0, detail: null } };
+    case 'tasks-close':
+      return state.tasks ? { ...state, tasks: null } : state;
+    case 'tasks-move': {
+      if (!state.tasks || state.tasks.detail || !state.subagentTasks.length) return state;
+      const n = state.subagentTasks.length;
+      const selected = (state.tasks.selected + action.delta + n) % n;
+      return { ...state, tasks: { ...state.tasks, selected } };
+    }
+    case 'tasks-detail':
+      if (!state.tasks) return state;
+      return { ...state, tasks: { ...state.tasks, detail: { childId: action.childId, lines: action.lines } } };
+    case 'tasks-detail-close':
+      return state.tasks?.detail ? { ...state, tasks: { ...state.tasks, detail: null } } : state;
     case 'event':
       return reduceEvent(state, action.event, action.ts);
     default:
@@ -383,8 +415,13 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
     case 'Plan':
       return upsertByKind(state, 'plan', (id) => ({ kind: 'plan', id, steps: e.steps }));
     case 'SubagentStarted':
-      return pushLive(state, { kind: 'subagent', childId: e.childSessionId, label: e.label, model: e.model });
+      // 内联区块之外同步登记任务表(4.10c /tasks 面板数据源)。
+      return pushLive(
+        { ...state, subagentTasks: taskStarted(state.subagentTasks, e, ts) },
+        { kind: 'subagent', childId: e.childSessionId, label: e.label, model: e.model },
+      );
     case 'SubagentResult': {
+      const subagentTasks = taskResolved(state.subagentTasks, e, ts);
       let found = false;
       const live = state.live.map((b) => {
         if (b.kind === 'subagent' && b.childId === e.childSessionId) {
@@ -393,8 +430,8 @@ function reduceEvent(state: UiState, e: AgentEvent, ts?: number): UiState {
         }
         return b;
       });
-      if (found) return { ...state, live };
-      return pushLive(state, { kind: 'notice', tone: 'dim', text: `↳ 子 agent 完成:${e.summary}` });
+      if (found) return { ...state, live, subagentTasks };
+      return pushLive({ ...state, subagentTasks }, { kind: 'notice', tone: 'dim', text: `↳ 子 agent 完成:${e.summary}` });
     }
     case 'BackgroundProcess':
       return pushLive(state, {

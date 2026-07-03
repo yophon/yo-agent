@@ -10,7 +10,9 @@ import { acceptCompletion } from './input/completion';
 import type { PersistentHistory } from './input/history';
 import type { KeyCommand } from './keymap';
 import type { ApprovalView, UiAction, UiState } from './model';
+import { formatChildEvents } from './tasks';
 import type { TuiKernel } from './types';
+import type { AgentEvent } from '@yo-agent/protocol';
 import type { ArmedConfirm } from './hooks';
 import { MODE_CYCLE, parseCommandLine } from './commands';
 
@@ -205,6 +207,33 @@ export function createExecutor(ctx: ExecuteCtx): Executor {
       }
       case 'picker-cancel':
         ctx.dispatch({ type: 'picker-close' });
+        break;
+      // ── 4.10c 子代理任务面板 ──
+      case 'tasks-up':
+      case 'tasks-down':
+        ctx.dispatch({ type: 'tasks-move', delta: cmd.type === 'tasks-up' ? -1 : 1 });
+        break;
+      case 'tasks-confirm': {
+        const view = s.tasks;
+        if (!view) break;
+        // 列表 Enter = 进详情;详情 Enter = 刷新。两者都是「读该 childId 的事件流快照」。
+        const childId = view.detail?.childId ?? s.subagentTasks[view.selected]?.childId;
+        if (!childId) break;
+        if (!ctx.kernel.events) {
+          ctx.dispatch({ type: 'notice', tone: 'warn', text: '查看子代理事件流不可用:内核未暴露 events.read' });
+          break;
+        }
+        void (async () => {
+          const events: AgentEvent[] = [];
+          for await (const env of ctx.kernel.events!.read(childId)) events.push(env.event);
+          ctx.dispatch({ type: 'tasks-detail', childId, lines: formatChildEvents(events) });
+        })().catch((e: unknown) => {
+          ctx.dispatch({ type: 'notice', tone: 'error', text: `读取子代理事件流失败:${e instanceof Error ? e.message : String(e)}` });
+        });
+        break;
+      }
+      case 'tasks-back':
+        ctx.dispatch(s.tasks?.detail ? { type: 'tasks-detail-close' } : { type: 'tasks-close' });
         break;
       case 'menu-up':
       case 'menu-down': {

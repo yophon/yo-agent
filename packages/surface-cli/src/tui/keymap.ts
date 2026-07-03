@@ -30,6 +30,8 @@ export interface KeyContext {
   approvalOpen: boolean;
   /** 通用选择器打开(次优先,吞其余输入;/model /resume 等)。 */
   pickerOpen: boolean;
+  /** 子代理任务面板打开(4.10c;同 picker 层吞键)。 */
+  tasksOpen: boolean;
   /** 补全菜单打开(只截获 ↑↓/Tab/Enter/Esc,其余落回编辑器继续过滤)。 */
   menuOpen: boolean;
   /** 审批「拒绝并引导」输入态(Esc 返回审批面板而非中断)。 */
@@ -77,6 +79,12 @@ export type KeyCommand =
   | { type: 'picker-down' }
   | { type: 'picker-confirm' }
   | { type: 'picker-cancel' }
+  | { type: 'tasks-up' }
+  | { type: 'tasks-down' }
+  /** 列表 Enter = 进详情;详情 Enter = 刷新快照。 */
+  | { type: 'tasks-confirm' }
+  /** 详情 Esc = 返回列表;列表 Esc = 关闭面板(区分在 executor)。 */
+  | { type: 'tasks-back' }
   | { type: 'menu-up' }
   | { type: 'menu-down' }
   | { type: 'menu-accept' }
@@ -108,6 +116,16 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): Routed {
     if (key.return) return { type: 'picker-confirm' };
     if (key.escape) return { type: 'picker-cancel' };
     if (key.ctrl && ch === 'c') return { type: 'picker-cancel' };
+    return null;
+  }
+
+  // ①.6 子代理任务面板(4.10c):同 picker 吞其余输入;Ctrl+C 放行为取消(同 picker 惯例)。
+  if (ctx.tasksOpen) {
+    if (key.upArrow) return { type: 'tasks-up' };
+    if (key.downArrow) return { type: 'tasks-down' };
+    if (key.return) return { type: 'tasks-confirm' };
+    if (key.escape) return { type: 'tasks-back' };
+    if (key.ctrl && ch === 'c') return { type: 'tasks-back' };
     return null;
   }
 

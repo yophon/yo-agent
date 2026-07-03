@@ -290,6 +290,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       reasoningBox.set(!reasoningBox.current);
       return reasoningBox.current;
     },
+    openTasks: () => dispatch({ type: 'tasks-open' }),
   };
 
   // ── 命令执行器(execute.ts;ctx 访问器保证同帧最新)──────────────────────
@@ -343,6 +344,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       const cmd = routeKey(ev.ch, ev.key, {
         approvalOpen: s.approval !== null,
         pickerOpen: s.picker !== null,
+        tasksOpen: s.tasks !== null,
         menuOpen: menu !== null && menu.items.length > 0,
         guideActive: s.pendingGuide !== null,
         running: s.running,
