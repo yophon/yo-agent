@@ -94,6 +94,10 @@ export interface Condenser {
 export interface ToolCallRef {
   name: string;
   input: unknown;
+  /** 工具类别（protocol ToolKind），供熔断豁免清单按类放行（4.10a）。 */
+  kind?: string;
+  /** 同一 assistant 响应批次标识（4.10a）：批内同参重复是并行语义，不计重。 */
+  batchId?: string;
 }
 
 /** 死循环熔断（§2.3，OpenClaw 四模式 + 历史窗）。 */

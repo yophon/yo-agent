@@ -69,3 +69,15 @@ export function toolCallTurn(name: string, id: string, input: unknown): Provider
     { kind: 'Stop', reason: 'tool_use' },
   ];
 }
+
+/** 一次 assistant 响应内的多个 tool_use 批次（4.10a 批内豁免 / 4.10b 批内并发的测试底座）。 */
+export function toolCallsTurn(calls: Array<{ name: string; id: string; input: unknown }>): ProviderEvent[] {
+  return [
+    ...calls.flatMap((c): ProviderEvent[] => [
+      { kind: 'ToolCallStart', id: c.id, name: c.name },
+      { kind: 'ToolCallArgsDelta', id: c.id, delta: JSON.stringify(c.input) },
+      { kind: 'ToolCallEnd', id: c.id },
+    ]),
+    { kind: 'Stop', reason: 'tool_use' },
+  ];
+}

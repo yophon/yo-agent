@@ -581,12 +581,20 @@ export class AgentKernel implements Kernel, SubagentHost {
         let input = parseJsonObject(argsById.get(tc.id) ?? '');
         const desc = available.find((d) => d.name === tc.name);
 
-        // 熔断（引擎层强制）。
-        const verdict = this.d.loopBreaker.check({ name: tc.name, input });
+        // 熔断（引擎层强制）。batchId=本 step：同批多 tool_use 是并行语义，批内同参不互相计重（4.10a）。
+        const verdict = this.d.loopBreaker.check({ name: tc.name, input, kind: desc?.kind, batchId: `${turnId}:${step}` });
         if (verdict === 'break') {
           await this.emit(s, { kind: 'Error', message: `检测到死循环：反复调用 ${tc.name}` }, turnId);
           await this.completeTurn(s, 'loop_detected', usage ?? zeroUsage(), turnId);
           return;
+        }
+        if (verdict === 'warn') {
+          // 4.10a warn 现役化（DESIGN §2.3「注入提醒」）：经 4.9d 状态提醒接缝给 LLM 自纠机会，不中止执行。
+          // 文案不含次数 → pushStatusNote 同文去重，批内多次 warn 只提醒一次。
+          this.pushStatusNote(
+            s,
+            `[系统状态] 检测到你在反复以相同参数调用工具 ${tc.name}。若非刻意重试，请调整参数或换用其他方式；继续同参重复将触发死循环熔断中止本轮`,
+          );
         }
 
         assistantBlocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input });

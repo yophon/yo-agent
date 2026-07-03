@@ -9,17 +9,19 @@
  *
  * Provider：ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY（OPENAI_MODE=responses，YO_TOOL_SHIM=1 双轨）；
  * 否则 FakeProvider 演示。YO_DB=路径 → SQLite 持久化。YO_COMPACT=1 → 启用 Condenser。自动加载 cwd 链上 yo.md/AGENTS.md。
+ * YO_LOOP_BREAKER=off|loose|strict → 死循环熔断档位（4.10a，默认 loose）。
  */
 import {
   AgentKernel,
   DefaultSubagentManager,
-  HistoryLoopBreaker,
   appendMemoryLine,
   createInProcessRunner,
   findWorkspaceRoot,
   loadConventionFiles,
   loadRecipes,
   loadSkills,
+  makeLoopBreaker,
+  parseLoopBreakerMode,
   parseRememberDirective,
   readGitBranch,
   renderEnvBlock,
@@ -203,11 +205,17 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       ),
       renderSkillSummaries(skills) || undefined,
     );
+  // 4.10a 熔断档位:YO_LOOP_BREAKER=off|loose|strict,默认 loose(真机反馈:并行 spawn 被误熔断)。
+  const lbRaw = opts.env.YO_LOOP_BREAKER;
+  const lbMode = parseLoopBreakerMode(lbRaw) ?? 'loose';
+  if (lbRaw !== undefined && parseLoopBreakerMode(lbRaw) === undefined) {
+    console.error(`[warn] YO_LOOP_BREAKER=${lbRaw} 不是有效档位（off|loose|strict），已按 loose 处理`);
+  }
   const kernel = new AgentKernel({
     store,
     provider,
     tools,
-    loopBreaker: new HistoryLoopBreaker(),
+    loopBreaker: makeLoopBreaker(lbMode),
     condenser: buildCondenser(opts.env, provider, model),
     checkpointer: opts.env.YO_CHECKPOINT === '1' ? new ShadowGitCheckpointer({ dir: opts.cwd }) : undefined,
     approvalGate,
@@ -234,7 +242,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       store,
       provider,
       registry: tools,
-      loopBreaker: () => new HistoryLoopBreaker(),
+      loopBreaker: () => makeLoopBreaker(lbMode), // 4.10a：子内核同档位（各自独立实例，历史窗不串会话）
       condenser: () => buildCondenser(opts.env, provider, model),
       usableContextTokens: usableContextTokens(model, catalog),
       // 4.9c 审批上浮：子代理 ask 档审批转父会话弹面板（TUI/RPC 零改动接管），批完 resolve 回子内核；
