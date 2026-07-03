@@ -217,7 +217,7 @@ export async function appendMemoryLine(
   const line = `- ${content.replace(/\s*\n\s*/g, ' ')}`;
   const existing = await tryRead(file);
   // 幂等查重：同内容归一化后整行相同（memoryKeyFor 是内容的确定性函数 → 整行比对与键比对等价）。
-  if (existing && existing.split('\n').some((l) => l.trim() === line)) {
+  if (existing?.split('\n').some((l) => l.trim() === line)) {
     return { line, deduped: true };
   }
   const body = existing ? `${existing}\n${line}\n` : `# MEMORY\n\n${line}\n`;
