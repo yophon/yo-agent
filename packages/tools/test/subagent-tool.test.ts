@@ -34,10 +34,78 @@ describe('4.9a subagent_spawn 描述富化（自知）', () => {
     expect(tool.descriptor.approval).toBe('risk-based');
   });
 
-  it('4.10 并行提示：工具描述声明两条并发路径,mode 字段推荐 background(真机反馈 feedback/4.10)', () => {
+  it('4.10 并行提示：工具描述推荐 tasks 扇出、明示无「并行包装器」(真机反馈 feedback/4.10)', () => {
     const tool = makeSubagentSpawnTool(noopManager);
-    expect(tool.descriptor.description).toContain('同一条响应里一次发出多个');
+    expect(tool.descriptor.description).toContain('推荐给 tasks 数组');
     expect(tool.descriptor.description).toContain('没有单独的"并行包装器"工具');
-    expect(fieldDesc(tool, 'mode')).toContain('并行多任务推荐 background');
+    expect(fieldDesc(tool, 'tasks')).toContain('并行扇出');
+  });
+});
+
+// ── 4.10 tasks 扇出(feedback/4.10 候选 4:一次调用引擎内并发派生 N 个)──────
+
+async function drain(tool: ReturnType<typeof makeSubagentSpawnTool>, input: unknown): Promise<string> {
+  let out = '';
+  for await (const e of tool.executor.execute(input, { sessionId: 'p', cwd: '/tmp' })) {
+    if (e.kind === 'output') out += e.chunk;
+  }
+  return out;
+}
+
+describe('4.10 subagent_spawn tasks 扇出', () => {
+  it('foreground 扇出:N 个任务真并发(高水位=N),摘要按任务序合并,失败项标注', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const mgr: SubagentSpawner = {
+      run: async (req) => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((r) => setTimeout(r, 20)); // 并发窗口
+        active--;
+        return req.task === 'bad'
+          ? { childSessionId: `c-${req.task}`, summary: '[子 agent 失败] 炸了', isError: true }
+          : { childSessionId: `c-${req.task}`, summary: `done:${req.task}`, isError: false };
+      },
+      spawn: async () => ({ childSessionId: 'x' }),
+    };
+    const tool = makeSubagentSpawnTool(mgr);
+    const out = await drain(tool, { tasks: ['a', 'bad', 'c'] });
+    expect(maxActive).toBe(3);
+    expect(out).toContain('[子任务 1/3] a\ndone:a');
+    expect(out).toContain('[子任务 2/3]（失败） bad\n[子 agent 失败] 炸了');
+    expect(out).toContain('[子任务 3/3] c\ndone:c');
+  });
+
+  it('background 扇出:一次 ack 列出全部 childSessionId', async () => {
+    const spawned: string[] = [];
+    const mgr: SubagentSpawner = {
+      run: async () => ({ childSessionId: 'x', summary: 's', isError: false }),
+      spawn: async (req) => {
+        spawned.push(req.task);
+        return { childSessionId: `bg-${req.task}` };
+      },
+    };
+    const tool = makeSubagentSpawnTool(mgr);
+    const out = await drain(tool, { tasks: ['t1', 't2'], mode: 'background' });
+    expect(spawned).toEqual(['t1', 't2']);
+    expect(out).toContain('已并发派生 2 个后台子 agent');
+    expect(out).toContain('bg-t1');
+    expect(out).toContain('bg-t2');
+  });
+
+  it('tasks 优先于 task;空白项过滤;超上限/两者皆缺回可行动错误', async () => {
+    const ran: string[] = [];
+    const mgr: SubagentSpawner = {
+      run: async (req) => {
+        ran.push(req.task);
+        return { childSessionId: 'c', summary: 'ok', isError: false };
+      },
+      spawn: async () => ({ childSessionId: 'x' }),
+    };
+    const tool = makeSubagentSpawnTool(mgr);
+    await drain(tool, { task: '被忽略', tasks: ['只跑我', ' ', ''] });
+    expect(ran).toEqual(['只跑我']);
+    await expect(drain(tool, { tasks: Array.from({ length: 9 }, (_, i) => `t${i}`) })).rejects.toThrow('至多 8 个');
+    await expect(drain(tool, {})).rejects.toThrow('task 与 tasks 至少给其一');
   });
 });
