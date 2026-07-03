@@ -16,7 +16,7 @@ import type {
 import type { CanonMessage, ChatRequest, ContentBlock, ErrorCategory, Provider, ToolSpec } from '@yo-agent/provider';
 import { decideFallback } from './fallback';
 import type { ProviderRoute } from './fallback';
-import type { ToolContext, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
+import type { ToolContext, ToolDescriptor, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
 import { sanitizeMcpServerName } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
 import { ResumeBuffer } from '@yo-agent/store';
@@ -31,6 +31,10 @@ import type { SessionSelfInfo } from './self-knowledge';
 import { estimateMessagesTokens } from './tokens';
 
 const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
+/** 4.10b 批内并发资格：无副作用的工具类别,同批连续出现时并发执行。 */
+const CONCURRENT_KINDS = new Set(['read', 'search', 'fetch', 'think']);
+/** 4.10b 默认可并发工具名单：spawn 天然并行(真机反馈 feedback/4.9 并行探索意图),kind='other' 靠名单放行。 */
+const DEFAULT_CONCURRENT_TOOLS: readonly string[] = ['subagent_spawn'];
 
 export interface AgentKernelDeps {
   store: EventStore;
@@ -82,6 +86,11 @@ export interface AgentKernelDeps {
   fallbacks?: ProviderRoute[];
   /** 会话驱逐回收钩子（审查 gap#2）：endSession 时调用，app 接 SubagentManager.abortInflight(sessionId) 回收背景子 agent。 */
   sessionReaper?: (sessionId: Id) => void;
+  /**
+   * 批内并发工具名单（4.10b）：CONCURRENT_KINDS 之外额外允许并发执行的工具名
+   * （kind='other' 但无本地副作用者，如 subagent_spawn）。缺省 ['subagent_spawn']。
+   */
+  concurrentTools?: readonly string[];
 }
 
 export interface StartSessionOpts {
@@ -571,12 +580,21 @@ export class AgentKernel implements Kernel, SubagentHost {
       }
 
       // 有工具调用：执行 0..N 个，结果合并为单条 user 消息回填（§15.1）。用 turn 内 snapshot（不重新求值，§15.4）。
+      // 4.10b 两段式：阶段 1 按批次顺序串行做准入判定（熔断/PreToolUse hook/权限闸门/审批——审批本就逐个弹面板，
+      // 语义不变）；阶段 2 按「波次」执行——连续的可并发调用（CONCURRENT_KINDS 无副作用类 + concurrentTools 名单，
+      // 如 subagent_spawn）并发跑，其余单独成波作屏障（保持与写类工具的相对执行顺序）。
+      // 不变量：EventLog 单写者（emit 经 s.emitChain 串行落盘）；tool_result 按原批次位置回填；
+      // interrupt 经 turnAbort signal 取消在飞的并发调用。
       const available = toolset;
       const assistantBlocks: ContentBlock[] = [];
       if (text) assistantBlocks.push({ type: 'text', text });
-      const toolResults: ContentBlock[] = [];
+      /** 每个 tool_use 的最终 tool_result，按批次位置存放（阶段 1 拒绝 / 阶段 2 执行都落这里）。 */
+      const results: (ContentBlock | undefined)[] = new Array(toolCalls.length);
+      /** 阶段 1 准入通过、待执行的调用。 */
+      const plans: Array<{ idx: number; tc: ToolCallAccum; input: unknown; desc: ToolDescriptor | undefined }> = [];
 
-      for (const tc of toolCalls) {
+      for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+        const tc = toolCalls[tcIdx]!;
         if (s.interrupted) break; // 中断：停止处理后续工具，不回填本轮 observation、不 compact（审查 CONC-2）
         let input = parseJsonObject(argsById.get(tc.id) ?? '');
         const desc = available.find((d) => d.name === tc.name);
@@ -604,13 +622,13 @@ export class AgentKernel implements Kernel, SubagentHost {
         if (desc) {
           const pre = await this.hooks.firePreToolUse(this.hookCtx(s), { tool: tc.name, kind: desc.kind, input });
           if (pre.decision === 'deny') {
-            toolResults.push({
+            results[tcIdx] = {
               type: 'tool_result',
               toolUseId: tc.id,
               content: `策略 hook 拒绝该工具调用${pre.reason ? `：${pre.reason}` : ''}`,
               isError: true,
               name: tc.name,
-            });
+            };
             continue;
           }
           if (pre.input !== input) {
@@ -633,13 +651,13 @@ export class AgentKernel implements Kernel, SubagentHost {
           });
           if (gate === 'deny') {
             // 4.9c 文案富化：带当前档位 + 引导，LLM 不再自由脑补拒因。
-            toolResults.push({
+            results[tcIdx] = {
               type: 'tool_result',
               toolUseId: tc.id,
               content: `权限模式（${s.permissionMode}）拒绝该工具调用。该工具在当前档位不可用；用户可用 /mode 切换更宽档位后重试，或改用当前档位允许的工具。`,
               isError: true,
               name: tc.name,
-            });
+            };
             continue;
           }
           if (gate === 'ask' && desc.approval !== 'never') {
@@ -670,7 +688,7 @@ export class AgentKernel implements Kernel, SubagentHost {
               if (autoReason === 'timeout') {
                 await this.emit(s, { kind: 'Error', message: `审批超时，已自动拒绝工具 ${tc.name}` }, turnId); // surface 同步提示
               }
-              toolResults.push({ type: 'tool_result', toolUseId: tc.id, content, isError: true, name: tc.name });
+              results[tcIdx] = { type: 'tool_result', toolUseId: tc.id, content, isError: true, name: tc.name };
               continue;
             }
             // modify：用户改参数后放行 → 用 updatedInput 覆盖（同步回传给 LLM 的 tool_use.input）。
@@ -682,27 +700,40 @@ export class AgentKernel implements Kernel, SubagentHost {
           }
         }
 
+        plans.push({ idx: tcIdx, tc, input, desc });
+      }
+
+      // 阶段 2 执行体：每个调用独立收敛事件对（Started→Output*→Completed）与结果位。
+      // 执行错误落 isError 结果不外抛（Promise.all 不会因单个工具失败 reject）；emit 抛错（store 故障）仍向外传播，与旧行为一致。
+      const runOne = async (p: (typeof plans)[number]): Promise<void> => {
         await this.emit(
           s,
-          { kind: 'ToolCallStarted', id: tc.id, name: tc.name, toolKind: desc?.kind ?? 'other', summary: tc.name, input },
+          { kind: 'ToolCallStarted', id: p.tc.id, name: p.tc.name, toolKind: p.desc?.kind ?? 'other', summary: p.tc.name, input: p.input },
           turnId,
         );
-
-        const exec = execMap.get(tc.name);
+        const exec = execMap.get(p.tc.name);
         if (!exec) {
-          await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: 'error' }, turnId);
-          toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: `工具不在本 turn 可见集：${tc.name}`, isError: true, name: tc.name });
-          continue;
+          await this.emit(s, { kind: 'ToolCallCompleted', id: p.tc.id, status: 'error' }, turnId);
+          results[p.idx] = { type: 'tool_result', toolUseId: p.tc.id, content: `工具不在本 turn 可见集：${p.tc.name}`, isError: true, name: p.tc.name };
+          return;
+        }
+
+        if (s.interrupted) {
+          // 并发波内的中断可能落在任务入列后、执行前（signal 已 abort，对「先注册 abort 监听再跑」的 executor 永不触发）——
+          // 不再起新执行，直接以中断态收敛事件对。结果在 interrupted 收尾路径本就被丢弃。
+          await this.emit(s, { kind: 'ToolCallCompleted', id: p.tc.id, status: 'error' }, turnId);
+          results[p.idx] = { type: 'tool_result', toolUseId: p.tc.id, content: '已中断', isError: true, name: p.tc.name };
+          return;
         }
 
         let out = '';
         let isError = false;
         const call = this.callSignal(s); // turn 取消 + per-call 超时组合 signal
         try {
-          for await (const te of exec.execute(input, this.toolCtx(s, call.signal))) {
+          for await (const te of exec.execute(p.input, this.toolCtx(s, call.signal))) {
             if (te.kind === 'output') {
               out += te.chunk;
-              await this.emit(s, { kind: 'ToolCallOutput', id: tc.id, chunk: te.chunk, exitCode: te.exitCode }, turnId);
+              await this.emit(s, { kind: 'ToolCallOutput', id: p.tc.id, chunk: te.chunk, exitCode: te.exitCode }, turnId);
             }
           }
         } catch (e) {
@@ -711,23 +742,44 @@ export class AgentKernel implements Kernel, SubagentHost {
         } finally {
           call.dispose();
         }
-        await this.emit(s, { kind: 'ToolCallCompleted', id: tc.id, status: isError ? 'error' : 'ok' }, turnId);
-        toolResults.push({ type: 'tool_result', toolUseId: tc.id, content: out, isError: isError || undefined, name: tc.name });
+        await this.emit(s, { kind: 'ToolCallCompleted', id: p.tc.id, status: isError ? 'error' : 'ok' }, turnId);
+        results[p.idx] = { type: 'tool_result', toolUseId: p.tc.id, content: out, isError: isError || undefined, name: p.tc.name };
 
         // PostToolUse hook（4A / §11）：观测输出（注入防护 / 审计）；抛错经 onError 上报不拖垮 turn。
-        if (desc) {
+        if (p.desc) {
           await this.hooks.firePostToolUse(
             this.hookCtx(s),
-            { tool: tc.name, kind: desc.kind, input, output: out, isError },
+            { tool: p.tc.name, kind: p.desc.kind, input: p.input, output: out, isError },
             this.hookErr(s, turnId),
           );
         }
 
-        // edit 类工具成功 → 发 FileChanged + L3 checkpoint 快照（§2.2 / §3.4）。
-        if (!isError && desc && MUTATION_KINDS.has(desc.kind)) {
-          await this.afterMutation(s, desc.kind, input, turnId);
+        // edit 类工具成功 → 发 FileChanged + L3 checkpoint 快照（§2.2 / §3.4）。写类只进串行波，checkpoint 不会并发。
+        if (!isError && p.desc && MUTATION_KINDS.has(p.desc.kind)) {
+          await this.afterMutation(s, p.desc.kind, p.input, turnId);
+        }
+      };
+
+      // 波次划分（4.10b）：连续可并发的调用并为一波，其余单独成波（屏障——保持与副作用调用的相对顺序）。
+      const waves: Array<{ concurrent: boolean; items: typeof plans }> = [];
+      for (const p of plans) {
+        const c = this.concurrentEligible(p.desc);
+        const last = waves[waves.length - 1];
+        if (c && last?.concurrent) last.items.push(p);
+        else waves.push({ concurrent: c, items: [p] });
+      }
+      for (const wave of waves) {
+        if (s.interrupted) break; // 波间拦截；波内在飞调用由 interrupt() 的 turnAbort signal 取消
+        if (wave.concurrent && wave.items.length > 1) {
+          await Promise.all(wave.items.map(runOne));
+        } else {
+          for (const p of wave.items) {
+            if (s.interrupted) break;
+            await runOne(p);
+          }
         }
       }
+      const toolResults: ContentBlock[] = results.filter((r): r is ContentBlock => r !== undefined);
 
       // 中断：不回填本轮 observation（含被中断工具的 error）、不 compact，直接收尾（审查 CONC-2，防污染 resume 上下文 + 多余压缩）。
       if (s.interrupted) {
@@ -1146,6 +1198,16 @@ export class AgentKernel implements Kernel, SubagentHost {
     // 当前 flags 仅参与 resolveAvailable 的工具显隐（turn 内只在起点求值），execute 时仅透传给 executor，不破 prompt 前缀。
     const flags = this.d.toolFlags ? new Set(this.d.toolFlags()) : undefined;
     return { sessionId: s.id, cwd: s.cwd, signal: signal ?? s.turnAbort?.signal, flags };
+  }
+
+  /**
+   * 批内并发资格（4.10b）：无副作用类别（read/search/fetch/think）+ deps.concurrentTools 名单
+   * （kind='other' 但无本地副作用，如 subagent_spawn）。未知工具（不在可见集）走串行，保持原报错路径顺序。
+   */
+  private concurrentEligible(desc: ToolDescriptor | undefined): boolean {
+    if (!desc) return false;
+    if (CONCURRENT_KINDS.has(desc.kind)) return true;
+    return (this.d.concurrentTools ?? DEFAULT_CONCURRENT_TOOLS).includes(desc.name);
   }
 
   /** 组合 turn 取消 signal 与 per-call 超时；dispose 清 timer + 解监听防泄漏（不依赖 AbortSignal.any，兼容 Node 20.0）。 */
