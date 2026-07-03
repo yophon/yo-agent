@@ -181,6 +181,7 @@ export * from './risk';
 export * from './policy';
 export * from './hooks';
 export * from './subagent';
+export * from './self-knowledge';
 export * from './skills';
 export * from './recipes';
 export * from './fallback';

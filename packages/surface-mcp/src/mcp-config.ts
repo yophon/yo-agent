@@ -119,6 +119,8 @@ export interface LoadMcpOpts {
   /** project 层 server 信任判定；默认全不信任（opt-in 防供应链）。 */
   isProjectServerTrusted?: (name: string) => boolean;
   log?: (msg: string) => void;
+  /** 信任门跳过回调（4.9a 自知）：调用方收集名单注入 system prompt，LLM 能解释「为什么没有 X 的工具」。 */
+  onSkippedUntrusted?: (name: string, source: 'project' | 'local') => void;
 }
 
 /**
@@ -141,6 +143,7 @@ export async function loadMcpServers(opts: LoadMcpOpts): Promise<ResolvedMcpServ
   for (const [name, cfg] of projectCfg) {
     if (!trust(name)) {
       opts.log?.(`[mcp] project server「${name}」未 opt-in 信任，已跳过（供应链防护；信任后启用）`);
+      opts.onSkippedUntrusted?.(name, 'project');
       continue;
     }
     merged.set(name, { cfg, source: 'project' });
@@ -149,6 +152,7 @@ export async function loadMcpServers(opts: LoadMcpOpts): Promise<ResolvedMcpServ
   for (const [name, cfg] of localCfg) {
     if (!trust(name)) {
       opts.log?.(`[mcp] local server「${name}」未 opt-in 信任，已跳过（local 文件可能随仓库带入，不假定可信）`);
+      opts.onSkippedUntrusted?.(name, 'local');
       continue;
     }
     merged.set(name, { cfg, source: 'local' });

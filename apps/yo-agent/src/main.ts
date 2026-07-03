@@ -22,7 +22,14 @@ import {
   loadSkills,
   memoryKeyFor,
   parseRememberDirective,
+  readGitBranch,
+  renderEnvBlock,
+  renderMcpSection,
+  renderMemoryPreamble,
+  renderModelSection,
+  renderProfileSection,
   renderSkillSummaries,
+  composeSystemSections,
 } from '@yo-agent/kernel';
 import type { Kernel, Recipe, Skill } from '@yo-agent/kernel';
 import {
@@ -59,7 +66,7 @@ import {
 } from '@yo-agent/surface-mcp';
 import { DefaultPluginHost, loadPluginSpecs, workerTransportFactory } from '@yo-agent/plugin-host';
 import { PairingGate } from '@yo-agent/auth';
-import { homedir } from 'node:os';
+import { homedir, release } from 'node:os';
 import { join } from 'node:path';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
@@ -85,6 +92,8 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   demo: boolean;
   mcpHost: McpHostManager;
   pluginHost: DefaultPluginHost;
+  /** 信任门跳过的 MCP server 名单（bootstrapMcpHost 填充，systemSuffix 闭包引用 → 会话起点注入自知）。 */
+  mcpSkippedUntrusted: string[];
 }> {
   const { provider, model, demo } = selectProvider(opts.env, opts.prompt);
   const catalog = ModelCatalog.bundled();
@@ -130,6 +139,43 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
   const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
   const store = buildStore();
+  // 4.9a 静态自知：env 块 + 模型目录 + 记忆机制 + 画像枚举 + MCP 摘要，随 startSession 求值（函数形态）——
+  // env 块反映会话真实起点（model/permissionMode 可被 opts 覆盖）、MCP 摘要反映 bootstrap 后实况。
+  const gitBranch = await readGitBranch(wsRoot);
+  const mcpSkippedUntrusted: string[] = [];
+  // 模型目录限同 provider（跨 provider 的 id 抄了也 404）；未知当前模型 → 空表，渲染层明示「不要猜」。
+  const modelsFor = (current: string): { id: string; displayName?: string; contextWindow?: number }[] => {
+    const entry = catalog.get(current);
+    return entry
+      ? catalog.list(entry.provider).map((m) => ({
+          id: m.id,
+          ...(m.displayName ? { displayName: m.displayName } : {}),
+          contextWindow: m.contextWindow,
+        }))
+      : [];
+  };
+  const systemSuffix = (info: { model: string; cwd: string; permissionMode: string }): string =>
+    composeSystemSections(
+      renderEnvBlock({
+        cwd: info.cwd,
+        workspaceRoot: wsRoot,
+        os: `${process.platform} ${release()}`,
+        date: new Date().toISOString().slice(0, 10),
+        ...(gitBranch ? { gitBranch } : {}),
+        model: info.model,
+        permissionMode: info.permissionMode,
+      }),
+      renderModelSection(info.model, modelsFor(info.model)),
+      renderMemoryPreamble({ workspaceRoot: wsRoot }),
+      renderProfileSection(
+        [...recipes.values()].map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}) })),
+      ),
+      renderMcpSection(
+        mcpHost.statusSnapshot().map((st) => ({ server: st.server, status: st.status, ...(st.toolCount !== undefined ? { toolCount: st.toolCount } : {}) })),
+        mcpSkippedUntrusted,
+      ),
+      renderSkillSummaries(skills) || undefined,
+    );
   const kernel = new AgentKernel({
     store,
     provider,
@@ -146,7 +192,8 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     usableContextTokens: usableContextTokens(model, catalog),
     interactiveApproval: interactive,
     approvalTimeoutMs: interactive ? 5 * 60_000 : undefined, // 5 分钟默认 deny（§6.3）
-    systemSuffix: renderSkillSummaries(skills) || undefined, // 技能摘要常驻 system（4D，跨 surface 统一）
+    systemSuffix, // 4.9a 自知注入（env/模型/记忆/画像/MCP 五段）+ 技能摘要（4D），跨 surface 统一
+
     costEstimator: (m, u) => catalog.estimateCost(m, u), // 4F：UsageUpdate/TurnCompleted 填 costUsd（含 cache 分价）
     sessionReaper: (sid) => subagents.abortInflight(sid), // 审查 gap#2：会话驱逐时回收其背景子 agent
     // fallbacks：内核已支持 deps.fallbacks（provider fallback 链 / auth rotation）；CLI 单 provider 默认不配链。
@@ -170,7 +217,10 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     defaultModel: model,
     recipeFor: (profile) => recipes.get(profile), // 4D：子 agent 画像（工具/权限/model/prompt 请求，仍经 deriveSubagentPolicy 收紧）
   });
-  tools.register(makeSubagentSpawnTool(subagents));
+  // 4.9a：描述枚举可用画像 + 同 provider 模型目录（注册时点值，与 system prompt 目录同源）。
+  tools.register(
+    makeSubagentSpawnTool(subagents, { profiles: [...recipes.keys()], models: modelsFor(model).map((m) => m.id) }),
+  );
 
   // 插件 hook 跨进程兑现（4E）：聚合 Hooks 注册进 kernel HookBus 一次，按订阅 fan-out 经 IPC；
   // 插件不可用/超时/崩溃绝不抛（PreToolUse 视为放行，不因挂掉的插件拒主循环工具）。
@@ -184,7 +234,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       console.error(`[plugin] 启动异常（跳过）：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { kernel, model, demo, mcpHost, pluginHost };
+  return { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted };
 }
 
 /**
@@ -192,7 +242,12 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
  * 非致命：任何加载/连接失败只记日志、不崩主流程（外部 server 不可信，不应阻断本机 agent）。
  * **不在 mcp-server 模式引导**——那里是 autoApproveGate，外部工具会被无审批放行（安全灾难，§15.3）。
  */
-async function bootstrapMcpHost(mcpHost: McpHostManager, cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+async function bootstrapMcpHost(
+  mcpHost: McpHostManager,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  skippedUntrusted?: string[],
+): Promise<void> {
   const home = homedir();
   let trusted: Set<string>;
   try {
@@ -209,6 +264,8 @@ async function bootstrapMcpHost(mcpHost: McpHostManager, cwd: string, env: NodeJ
       processEnv: env,
       isProjectServerTrusted: (name) => trusted.has(name),
       log: (m) => console.error(m),
+      // 4.9a 自知：信任门跳过名单进 system prompt（LLM 能解释「为什么没有 X 工具」并引导 opt-in）。
+      onSkippedUntrusted: (name) => skippedUntrusted?.push(name),
     });
   } catch (e) {
     console.error(`[mcp] 配置加载失败，跳过 MCP host：${e instanceof Error ? e.message : String(e)}`);
@@ -252,8 +309,8 @@ async function main(): Promise<void> {
   // ACP 模式：stdin/stdout 是 ACP（JSON-RPC over ndjson）协议通道，被 Zed/JetBrains 接管为编程 agent 后端。
   // 日志走 stderr，进程常驻。审批经 ACP 反向 requestPermission（interactiveApproval）。
   if (mode === 'acp') {
-    const { kernel, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt: '', mode });
-    await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
+    const { kernel, mcpHost, pluginHost, mcpSkippedUntrusted } = await buildKernel({ env, cwd, prompt: '', mode });
+    await bootstrapMcpHost(mcpHost, cwd, env, mcpSkippedUntrusted); // 连外部 MCP server（真实 ApprovalGate 把关）
     installShutdown(mcpHost, pluginHost);
     setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
     const acpStream = ndJsonStream(
@@ -267,8 +324,8 @@ async function main(): Promise<void> {
 
   // RPC 模式：--listen <port> → WS server（带设备鉴权），否则 stdio JSONL。日志一律走 stderr，进程常驻。
   if (mode === 'rpc') {
-    const { kernel, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt: '', mode });
-    await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（真实 ApprovalGate 把关）
+    const { kernel, mcpHost, pluginHost, mcpSkippedUntrusted } = await buildKernel({ env, cwd, prompt: '', mode });
+    await bootstrapMcpHost(mcpHost, cwd, env, mcpSkippedUntrusted); // 连外部 MCP server（真实 ApprovalGate 把关）
     installShutdown(mcpHost, pluginHost); // 常驻进程：SIGINT/SIGTERM/EPIPE 退出前回收子进程
     // 常驻进程才需空闲 TTL 清理：周期扫描断开长闲连接回收子进程（in-flight 守卫在 sweepIdle 内）。
     // unref 不阻止进程退出；进程退出时 installShutdown 已统一 closeAll。
@@ -332,11 +389,11 @@ async function main(): Promise<void> {
   }
 
   const system = (await loadConventionFiles(cwd, { workspaceRoot })) || undefined;
-  const { kernel, model, demo, mcpHost, pluginHost } = await buildKernel({ env, cwd, prompt, mode });
+  const { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted } = await buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');
   }
-  await bootstrapMcpHost(mcpHost, cwd, env); // 连外部 MCP server（首轮前完成发现/注册）
+  await bootstrapMcpHost(mcpHost, cwd, env, mcpSkippedUntrusted); // 连外部 MCP server（首轮前完成发现/注册）
   installShutdown(mcpHost, pluginHost); // SIGINT/SIGTERM 中断也回收子进程
 
   // 4.6e：--continue/--resume <id> 优先恢复持久会话（需 YO_DB）；失败回退新会话。

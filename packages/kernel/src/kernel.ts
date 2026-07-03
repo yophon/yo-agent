@@ -27,6 +27,7 @@ import type { PolicyEngine } from './policy';
 import { HookBus } from './hooks';
 import type { HookContext, HookErrorSink, Hooks } from './hooks';
 import type { SubagentHost } from './subagent';
+import type { SessionSelfInfo } from './self-knowledge';
 import { estimateMessagesTokens } from './tokens';
 
 const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
@@ -65,8 +66,12 @@ export interface AgentKernelDeps {
   policyEngine?: PolicyEngine;
   /** 生命周期 Hook 总线（4A / §11）：app 也可经 kernel.registerHook 注册。缺省空总线（无 hook）。 */
   hookBus?: HookBus;
-  /** 追加进每个新会话 system 消息的固定后缀（4D：技能摘要常驻上下文，跨 surface 统一注入）。 */
-  systemSuffix?: string;
+  /**
+   * 追加进每个新会话 system 消息的后缀（4D 技能摘要 / 4.9a 自知注入，跨 surface 统一）。
+   * 函数形态在 startSession 时求值并喂入会话事实（model/cwd/permissionMode）——
+   * 使 env 块反映会话真实起点、MCP 摘要反映 bootstrap 后实况（构造期字符串做不到）。
+   */
+  systemSuffix?: string | ((info: SessionSelfInfo) => string);
   /** 成本估算（4F）：emit UsageUpdate/TurnCompleted 前填 costUsd（含 cache 读写分价）。缺省不填。 */
   costEstimator?: (model: string, usage: Usage) => number | undefined;
   /**
@@ -161,13 +166,23 @@ export class AgentKernel implements Kernel, SubagentHost {
 
   async startSession(opts: StartSessionOpts = {}): Promise<Id> {
     const id = opts.sessionId ?? randomUUID();
-    // system = 传入 system + 固定后缀（4D 技能摘要）；二者任一存在即落 system 消息。
-    const systemText = [opts.system, this.d.systemSuffix].filter((x): x is string => !!x).join('\n\n');
+    const model = opts.model ?? this.d.model ?? 'fake-model';
+    const cwd = opts.cwd ?? this.d.cwd ?? process.cwd();
+    const permissionMode = opts.permissionMode ?? 'supervised';
+    // system = 传入 system + 后缀（4D 技能摘要 / 4.9a 自知注入）；二者任一存在即落 system 消息。
+    // 函数形态此刻求值（会话真实起点事实；suffix 求值抛错不阻断开会话——自知是增强，非关键路径）。
+    let suffix: string | undefined;
+    try {
+      suffix = typeof this.d.systemSuffix === 'function' ? this.d.systemSuffix({ model, cwd, permissionMode }) : this.d.systemSuffix;
+    } catch {
+      suffix = undefined;
+    }
+    const systemText = [opts.system, suffix].filter((x): x is string => !!x).join('\n\n');
     const s: SessionState = {
       id,
-      model: opts.model ?? this.d.model ?? 'fake-model',
-      cwd: opts.cwd ?? this.d.cwd ?? process.cwd(),
-      permissionMode: opts.permissionMode ?? 'supervised',
+      model,
+      cwd,
+      permissionMode,
       messages: systemText ? [{ role: 'system', content: systemText }] : [],
       headCursor: -1,
       interrupted: false,

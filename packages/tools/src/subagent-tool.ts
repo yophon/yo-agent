@@ -28,6 +28,14 @@ function strField(input: unknown, key: string, fallback = ''): string {
   return v == null ? fallback : String(v);
 }
 
+/** subagent_spawn 描述富化数据（4.9a 自知）：可用画像/模型枚举，注册时点值（与 system prompt 目录同源）。 */
+export interface SubagentSpawnToolOpts {
+  /** 可用画像名（不含 default；default 恒可用）。 */
+  profiles?: string[];
+  /** 可用模型 id（模型目录同 provider 清单）；缺省不枚举。 */
+  models?: string[];
+}
+
 /**
  * `subagent_spawn` 工具（4C / DESIGN §2.5）：派生独立上下文的子 agent 跑探索型任务，**只回摘要**防主上下文污染。
  *
@@ -36,8 +44,15 @@ function strField(input: unknown, key: string, fallback = ''): string {
  *
  * 安全：`approval:'risk-based'`（绝不 never，必经权限闸门/审批）；kind=other。子 agent 的工具/权限由
  * 管理器侧 deriveSubagentPolicy「只收紧」派生（含恒剥离本工具防递归），本工具不直接放权。
+ * 4.9a：model/profile 字段描述明确「留空沿用」并枚举可用值——LLM 不再裸猜模型名/画像名（feedback/4.8①）。
  */
-export function makeSubagentSpawnTool(manager: SubagentSpawner): RegisteredTool {
+export function makeSubagentSpawnTool(manager: SubagentSpawner, opts: SubagentSpawnToolOpts = {}): RegisteredTool {
+  const profileDesc = `子 agent 画像/recipe 名；留空沿用 default。可用：${
+    opts.profiles?.length ? opts.profiles.map((p) => `"${p}"`).join(', ') : '（无自定义画像，仅 default）'
+  }`;
+  const modelDesc = `可指定更便宜的模型跑子任务；留空沿用主 agent 模型（推荐）。${
+    opts.models?.length ? `可用：${opts.models.map((m) => `"${m}"`).join(', ')}。不要凭记忆猜模型名。` : '不要凭记忆猜模型名。'
+  }`;
   return {
     descriptor: {
       name: SUBAGENT_SPAWN_TOOL,
@@ -48,9 +63,9 @@ export function makeSubagentSpawnTool(manager: SubagentSpawner): RegisteredTool 
         type: 'object',
         properties: {
           task: { type: 'string', description: '交给子 agent 的任务描述' },
-          profile: { type: 'string', description: '子 agent 画像/recipe 名（缺省 default）' },
+          profile: { type: 'string', description: profileDesc },
           mode: { type: 'string', enum: ['foreground', 'background'], description: '缺省 foreground' },
-          model: { type: 'string', description: '可指定更便宜的模型跑子任务' },
+          model: { type: 'string', description: modelDesc },
         },
         required: ['task'],
       },
