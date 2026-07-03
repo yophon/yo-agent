@@ -14,9 +14,12 @@
 ## 当前状态
 
 ✅ **Phase 0-2 全部交付** ｜ ✅ **Phase 3 七片（3A-3G）全部交付 + 整体收口对抗式审查**：MCP host 连接/三层信任/韧性 + 真机冒烟①、结构化 Handoff/标识符保真、动态 auto-memory、**AcpSurface（被 Zed/JetBrains 经 ACP 接管，退出标准②离线对驱达成）**、MCP 进阶通道（resources/prompts/sampling/progress + Streamable HTTP/OAuth）；收口审查 85 agents、23 确认缺陷全修 —— 见 [`docs/PHASE-3.md`](docs/PHASE-3.md)。
-验证门全绿：`pnpm run check` = typecheck + gen:schema + **307 测试（37 文件，1 真机冒烟门控跳过）**。
-｜ 🚧 **Phase 4 进行中**（bash 工具集补全 + L1 子进程沙箱 + 子 agent + 插件隔离 —— 开放渠道前的安全底座，6 片 4A-4F；L2 容器/OTel 顺延 Phase 6）：**4A 横切底座**（Hook 矩阵 + permissionMode→PolicyEngine 闸门 + ExecBackend 抽象，无运行时行为变更）+ **4B 工具集补全 + L1 子进程隔离**（bash/edit/grep/glob/todo/apply_patch + 受限 env 剥离 secret + abort 杀进程组 + 大输出截断写盘 + 注入标注）+ **4C SubagentManager**（worker_threads 隔离 + 崩溃围栏 + deriveSubagentPolicy 只收紧 + 递归防护 + 前/后台 steering + `subagent_spawn` 工具，**退出标准②子 agent 崩溃不拖垮主循环达成**）+ **4D recipes/skills 懒加载**（skill 摘要常驻 + `skill_activate` 取全文 + 压缩保护 + subagent recipe profile 经 deriveSubagentPolicy 只收紧）+ **4E 插件 SDK**（独立包 `plugin-host`：第三方插件跑独立 Worker 经 IPC 隔离 + 心跳重连 + 崩溃围栏降级 + secret 剥离 + 工具走主审批流不可绕 + Hook 矩阵跨进程兑现，**退出标准③插件隔离生效达成**）+ **4F 健壮性**（`costUsd` 用量计费串接含 cache 分价 + provider fallback 链/auth rotation：错误归类 `category` 驱动 rate_limit 换 key/billing·auth 换 provider/context_overflow 压缩重试 + 工具循环内 commit 首个成功模型不漂移）已交付 → **六片 4A-4F 全交付 + 整体收口对抗式安全审查（52 agents，confirmed 12 缺陷全修含 3 HIGH），退出标准①②③全达成** → **443 测试**（58 文件）—— 见 [`docs/PHASE-4.md`](docs/PHASE-4.md)。
+｜ ✅ **Phase 4 交付**（bash 工具集补全 + L1 子进程沙箱 + 子 agent + 插件隔离 —— 开放渠道前的安全底座，6 片 4A-4F；L2 容器/OTel 顺延 Phase 6）：**4A 横切底座**（Hook 矩阵 + permissionMode→PolicyEngine 闸门 + ExecBackend 抽象，无运行时行为变更）+ **4B 工具集补全 + L1 子进程隔离**（bash/edit/grep/glob/todo/apply_patch + 受限 env 剥离 secret + abort 杀进程组 + 大输出截断写盘 + 注入标注）+ **4C SubagentManager**（worker_threads 隔离 + 崩溃围栏 + deriveSubagentPolicy 只收紧 + 递归防护 + 前/后台 steering + `subagent_spawn` 工具，**退出标准②子 agent 崩溃不拖垮主循环达成**）+ **4D recipes/skills 懒加载**（skill 摘要常驻 + `skill_activate` 取全文 + 压缩保护 + subagent recipe profile 经 deriveSubagentPolicy 只收紧）+ **4E 插件 SDK**（独立包 `plugin-host`：第三方插件跑独立 Worker 经 IPC 隔离 + 心跳重连 + 崩溃围栏降级 + secret 剥离 + 工具走主审批流不可绕 + Hook 矩阵跨进程兑现，**退出标准③插件隔离生效达成**）+ **4F 健壮性**（`costUsd` 用量计费串接含 cache 分价 + provider fallback 链/auth rotation：错误归类 `category` 驱动 rate_limit 换 key/billing·auth 换 provider/context_overflow 压缩重试 + 工具循环内 commit 首个成功模型不漂移）已交付 → **六片 4A-4F 全交付 + 整体收口对抗式安全审查（52 agents，confirmed 12 缺陷全修含 3 HIGH），退出标准①②③全达成** → **443 测试**（58 文件）—— 见 [`docs/PHASE-4.md`](docs/PHASE-4.md)。
 ｜ ✅ **Phase 4.5 交付**（安装分发 + 完整交互式 TUI）：全局命令 `yoagent`（源码态软链分发 + tsx 启动器）+ 私密运行配置 `~/.config/yo-agent/config.env` 自动加载（key 不进 git）+ **TUI 升级为交互式多轮 REPL**（结构化区块渲染 + ink `<Static>` 滚动区 + 状态栏 model/token/成本/cwd + 工具调用分组渲染 + 行内光标编辑 + 输入历史 + `/help /clear /model /cwd /exit` slash 命令 + Esc/Ctrl+C 中断当前轮 + 运行中 steer + 审批面板增强）；内核零改动，复用既有 interrupt/steer 接缝 → **460 测试**（59 文件）—— 见 [`docs/PHASE-4.5.md`](docs/PHASE-4.5.md)。
+｜ ✅ **Phase 4.6 交付**（TUI 重设计，五切片 4.6a-e）：surface-cli 分层重构（纯 reducer + keymap 路由 + `tui/` 分层，行为等价）+ 多行输入编辑器（字素簇/括号粘贴/持久历史/退出保护）+ 渲染语言（markdown/diff/工具专属视图 + 去噪 + 活动行）+ 命令系统与补全（slash 注册表 + 补全菜单 + @文件 + 通用选择器）+ 内核接缝 K1-K5（会话/模式/审批升级 + 排队 follow-up）—— 见 [`docs/PHASE-4.6.md`](docs/PHASE-4.6.md)。
+｜ ✅ **Phase 4.7 交付**（TUI 架构收敛，六切片 4.7a-f）：输入解码固化为纯状态机 `input/decoder.ts`（ink 私有行为依赖收拢单文件）+ 交互态统一进 reducer + 拆解 app.ts（853→430 行，执行器/契约/footer 各归其位）+ 渲染性能（BlockView memo + spinner tick 隔离 + computeMenu 缓存）+ 功能补口（/resume 历史回放 + 审批队列化 + 审批面板放行 Ctrl+C）—— 见 [`docs/PHASE-4.7.md`](docs/PHASE-4.7.md)。
+｜ 🚧 **Phase 4.8 进行中**（工程卫生与基建补课，五切片 4.8a-e）：README 对齐 + Biome lint 落地 + coverage/apps 测试收集 + GitHub Actions CI（含 schema 漂移校验）+ zod 统一/TUI 静默降级出 notice —— 见 [`docs/PHASE-4.8.md`](docs/PHASE-4.8.md)。
+验证门全绿：`pnpm run check` = typecheck + gen:schema + **560 测试（67 文件，1 真机冒烟门控跳过）**。
 
 - **Phase 0**（[`PHASE-0.md`](docs/PHASE-0.md)）协议单一事实源 `@yo-agent/protocol` 冻结：`AgentEvent`（20 变体）+ JSON-RPC 方法表 + cursor/resume，zod 定义、导出 JSON Schema（可 gen 多语言 binding 给任意客户端）；四接口冻结。
 - **Phase 1**（[`PHASE-1.md`](docs/PHASE-1.md)）内核 + 编程 CLI MVP：`AgentKernel` turn 循环（infer→tool→observe）+ 事件溯源 + 熔断 + `max_tokens` 续传 + 审批；**5 provider**（Anthropic / OpenAI Responses+Chat / Gemini / 兼容含 DeepSeek/Ollama）+ 双轨 tool-calling + 模型目录；内置工具 + L3 checkpoint（shadow-git）；`SummarizingCondenser`；CLI 三态（TUI / `--mode jsonl` / headless）+ yo.md 加载。**真机已验证**。
@@ -37,12 +40,13 @@ yo-agent/
 │  ├─ store/        # Memory / Sqlite(node:sqlite) EventLog（append-only）+ ShadowGit checkpoint + ResumeBuffer
 │  ├─ kernel/       # AgentKernel turn 循环 + LoopBreaker + SummarizingCondenser + yo.md/记忆加载
 │  ├─ auth/         # 设备身份 ed25519 + 配对码 + nonce 握手（Phase 2D）
-│  ├─ surface-cli/  # CliSurface：Ink TUI（交互审批）+ headless + --mode jsonl
+│  ├─ plugin-host/  # 插件 SDK：第三方插件独立 Worker 经 IPC 隔离 + 心跳重连 + 崩溃围栏降级（Phase 4E）
+│  ├─ surface-cli/  # CliSurface：交互式多轮 Ink TUI（纯 reducer + decoder + 审批面板）+ headless + --mode jsonl
 │  ├─ surface-rpc/  # RpcSurface：JSON-RPC 2.0 over JSONL/WS（通用远端驱动）+ resume/reconnect
-│  └─ surface-mcp/  # McpServerSurface：yo-agent 作 MCP server 被编排（Phase 3 将增 MCP host）
-├─ apps/yo-agent/   # CLI 入口：headless / rpc / rpc --listen <port>(WS) / mcp-server
-├─ docs/{DESIGN,PHASE-0,PHASE-1,PHASE-2,PHASE-3,PHASE-4}.md + research/
-└─ (Phase 3：MCP host · surface-acp · 结构化 Handoff · auto-memory)
+│  ├─ surface-mcp/  # McpServerSurface（yo-agent 作 MCP server 被编排）+ MCP host（挂外部 MCP server 用其工具）
+│  └─ surface-acp/  # AcpSurface：被 Zed/JetBrains 经 ACP 接管（Phase 3F）
+├─ apps/yo-agent/   # CLI 入口：--tui / headless / rpc / rpc --listen <port>(WS) / mcp-server
+└─ docs/{DESIGN,PHASE-0…4,4.5,4.6,4.7,4.8}.md + research/
 ```
 
 ## 快速开始
