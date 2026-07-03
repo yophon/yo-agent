@@ -141,7 +141,8 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       filesLoadingRef.current = true;
       void fileLister(cwd)
         .then((list) => filesBox.set(list))
-        .catch(() => filesBox.set([]));
+        .catch(() => filesBox.set([])); // 有意降级:清单失败 → 空补全,不打扰输入流
+
     }
   }, [completion?.token, completion?.kind]);
 
@@ -238,7 +239,9 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     initRef.current = true;
     if (prompt.trim().length > 0) {
       dispatch({ type: 'submit', text: prompt });
-      void kernel.submitInput(sidBox.current, prompt, `tui-${Date.now()}`).catch(() => {});
+      void kernel.submitInput(sidBox.current, prompt, `tui-${Date.now()}`).catch((e: unknown) => {
+        dispatch({ type: 'submit-failed', message: e instanceof Error ? e.message : String(e) });
+      });
     }
   }, []);
 

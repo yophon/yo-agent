@@ -248,6 +248,40 @@ describe('CliApp 4.5（结构化渲染 / 命令 / 中断 / steer）', () => {
     unmount();
   });
 
+  it('steer 失败 → error notice(4.8e:不再静默吞掉)', async () => {
+    class FailingSteerKernel extends RecordingKernel {
+      override async steer(): Promise<void> {
+        throw new Error('steer 通道断了');
+      }
+    }
+    const kernel = new FailingSteerKernel(false);
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'task' }));
+    await tick();
+    stdin.write('more');
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain('steer 失败');
+    expect(lastFrame()).toContain('steer 通道断了');
+    unmount();
+  });
+
+  it('中断失败 → error notice(4.8e:不再静默吞掉)', async () => {
+    class FailingInterruptKernel extends RecordingKernel {
+      override async interrupt(): Promise<void> {
+        throw new Error('interrupt 不可用');
+      }
+    }
+    const kernel = new FailingInterruptKernel(false);
+    const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: 'long task' }));
+    await tick();
+    stdin.write(ESC1);
+    await tick();
+    expect(lastFrame()).toContain('中断失败');
+    expect(lastFrame()).toContain('interrupt 不可用');
+    unmount();
+  });
+
   it('输入历史：↑ 召回上一条', async () => {
     const kernel = new RecordingKernel();
     const { lastFrame, stdin, unmount } = render(React.createElement(CliApp, { kernel, sessionId: 's', prompt: '' }));

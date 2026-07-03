@@ -84,7 +84,9 @@ export interface Executor {
 export function createExecutor(ctx: ExecuteCtx): Executor {
   const steer = (text: string): void => {
     if (!ctx.kernel.steer) return;
-    void ctx.kernel.steer(ctx.sid(), text).catch(() => {});
+    void ctx.kernel.steer(ctx.sid(), text).catch((e: unknown) => {
+      ctx.dispatch({ type: 'notice', tone: 'error', text: `steer 失败:${e instanceof Error ? e.message : String(e)}` });
+    });
     ctx.dispatch({ type: 'steer', text });
   };
 
@@ -235,7 +237,9 @@ export function createExecutor(ctx: ExecuteCtx): Executor {
         break;
       }
       case 'interrupt':
-        void ctx.kernel.interrupt?.(ctx.sid()).catch(() => {});
+        void ctx.kernel.interrupt?.(ctx.sid()).catch((e: unknown) => {
+          ctx.dispatch({ type: 'notice', tone: 'error', text: `中断失败:${e instanceof Error ? e.message : String(e)}` });
+        });
         break;
       case 'toggle-verbose':
         ctx.toggleVerbose();
