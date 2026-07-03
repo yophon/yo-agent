@@ -3,7 +3,8 @@
 > 本文档不是承诺计划,而是 **backlog**:收拢 4.8 全仓盘点与 4.9 审计中发现、但被显式排除出
 > 4.8/4.9 范围的事项,防止只活在对话里丢失。开 4.10(或并入 Phase 5)时从此池挑选、
 > 重估优先级后再写正式切片。来源标注:〔盘点〕= 4.8 前的三路全仓盘点;〔审计〕= 4.9 前的
-> 三路自知审计;〔既定〕= 此前 phase 文档已声明的顺延。
+> 三路自知审计;〔既定〕= 此前 phase 文档已声明的顺延;〔真机 4.9〕= 4.9 期中真机反馈
+> [`feedback/4.9.md`](feedback/4.9.md)。
 
 ## A. 代码结构(盘点遗留)
 
@@ -59,11 +60,26 @@
   经 cost/loop-breaker/approval)、loop-breaker 补另三模式、exec-local extra env 覆盖——
   Phase 5/6 专项,清单见 [`PHASE-4.md`](PHASE-4.md) 末尾。
 
+## F. 4.9 期中真机反馈〔真机 4.9〕
+
+- **loop-breaker 误伤合法的重复 spawn**:LLM 连续多次调 `subagent_spawn`(并行探索意图)被
+  「检测到死循环」熔断;用户明确要求"先关掉/降敏"。候选:HistoryLoopBreaker 对**入参不同**的
+  同名调用放宽、按工具豁免清单(spawn/read 类天然可重复)、或档位可配置。注意别把真死循环护栏拆没。
+- **子代理并行派生 + 可观测**:模型一次响应多个 tool_use 时 kernel 现串行执行(`kernel.ts` tool
+  循环 for-of await),subagent_spawn foreground 逐个阻塞——"并行包装器"实际串行;且子代理运行中
+  无法单独查看(像 Claude Code 任务面板那样进入某个子代理的事件流)。候选:tool 循环对无副作用/
+  spawn 类调用并发执行(注意审批与 emit 串行链语义)、TUI 子代理面板(子树 EventLog 已隔离可读)。
+- (已修注记)反馈中「空 model 报 model is required」「gpt-5 裸猜不可用」的根因即 4.9 反馈①,
+  4.9a/4.9b 已闭合(模型目录注入 + 空串归一化 + 未知模型早失败)。
+
 ## 交接备注(给新窗口)
 
-- 4.9 计划已立项待开工:[`PHASE-4.9.md`](PHASE-4.9.md),六切片 a→f,含全部根因 file:line。
-  真机反馈原件:[`feedback/4.8.md`](feedback/4.8.md)。
-- 4.9e 有一处待拍板:记忆双轨收口选"MEMORY.md 单一事实源、砍 DB 写"(文档倾向)还是
-  "DB 读回双轨"——开工时确认。
+- 4.9 已收口(2026-07-02,六切片全交付,617 测试全绿/75 文件):[`PHASE-4.9.md`](PHASE-4.9.md)。
+  真机反馈原件:[`feedback/4.8.md`](feedback/4.8.md)(4.9 起因)、[`feedback/4.9.md`](feedback/4.9.md)
+  (期中新反馈,见上 §F)。
+- 4.9e 已拍板:**MEMORY.md 单一事实源、砍 MemoryStore 双写**;DB 轨(automemory.ts)保留给
+  Phase 6 向量检索再启用(模块头注释有决策记录)。
+- §E 的大阶段统一对抗式审查:4.9 收口时按 ADR-14 评估,结论为**并入 Phase 4 终收口统一做**
+  (4.5–4.9 TUI + 4.9 审批上浮/注入面/memory_write 写入面一起过)。
 - 工作约定:每切片独立提交、只补该片测试、全量回归不退化;`pnpm run check` =
   typecheck + lint + gen:schema + test;CI 已含 schema 漂移校验(生成物改了要一起提交)。

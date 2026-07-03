@@ -1,4 +1,14 @@
-# Phase 4.9 —— Agent 自知与失败可交互(计划)
+# Phase 4.9 —— Agent 自知与失败可交互(已完成)
+
+> **收口状态**:a–f 六切片全部交付(2026-07-02),617 测试全绿(75 文件),`pnpm check` 门
+> (typecheck + lint + schema 漂移 + test)通过;每切片独立提交(4.9a→f 共 7 commit 含 lint 收尾)。
+> 交付要点:systemSuffix 函数化 + 五段自知注入;空串/未知模型/未知画像早失败;子代理审批上浮
+> (in-process 代理 gate + worker 跨线程 RPC)与超时/真拒归因分流;turn 起点动态状态接缝
+> (toolset diff/MCP 变化/切档/满度);`memory_write` 落地 + **4.9e 拍板:MEMORY.md 单一事实源、
+> 砍 MemoryStore 双写**(DB 轨留 Phase 6);`mcp_list_servers`/resources 双工具接线 + 描述来源前缀。
+> ADR-14 评估结论:统一对抗式审查**并入 Phase 4 终收口**执行(4.10 §E 已列,重点=审批上浮越权面/
+> 注入面/memory_write 写入面)。期中真机反馈记录于 [`feedback/4.9.md`](feedback/4.9.md)
+> (loop-breaker 误伤并行 spawn、子代理并行与可观测),立项留待下一阶段(已入 4.10 候选池 §F)。
 
 > 起因:真机反馈 [`feedback/4.8.md`](feedback/4.8.md)——LLM 裸猜模型名连环 404、子代理无权限静默失败。
 > 三路并行审计(MCP / 记忆+skills / 权限+环境)确认这不是两个个案,而是三个**系统性病根**:
