@@ -1,0 +1,39 @@
+# CI 验证门(4.8d):与本地 `pnpm run check` 语义一致,外加 schema 漂移校验。
+# Node 22(node:sqlite 需 ≥22.5;engines 下限 20 为运行时降级路径,CI 按开发基线跑)。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # 版本取 package.json 的 packageManager 字段,不在此重复声明
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖(锁文件冻结)
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: pnpm run typecheck
+
+      - name: lint
+        run: pnpm run lint
+
+      - name: schema 生成 + 漂移校验(协议改了忘提交生成物 → 此处拦截)
+        run: |
+          pnpm run gen:schema
+          git diff --exit-code -- packages/protocol/schema
+
+      - name: test
+        run: pnpm run test
