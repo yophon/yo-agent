@@ -58,13 +58,13 @@ export function makeSubagentSpawnTool(manager: SubagentSpawner, opts: SubagentSp
       name: SUBAGENT_SPAWN_TOOL,
       kind: 'other',
       description:
-        '派生一个独立上下文的子 agent 执行探索型/可并行的子任务，只回摘要（防主上下文污染）。mode=foreground 阻塞取回摘要；background 不阻塞、结果稍后注入。',
+        '派生一个独立上下文的子 agent 执行探索型/可并行的子任务，只回摘要（防主上下文污染）。mode=foreground 阻塞取回摘要；background 不阻塞、结果稍后注入。需要并行时：可在同一条响应里一次发出多个本工具调用（引擎会并发执行），或用 mode:"background" 逐个派生——发出即返回，多个子 agent 同样并发运行。没有单独的"并行包装器"工具。',
       inputSchema: {
         type: 'object',
         properties: {
           task: { type: 'string', description: '交给子 agent 的任务描述' },
           profile: { type: 'string', description: profileDesc },
-          mode: { type: 'string', enum: ['foreground', 'background'], description: '缺省 foreground' },
+          mode: { type: 'string', enum: ['foreground', 'background'], description: '缺省 foreground（阻塞取回摘要）。并行多任务推荐 background：不阻塞、可连发多个并发跑，结果自动注入。' },
           model: { type: 'string', description: modelDesc },
         },
         required: ['task'],

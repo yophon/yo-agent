@@ -33,4 +33,11 @@ describe('4.9a subagent_spawn 描述富化（自知）', () => {
     expect(tool.descriptor.name).toBe('subagent_spawn');
     expect(tool.descriptor.approval).toBe('risk-based');
   });
+
+  it('4.10 并行提示：工具描述声明两条并发路径,mode 字段推荐 background(真机反馈 feedback/4.10)', () => {
+    const tool = makeSubagentSpawnTool(noopManager);
+    expect(tool.descriptor.description).toContain('同一条响应里一次发出多个');
+    expect(tool.descriptor.description).toContain('没有单独的"并行包装器"工具');
+    expect(fieldDesc(tool, 'mode')).toContain('并行多任务推荐 background');
+  });
 });
