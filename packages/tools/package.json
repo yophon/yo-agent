@@ -5,7 +5,8 @@
   "type": "module",
   "description": "工具系统（冻结接口）：声明/执行分离 + 多源统一注册 + availability 动态显隐。",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./core": "./src/core.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

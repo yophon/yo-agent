@@ -35,5 +35,8 @@ jobs:
           pnpm run gen:schema
           git diff --exit-code -- packages/protocol/schema
 
+      - name: 浏览器打包冒烟(5A:core 入口牵入 node:* → 此处拦截)
+        run: pnpm run check:browser
+
       - name: test
         run: pnpm run test

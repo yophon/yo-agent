@@ -5,7 +5,8 @@
   "type": "module",
   "description": "内核与接入层契约（冻结接口）：Kernel / Condenser / LoopBreaker / ApprovalGate / SubagentManager / Surface。",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./core": "./src/core.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {

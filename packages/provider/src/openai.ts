@@ -37,29 +37,32 @@ export class OpenAiCompatibleProvider implements Provider {
   private readonly defaultMaxTokens: number;
   private readonly extraHeaders: Record<string, string>;
 
+  /** baseUrl 被显式覆盖（自建代理/中转站）：key 可由代理侧注入，空 key 不再早退（5A 双模式）。 */
+  private readonly hasCustomBase: boolean;
+
   constructor(opts: OpenAiProviderOpts = {}) {
-    this.apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY ?? '';
+    this.apiKey = opts.apiKey ?? globalThis.process?.env?.OPENAI_API_KEY ?? '';
     this.baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.hasCustomBase = opts.baseUrl !== undefined;
     this.defaultMaxTokens = opts.defaultMaxTokens ?? 16_000;
     this.extraHeaders = opts.headers ?? {};
     this.id = opts.id ?? 'openai-compatible';
   }
 
   async *streamChat(req: ChatRequest): AsyncIterable<ProviderEvent> {
-    if (!this.apiKey) {
+    if (!this.apiKey && !this.hasCustomBase) {
       yield { kind: 'Error', error: { message: `缺少 API key（${this.id}）` } };
       return;
     }
     const body = buildOpenAiBody(req, this.defaultMaxTokens);
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    Object.assign(headers, this.extraHeaders);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.apiKey}`,
-          ...this.extraHeaders,
-        },
+        headers,
         body: JSON.stringify(body),
       });
     } catch (e) {

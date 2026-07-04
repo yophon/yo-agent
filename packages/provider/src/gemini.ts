@@ -23,6 +23,8 @@ export interface GeminiProviderOpts {
   apiKey?: string;
   baseUrl?: string;
   defaultMaxTokens?: number;
+  /** 追加/覆盖请求头（5A）：自建代理的宿主鉴权令牌等。 */
+  headers?: Record<string, string>;
 }
 
 export class GeminiProvider implements Provider {
@@ -36,25 +38,33 @@ export class GeminiProvider implements Provider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly defaultMaxTokens: number;
+  private readonly extraHeaders: Record<string, string>;
+  /** baseUrl 被显式覆盖（自建代理/中转站）：key 可由代理侧注入，空 key 不再早退（5A 双模式）。 */
+  private readonly hasCustomBase: boolean;
 
   constructor(opts: GeminiProviderOpts = {}) {
-    this.apiKey = opts.apiKey ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
+    this.apiKey = opts.apiKey ?? globalThis.process?.env?.GEMINI_API_KEY ?? globalThis.process?.env?.GOOGLE_API_KEY ?? '';
     this.baseUrl = (opts.baseUrl ?? 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+    this.hasCustomBase = opts.baseUrl !== undefined;
     this.defaultMaxTokens = opts.defaultMaxTokens ?? 8192;
+    this.extraHeaders = opts.headers ?? {};
   }
 
   async *streamChat(req: ChatRequest): AsyncIterable<ProviderEvent> {
-    if (!this.apiKey) {
+    if (!this.apiKey && !this.hasCustomBase) {
       yield { kind: 'Error', error: { message: '缺少 GEMINI_API_KEY' } };
       return;
     }
     const body = buildGeminiBody(req, this.defaultMaxTokens);
     const url = `${this.baseUrl}/v1beta/models/${encodeURIComponent(req.modelId)}:streamGenerateContent?alt=sse`;
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (this.apiKey) headers['x-goog-api-key'] = this.apiKey;
+    Object.assign(headers, this.extraHeaders);
     let res: Response;
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': this.apiKey },
+        headers,
         body: JSON.stringify(body),
       });
     } catch (e) {

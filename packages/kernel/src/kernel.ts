@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type {
   AgentEvent,
   ApprovalDecision,
@@ -16,10 +15,10 @@ import type {
 import type { CanonMessage, ChatRequest, ContentBlock, ErrorCategory, Provider, ToolSpec } from '@yo-agent/provider';
 import { decideFallback } from './fallback';
 import type { ProviderRoute } from './fallback';
-import type { ToolContext, ToolDescriptor, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools';
-import { MAX_PARALLEL_CALLS, PARALLEL_TOOL, sanitizeMcpServerName } from '@yo-agent/tools';
-import type { EventStore, SessionRow } from '@yo-agent/store';
-import { ResumeBuffer } from '@yo-agent/store';
+import type { ToolContext, ToolDescriptor, ToolExecutorRef, ToolRegistry } from '@yo-agent/tools/core';
+import { MAX_PARALLEL_CALLS, PARALLEL_TOOL, sanitizeMcpServerName } from '@yo-agent/tools/core';
+import type { EventStore, SessionRow } from '@yo-agent/store/core';
+import { ResumeBuffer } from '@yo-agent/store/core';
 import type { ApprovalGate, ApprovalOutcome, Checkpointer, Condenser, Kernel, LoopBreaker } from './index';
 import { assessRisk } from './risk';
 import { DefaultPolicyEngine } from './policy';
@@ -29,6 +28,9 @@ import type { HookContext, HookErrorSink, Hooks } from './hooks';
 import type { SubagentHost } from './subagent';
 import type { SessionSelfInfo } from './self-knowledge';
 import { estimateMessagesTokens } from './tokens';
+
+/** 环境无关 UUID（Node ≥20 / 浏览器全局 crypto 均可用）——core 路径不 import node:*（5A）。 */
+const randomUUID = (): string => globalThis.crypto.randomUUID();
 
 const MUTATION_KINDS = new Set(['edit', 'delete', 'move']);
 /** 4.10b 批内并发资格：无副作用的工具类别,同批连续出现时并发执行。 */
@@ -182,7 +184,7 @@ export class AgentKernel implements Kernel, SubagentHost {
   async startSession(opts: StartSessionOpts = {}): Promise<Id> {
     const id = opts.sessionId ?? randomUUID();
     const model = opts.model ?? this.d.model ?? 'fake-model';
-    const cwd = opts.cwd ?? this.d.cwd ?? process.cwd();
+    const cwd = opts.cwd ?? this.d.cwd ?? globalThis.process?.cwd() ?? '/';
     const permissionMode = opts.permissionMode ?? 'supervised';
     // system = 传入 system + 后缀（4D 技能摘要 / 4.9a 自知注入）；二者任一存在即落 system 消息。
     // 函数形态此刻求值（会话真实起点事实；suffix 求值抛错不阻断开会话——自知是增强，非关键路径）。

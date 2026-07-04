@@ -5,7 +5,8 @@
   "type": "module",
   "description": "持久化（冻结接口）：append-only EventLog（DAG）+ checkpoint + schema 版本迁移。",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./core": "./src/core.ts"
   },
   "types": "./src/index.ts",
   "dependencies": {
