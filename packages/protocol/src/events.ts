@@ -95,7 +95,7 @@ export interface McpServerStatusInfo {
   epoch?: number;
 }
 
-// ───────────────────────── AgentEvent sealed union（DESIGN §2.2，21 变体）─────────────────────────
+// ───────────────────────── AgentEvent sealed union（DESIGN §2.2，22 变体）─────────────────────────
 
 export const AgentEventSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -112,6 +112,13 @@ export const AgentEventSchema = z.discriminatedUnion('kind', [
     kind: z.literal('TurnStarted'),
     turnId: IdSchema,
     promptIdemKey: z.string(),
+  }),
+  z.object({
+    // 用户输入落事件流（5.1b）：此前 prompt 只进 messages 快照，事件回放重建不了用户气泡
+    // （Web 控制台历史回放 / TUI /resume 同病）。source 区分 turn 起点输入与进行中插话。
+    kind: z.literal('UserMessage'),
+    text: z.string(),
+    source: z.enum(['prompt', 'steer']),
   }),
   z.object({
     kind: z.literal('AssistantText'),

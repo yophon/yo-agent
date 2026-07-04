@@ -81,6 +81,31 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "UserMessage"
+            },
+            "text": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "prompt",
+                "steer"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "text",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "AssistantText"
             },
             "delta": {
@@ -288,7 +313,7 @@
                     "type": "string"
                   },
                   "status": {
-                    "$ref": "#/definitions/AgentEvent/anyOf/8/properties/items/items/properties/status"
+                    "$ref": "#/definitions/AgentEvent/anyOf/9/properties/items/items/properties/status"
                   }
                 },
                 "required": [
@@ -423,7 +448,7 @@
               "minimum": 0
             },
             "toCursor": {
-              "$ref": "#/definitions/AgentEvent/anyOf/13/properties/fromCursor"
+              "$ref": "#/definitions/AgentEvent/anyOf/14/properties/fromCursor"
             },
             "tokensSaved": {
               "type": "integer",

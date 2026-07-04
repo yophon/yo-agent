@@ -88,6 +88,8 @@ export interface AgentKernelDeps {
   fallbacks?: ProviderRoute[];
   /** 会话驱逐回收钩子（审查 gap#2）：endSession 时调用，app 接 SubagentManager.abortInflight(sessionId) 回收背景子 agent。 */
   sessionReaper?: (sessionId: Id) => void;
+  /** 会话行的 agent 归属标识（5.1b）：多 agent 共享一个 store 时供列表区分归属。缺省 'default'（行为不变）。 */
+  agentProfile?: string;
   /**
    * 批内并发工具名单（4.10b）：CONCURRENT_KINDS 之外额外允许并发执行的工具名
    * （kind='other' 但无本地副作用者，如 subagent_spawn）。缺省 ['subagent_spawn']。
@@ -320,6 +322,8 @@ export class AgentKernel implements Kernel, SubagentHost {
     s.interrupted = false;
     const turnId = randomUUID();
     await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
+    // 用户输入落事件流（5.1b）：回放可重建用户气泡（此前只进 messages 快照）。
+    await this.emit(s, { kind: 'UserMessage', text: prompt, source: 'prompt' }, turnId);
     s.messages.push({ role: 'user', content: prompt });
     await this.hooks.fireUserPromptSubmit(this.hookCtx(s), prompt, this.hookErr(s, turnId)); // UserPromptSubmit hook（4A）
     const done = this.runTurn(s, turnId).catch(async (e) => {
@@ -394,7 +398,10 @@ export class AgentKernel implements Kernel, SubagentHost {
   async steer(sessionId: Id, text: string): Promise<void> {
     // 审查 cross-seam-MED：经统一 appendUserText 并入（末条为 user 则合并，否则新增）——直接 push 会在「末条已是 user
     // （注入 tool_result 那条 / 连续 steer）」时产生连续两条 user，破坏 provider 严格交替契约（400）。
-    this.appendUserText(this.require(sessionId), text);
+    const s = this.require(sessionId);
+    this.appendUserText(s, text);
+    // 插话同样落事件流（5.1b），回放可见；打当前 turn 标签（turn 外 steer 罕见，落 null）。
+    await this.emit(s, { kind: 'UserMessage', text, source: 'steer' }, s.currentTurnId);
   }
 
   async interrupt(sessionId: Id): Promise<void> {
@@ -1158,7 +1165,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       sessionId: s.id,
       owner: 'self',
       surfaceKind: 'kernel',
-      agentProfile: 'default',
+      agentProfile: this.d.agentProfile ?? 'default',
       workspacePath: s.cwd,
       model: s.model,
       permissionMode: s.permissionMode,

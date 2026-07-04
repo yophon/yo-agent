@@ -114,6 +114,31 @@
               "properties": {
                 "kind": {
                   "type": "string",
+                  "const": "UserMessage"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "prompt",
+                    "steer"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "text",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
                   "const": "AssistantText"
                 },
                 "delta": {
@@ -321,7 +346,7 @@
                         "type": "string"
                       },
                       "status": {
-                        "$ref": "#/definitions/rpc.event/properties/event/anyOf/8/properties/items/items/properties/status"
+                        "$ref": "#/definitions/rpc.event/properties/event/anyOf/9/properties/items/items/properties/status"
                       }
                     },
                     "required": [

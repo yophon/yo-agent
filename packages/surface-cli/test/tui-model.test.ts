@@ -202,8 +202,8 @@ describe('reducer:元信息事件与全集', () => {
     expect(ev(before, event)).toBe(before);
   });
 
-  it('全部 21 个事件 kind 都被 reducer 接受(不抛)', () => {
-    expect(AGENT_EVENT_KINDS).toHaveLength(21);
+  it('全部 22 个事件 kind 都被 reducer 接受(不抛)', () => {
+    expect(AGENT_EVENT_KINDS).toHaveLength(22);
   });
 });
 

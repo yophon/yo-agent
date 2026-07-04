@@ -6,13 +6,21 @@ import {
 } from '@yo-agent/protocol';
 
 describe('AgentEvent sealed union', () => {
-  it('恰好覆盖 DESIGN §2.2 的 21 个变体且无重复（3C 增 McpServerStatus）', () => {
-    expect(AGENT_EVENT_KINDS).toHaveLength(21);
-    expect(new Set(AGENT_EVENT_KINDS).size).toBe(21);
+  it('恰好覆盖 DESIGN §2.2 的 22 个变体且无重复（3C 增 McpServerStatus，5.1b 增 UserMessage）', () => {
+    expect(AGENT_EVENT_KINDS).toHaveLength(22);
+    expect(new Set(AGENT_EVENT_KINDS).size).toBe(22);
     expect(AGENT_EVENT_KINDS).toContain('SessionStarted');
     expect(AGENT_EVENT_KINDS).toContain('TurnCompleted');
     expect(AGENT_EVENT_KINDS).toContain('ApprovalRequested');
     expect(AGENT_EVENT_KINDS).toContain('McpServerStatus');
+    expect(AGENT_EVENT_KINDS).toContain('UserMessage');
+  });
+
+  it('UserMessage 事件（5.1b）：text 必填，source 只认 prompt|steer', () => {
+    expect(AgentEventSchema.safeParse({ kind: 'UserMessage', text: '在吗', source: 'prompt' }).success).toBe(true);
+    expect(AgentEventSchema.safeParse({ kind: 'UserMessage', text: '补充', source: 'steer' }).success).toBe(true);
+    expect(AgentEventSchema.safeParse({ kind: 'UserMessage', text: 'x', source: 'other' }).success).toBe(false);
+    expect(AgentEventSchema.safeParse({ kind: 'UserMessage', source: 'prompt' }).success).toBe(false);
   });
 
   it('校验合法 McpServerStatus 事件（3C 连接可观测）', () => {
