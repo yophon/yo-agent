@@ -7,3 +7,4 @@
 export * from './config';
 export * from './agent';
 export * from './http-tool';
+export * from './chat-controller';
