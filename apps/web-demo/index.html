@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>yo-agent Web Demo — 内核在浏览器里跑</title>
+    <style>
+      body { font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 860px; margin: 24px auto; padding: 0 16px; color: #222; }
+      h1 { font-size: 20px; }
+      fieldset { border: 1px solid #ddd; border-radius: 8px; margin: 12px 0; padding: 10px 14px; }
+      legend { font-weight: 600; padding: 0 6px; }
+      label { display: inline-flex; align-items: center; gap: 4px; margin: 4px 12px 4px 0; }
+      input[type="text"], input[type="password"], select { padding: 4px 8px; border: 1px solid #ccc; border-radius: 6px; min-width: 200px; }
+      input.short { min-width: 120px; }
+      button { padding: 6px 16px; border: none; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+      button:hover { background: #1d4ed8; }
+      .hint { color: #888; font-size: 12px; }
+      .warn { color: #b45309; font-size: 12px; }
+      yo-chat { display: block; margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>yo-agent Web Demo</h1>
+    <p class="hint">agent 内核（loop/工具调用/上下文管理）完整跑在本页面里；后端只提供 LLM 代理网关与业务工具 API。</p>
+
+    <fieldset>
+      <legend>连接模式</legend>
+      <label><input type="radio" name="mode" value="A" checked /> 模式 A：自建后端（代理 + 工具）</label>
+      <label><input type="radio" name="mode" value="B" /> 模式 B：中转站直连（可零工具）</label>
+    </fieldset>
+
+    <fieldset id="panel-a">
+      <legend>模式 A — demo-backend</legend>
+      <label>后端地址 <input type="text" id="a-base" value="http://localhost:8788" /></label>
+      <label>演示令牌 <input type="text" id="a-token" class="short" value="demo-123" /></label>
+      <br />
+      <label>协议
+        <select id="a-provider">
+          <option value="anthropic" selected>anthropic（/v1/messages）</option>
+          <option value="openai">openai（/v1/chat/completions）</option>
+          <option value="openai-responses">openai-responses（/v1/responses）</option>
+        </select>
+      </label>
+      <label>模型 <input type="text" id="a-model" value="claude-sonnet-5" /></label>
+      <label><input type="checkbox" id="a-tools" checked /> 挂载客服工具（查订单 / 建工单）</label>
+      <p class="hint">上游 key 只在 demo-backend 的 env 里；页面对后端用 x-demo-token 鉴权（宿主 app 换成自己的机制）。</p>
+    </fieldset>
+
+    <fieldset id="panel-b" hidden>
+      <legend>模式 B — 用户中转站 / 官方端点</legend>
+      <label>协议
+        <select id="b-provider">
+          <option value="openai" selected>openai 兼容</option>
+          <option value="openai-responses">openai-responses</option>
+          <option value="anthropic">anthropic</option>
+          <option value="gemini">gemini</option>
+        </select>
+      </label>
+      <label>端点 baseUrl <input type="text" id="b-base" placeholder="https://your-relay.example/v1" /></label>
+      <br />
+      <label>API Key <input type="password" id="b-key" placeholder="sk-..." /></label>
+      <label>模型 <input type="text" id="b-model" placeholder="gpt-5.5 / claude-sonnet-5" /></label>
+      <label><input type="checkbox" id="b-remember" /> 记住配置<span class="warn">（明文存 localStorage，共用设备勿勾）</span></label>
+      <p class="hint">直连依赖端点开 CORS；官方 Anthropic 会自动带 anthropic-dangerous-direct-browser-access 头。</p>
+    </fieldset>
+
+    <button type="button" id="apply">应用配置并开聊</button>
+    <span class="hint" id="status"></span>
+
+    <yo-chat id="chat"></yo-chat>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

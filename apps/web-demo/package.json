@@ -1,0 +1,19 @@
+{
+  "name": "@yo-agent/web-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 5 网页 demo：<yo-chat> 原生可嵌入挂件（shadow DOM）+ 双模式设置面板（自建后端代理 / 中转站直连）。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@yo-agent/surface-web": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5",
+    "vite-tsconfig-paths": "^5.1.4"
+  }
+}

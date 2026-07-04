@@ -6,5 +6,7 @@
     "packages/*/scripts/**/*.ts",
     "apps/*/src/**/*.ts",
     "vitest.config.ts"
-  ]
+  ],
+  // web-demo 需要 DOM lib，用自己的 tsconfig 单独 typecheck（根 typecheck 脚本串跑两个 project）。
+  "exclude": ["apps/web-demo"]
 }

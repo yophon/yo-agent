@@ -1,0 +1,13 @@
+{
+  "name": "@yo-agent/demo-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 5 演示后端：LLM 流式透传代理（key 只在服务端）+ mock 客服工具 API（令牌校验示范）+ CORS。零框架 node:http。",
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}
