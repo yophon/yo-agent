@@ -61,6 +61,58 @@ describe('createWebAgent（浏览器组合根）', () => {
     expect(JSON.stringify(provider.seen[0]?.messages?.[0] ?? '')).toContain('你是客服');
   });
 
+  it('parallel 批量工具：有工具时自动注册并可内联展开（两个子调用并发 fetch）；零工具时不注册', async () => {
+    const fetchMock = vi.fn(
+      async (url: string, init?: RequestInit) =>
+        new Response(JSON.stringify({ echo: JSON.parse((init?.body as string) ?? '{}') })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new FakeProvider()
+      .script(
+        toolCallTurn('parallel', 't1', {
+          calls: [
+            { tool: 'order_query', input: { orderId: '42' } },
+            { tool: 'order_query', input: { orderId: '7' } },
+          ],
+        }),
+      )
+      .script(textTurn('42 已发货，7 已签收'));
+    const agent = createWebAgent({
+      connection: { provider: 'anthropic', model: 'fake-model', baseUrl: 'https://api.example.com/llm' },
+      providerOverride: provider,
+      tools: [
+        defineHttpTool({
+          name: 'order_query',
+          description: '查订单',
+          inputSchema: { type: 'object' },
+          url: 'https://api.example.com/tools/order_query',
+        }),
+      ],
+    });
+    const sid = await agent.startSession();
+    const events: EventEnvelope[] = [];
+    agent.kernel.subscribe(sid, null, (env) => events.push(env));
+    await agent.kernel.submitInput(sid, '同时查订单 42 和 7', 'idem-1');
+    // parallel 对 LLM 可见
+    expect(provider.seen[0]?.tools?.some((t) => t.name === 'parallel')).toBe(true);
+    // 两个子调用都真的打到了后端
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const bodies = fetchMock.mock.calls.map((c) => c[1]?.body);
+    expect(bodies).toContain('{"orderId":"42"}');
+    expect(bodies).toContain('{"orderId":"7"}');
+    expect(events.map((e) => e.event.kind)).toContain('TurnCompleted');
+    expect(events.map((e) => e.event.kind)).not.toContain('TurnFailed');
+
+    // 零工具：parallel 不注册（纯对话无对象）
+    const bare = createWebAgent({
+      connection: { provider: 'openai', model: 'fake-model', baseUrl: 'https://relay.example/v1', apiKey: 'k' },
+      providerOverride: new FakeProvider().script(textTurn('好')),
+    });
+    const sid2 = await bare.startSession();
+    const reg = bare.tools.resolveAvailable({ sessionId: sid2, cwd: '/' });
+    expect(reg.some((d) => d.name === 'parallel')).toBe(false);
+  });
+
   it('工具执行抛错 → isError tool_result，turn 不失败（LLM 可继续应对）', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('内部错误', { status: 500 })));
     const provider = new FakeProvider()

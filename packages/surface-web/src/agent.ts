@@ -8,7 +8,7 @@ import { AgentKernel, NoopCondenser, SummarizingCondenser, makeLoopBreaker, make
 import type { Id } from '@yo-agent/protocol';
 import { ModelCatalog } from '@yo-agent/provider';
 import { MemoryEventStore } from '@yo-agent/store/core';
-import { InMemoryToolRegistry } from '@yo-agent/tools/core';
+import { InMemoryToolRegistry, MAX_PARALLEL_CALLS, PARALLEL_TOOL, parallelTool } from '@yo-agent/tools/core';
 import type { WebAgentConfig } from './config';
 import { makeWebProvider, resolveWebAgentConfig } from './config';
 
@@ -35,6 +35,14 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
   const provider = r.providerOverride ?? makeWebProvider(r.connection);
   const registry = new InMemoryToolRegistry();
   for (const t of r.tools) registry.register(t);
+  // parallel 批量调用是引擎级能力（内核内联展开，feedback/4.10）：有工具就注册——
+  // 尤其部分上游部署每响应至多 1 个 tool_call，没有它模型想并发也做不到；零工具时不注册（纯对话无对象）。
+  const withParallel = r.tools.length > 0 && !r.tools.some((t) => t.descriptor.name === PARALLEL_TOOL);
+  if (withParallel) registry.register(parallelTool);
+  // 用法提示注入 system（4.9a 自知路数；feedback/4.10 实锤「工具描述 nudge 能背不能行」，须 system 级提醒）。
+  const systemSuffix = withParallel
+    ? `工具调用提示：需要同时执行多个工具调用（如批量查询多个订单）时，必须用 parallel 工具把它们装进一次调用（calls:[{tool,input},…]，至多 ${MAX_PARALLEL_CALLS} 个），不要逐个串行调用。`
+    : undefined;
   // approval:'always' 的工具语义是「必经真人审批」，缺省 auto gate 会静默放行——
   // 不吞工具作者意图，出声提醒宿主传自定义 ApprovalGate（审查 S3）。
   if (r.approval === 'auto') {
@@ -59,6 +67,7 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
     loopBreaker: makeLoopBreaker(r.loopBreakerMode),
     condenser,
     approvalGate: r.approval === 'auto' ? autoApproveGate : r.approval,
+    systemSuffix,
     model: r.connection.model,
     cwd: '/',
     usableContextTokens,

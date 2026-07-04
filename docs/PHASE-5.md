@@ -49,7 +49,7 @@
 ### 5B `@yo-agent/surface-web`
 
 - `config.ts`：`WebAgentConfig` 双模式统一配置 + 纯函数解析校验（错误全可行动：缺 model / 未知 provider / 无 baseUrl 且无 key）；`providerOverride` 注入口（测试 FakeProvider / 自定义协议）。
-- `agent.ts`：`createWebAgent` 组合根——全走 core 面装配（MemoryEventStore + InMemoryToolRegistry + makeLoopBreaker + Noop/SummarizingCondenser + 模型目录 usableContextTokens/costEstimator）；缺省 `approval:'auto'`（autoApproveGate——防线在后端工具 API 的服务端鉴权，客户端审批 UI 不是防线）；宿主要审批 UI 传自定义 `ApprovalGate`；auto + `approval:'always'` 工具并存时 console.warn 出声（审查 S3）。
+- `agent.ts`：`createWebAgent` 组合根——全走 core 面装配（MemoryEventStore + InMemoryToolRegistry + makeLoopBreaker + Noop/SummarizingCondenser + 模型目录 usableContextTokens/costEstimator）；缺省 `approval:'auto'`（autoApproveGate——防线在后端工具 API 的服务端鉴权，客户端审批 UI 不是防线）；宿主要审批 UI 传自定义 `ApprovalGate`；auto + `approval:'always'` 工具并存时 console.warn 出声（审查 S3）。**有工具时自动注册 `parallel` 批量工具 + system 级用法提示注入**（真机反馈修复：漏注册使模型无法并发；且 feedback/4.10 实锤「描述 nudge 能背不能行」须 system 提醒——修后真机实录单个 parallel tool_use 内联展开并发查双订单，子调用 id `外层#序号`）。
 - `http-tool.ts`：`defineHttpTool` 把后端业务 API 降到一个声明——POST JSON / GET query 平铺（嵌套值 JSON 序列化，审查 C3）/ headers 函数式令牌轮换 / credentials / `request` 自定义式 / `mapResponse`；`ctx.signal` 透传 fetch（中断/超时可取消）；`!ok` 抛错 → 内核转 isError tool_result。
 
 ### 5C `ChatController`
