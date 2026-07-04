@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  NodeFileSystem,
   loadConventionFiles,
   dirChain,
   expandImports,
@@ -13,6 +14,9 @@ import {
   memoryKeyFor,
   findWorkspaceRoot,
 } from '@yo-agent/kernel';
+
+// 5.2a EnvAdapter：既有 3E 用例喂 NodeFileSystem 原样跑（行为等价重构的回归门）。
+const nfs = new NodeFileSystem();
 
 let root: string;
 beforeAll(async () => {
@@ -28,7 +32,7 @@ describe('loadConventionFiles（DESIGN §5.2）', () => {
     const sub = join(root, 'app');
     await mkdir(sub, { recursive: true });
     await writeFile(join(sub, 'AGENTS.md'), 'APP 规则');
-    const merged = await loadConventionFiles(sub);
+    const merged = await loadConventionFiles(nfs, sub);
     expect(merged).toContain('ROOT 规则');
     expect(merged).toContain('APP 规则');
     expect(merged.indexOf('ROOT 规则')).toBeLessThan(merged.indexOf('APP 规则'));
@@ -39,7 +43,7 @@ describe('loadConventionFiles（DESIGN §5.2）', () => {
     await mkdir(d, { recursive: true });
     await writeFile(join(d, 'yo.md'), 'YOFILE');
     await writeFile(join(d, 'AGENTS.md'), 'AGENTSFILE');
-    const merged = await loadConventionFiles(d, { filenames: ['yo.md', 'AGENTS.md'] });
+    const merged = await loadConventionFiles(nfs, d, { filenames: ['yo.md', 'AGENTS.md'] });
     expect(merged).toContain('YOFILE');
     expect(merged).not.toContain('AGENTSFILE');
   });
@@ -48,7 +52,7 @@ describe('loadConventionFiles（DESIGN §5.2）', () => {
     const d = join(root, 'p3');
     await mkdir(d, { recursive: true });
     await writeFile(join(d, 'yo.md'), 'x'.repeat(100));
-    const merged = await loadConventionFiles(d, { maxBytes: 10 });
+    const merged = await loadConventionFiles(nfs, d, { maxBytes: 10 });
     expect(merged.length).toBeLessThanOrEqual(10);
   });
 
@@ -69,8 +73,8 @@ describe('3E — auto-memory workspace 隔离（MEMORY.md）', () => {
       await mkdir(wsB, { recursive: true });
       await writeFile(join(wsA, 'MEMORY.md'), 'A-MEMORY-FACT');
       await writeFile(join(wsB, 'MEMORY.md'), 'B-MEMORY-FACT');
-      const aOut = await loadConventionFiles(wsA, { workspaceRoot: wsA });
-      const bOut = await loadConventionFiles(wsB, { workspaceRoot: wsB });
+      const aOut = await loadConventionFiles(nfs, wsA, { workspaceRoot: wsA });
+      const bOut = await loadConventionFiles(nfs, wsB, { workspaceRoot: wsB });
       expect(aOut).toContain('A-MEMORY-FACT');
       expect(aOut).not.toContain('B-MEMORY-FACT');
       expect(bOut).toContain('B-MEMORY-FACT');
@@ -84,7 +88,7 @@ describe('3E — auto-memory workspace 隔离（MEMORY.md）', () => {
     const base = await mkdtemp(join(tmpdir(), 'yo-mem-'));
     try {
       await writeFile(join(base, 'MEMORY.md'), 'NAKED-MEM');
-      expect(await loadConventionFiles(base)).not.toContain('NAKED-MEM');
+      expect(await loadConventionFiles(nfs, base)).not.toContain('NAKED-MEM');
     } finally {
       await rm(base, { recursive: true, force: true });
     }
@@ -97,7 +101,7 @@ describe('3E — auto-memory workspace 隔离（MEMORY.md）', () => {
       await mkdir(child, { recursive: true });
       await writeFile(join(base, 'MEMORY.md'), 'PARENT-MEM');
       await writeFile(join(child, 'MEMORY.md'), 'CHILD-MEM');
-      const out = await loadConventionFiles(child, { workspaceRoot: child });
+      const out = await loadConventionFiles(nfs, child, { workspaceRoot: child });
       expect(out).toContain('CHILD-MEM');
       expect(out).not.toContain('PARENT-MEM');
     } finally {
@@ -115,7 +119,7 @@ describe('3E — @import 展开（expandImports）', () => {
       await writeFile(join(sub, 'b.md'), 'B sees @c.md'); // 相对 sub/
       await writeFile(join(sub, 'c.md'), 'C-CONTENT');
       await writeFile(join(base, 'a.md'), 'A imports @sub/b.md');
-      const out = await expandImports('@a.md', base, base);
+      const out = await expandImports(nfs, '@a.md', base, base);
       expect(out).toContain('C-CONTENT'); // a→sub/b→sub/c 各自相对解析
     } finally {
       await rm(base, { recursive: true, force: true });
@@ -128,7 +132,7 @@ describe('3E — @import 展开（expandImports）', () => {
       const ws = join(base, 'ws');
       await mkdir(ws, { recursive: true });
       await writeFile(join(base, 'secret.md'), 'SECRET-CONTENT'); // ws 之外
-      const out = await expandImports('@../secret.md', ws, ws);
+      const out = await expandImports(nfs, '@../secret.md', ws, ws);
       expect(out).not.toContain('SECRET-CONTENT');
       expect(out).toContain('越界');
     } finally {
@@ -141,7 +145,7 @@ describe('3E — @import 展开（expandImports）', () => {
     try {
       await writeFile(join(base, 'a.md'), 'A @b.md');
       await writeFile(join(base, 'b.md'), 'B @a.md');
-      const out = await expandImports('@a.md', base, base);
+      const out = await expandImports(nfs, '@a.md', base, base);
       expect(out).toContain('循环');
     } finally {
       await rm(base, { recursive: true, force: true });
@@ -155,7 +159,7 @@ describe('3E — @import 展开（expandImports）', () => {
       await writeFile(join(base, 'd1.md'), '@d2.md');
       await writeFile(join(base, 'd2.md'), '@d3.md');
       await writeFile(join(base, 'd3.md'), 'DEEP-CONTENT');
-      const out = await expandImports('@d0.md', base, base, 2);
+      const out = await expandImports(nfs, '@d0.md', base, base, 2);
       expect(out).toContain('超过最大深度');
       expect(out).not.toContain('DEEP-CONTENT');
     } finally {
@@ -166,7 +170,7 @@ describe('3E — @import 展开（expandImports）', () => {
   it('缺失目标 → 占位标记，不抛错', async () => {
     const base = await mkdtemp(join(tmpdir(), 'yo-imp-'));
     try {
-      const out = await expandImports('see @nope.md done', base, base);
+      const out = await expandImports(nfs, 'see @nope.md done', base, base);
       expect(out).toContain('未找到');
     } finally {
       await rm(base, { recursive: true, force: true });
@@ -178,7 +182,7 @@ describe('3E — @import 展开（expandImports）', () => {
     try {
       // 写一个 > 256KB 预算的大文件，确保被截断标记。
       await writeFile(join(base, 'huge.md'), 'X'.repeat(300 * 1024));
-      const out = await expandImports('@huge.md', base, base);
+      const out = await expandImports(nfs, '@huge.md', base, base);
       expect(out).toContain('超出展开预算');
       expect(out.length).toBeLessThan(300 * 1024); // 未全量内联
     } finally {
@@ -223,9 +227,9 @@ describe('3E — 手动 #remember 落盘主路', () => {
   it('appendMemoryLine 落盘 MEMORY.md，可被 loadConventionFiles 读回', async () => {
     const base = await mkdtemp(join(tmpdir(), 'yo-rem-'));
     try {
-      await appendMemoryLine(base, '事实一');
-      await appendMemoryLine(base, '事实二\n含换行');
-      const out = await loadConventionFiles(base, { workspaceRoot: base });
+      await appendMemoryLine(nfs, base, '事实一');
+      await appendMemoryLine(nfs, base, '事实二\n含换行');
+      const out = await loadConventionFiles(nfs, base, { workspaceRoot: base });
       expect(out).toContain('事实一');
       expect(out).toContain('事实二 含换行'); // 换行被压平为单行条目
     } finally {
@@ -236,12 +240,12 @@ describe('3E — 手动 #remember 落盘主路', () => {
   it('appendMemoryLine 幂等（4.9e）：重复写同内容不堆行，deduped=true；再写新内容照常追加读回', async () => {
     const base = await mkdtemp(join(tmpdir(), 'yo-dedupe-'));
     try {
-      const first = await appendMemoryLine(base, '同一条事实');
+      const first = await appendMemoryLine(nfs, base, '同一条事实');
       expect(first.deduped).toBe(false);
-      const again = await appendMemoryLine(base, '同一条事实');
+      const again = await appendMemoryLine(nfs, base, '同一条事实');
       expect(again).toEqual({ line: '- 同一条事实', deduped: true });
-      await appendMemoryLine(base, '另一条');
-      const out = await loadConventionFiles(base, { workspaceRoot: base });
+      await appendMemoryLine(nfs, base, '另一条');
+      const out = await loadConventionFiles(nfs, base, { workspaceRoot: base });
       expect(out.split('- 同一条事实').length - 1).toBe(1); // 不重复堆行
       expect(out).toContain('- 另一条'); // 下会话读回（loadConventionFiles 即会话加载路）
     } finally {
@@ -262,7 +266,7 @@ describe('3E — 手动 #remember 落盘主路', () => {
       const deep = join(repo, 'a', 'b');
       await mkdir(deep, { recursive: true });
       await mkdir(join(repo, '.git'), { recursive: true });
-      expect(findWorkspaceRoot(deep)).toBe(repo); // 上溯到 .git 所在目录
+      expect(await findWorkspaceRoot(nfs, deep)).toBe(repo); // 上溯到 .git 所在目录
     } finally {
       await rm(base, { recursive: true, force: true });
     }

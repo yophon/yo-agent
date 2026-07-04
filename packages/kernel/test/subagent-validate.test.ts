@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DefaultSubagentManager, loadRecipes, loadSkills } from '@yo-agent/kernel';
+import { DefaultSubagentManager, NodeFileSystem, loadRecipes, loadSkills } from '@yo-agent/kernel';
 import type { Recipe, SubagentHost, SubagentRunSpec, SubagentRunner } from '@yo-agent/kernel';
 import type { Id } from '@yo-agent/protocol';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -100,8 +100,8 @@ describe('4.9b — 加载失败可见（onWarn）', () => {
     await writeFile(join(agentsDir, 'badmode.md'), '---\nname: badmode\npermissionMode: yolo\n---\nP');
 
     const warns: string[] = [];
-    const skills = await loadSkills([{ dir: skillsDir }], (m) => warns.push(m));
-    const recipes = await loadRecipes([{ dir: agentsDir }], (m) => warns.push(m));
+    const skills = await loadSkills(new NodeFileSystem(), [{ dir: skillsDir }], (m: string) => warns.push(m));
+    const recipes = await loadRecipes(new NodeFileSystem(), [{ dir: agentsDir }], (m: string) => warns.push(m));
 
     expect(skills.map((s) => s.name)).toEqual(['good']); // 坏的跳过、好的照常
     expect(recipes.has('badmode')).toBe(true); // 非法 mode 只丢字段不丢 recipe

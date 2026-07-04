@@ -1,7 +1,9 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { bashTool } from './bash';
+import { makeBashTool } from './bash';
+import type { ExecBackend } from './exec';
+import { LocalSubprocessExecBackend } from './exec-local';
 import { parallelTool } from './parallel-tool';
 import type { RegisteredTool, ToolContext } from './index';
 
@@ -452,15 +454,24 @@ function indexOfSeq(hay: string[], needle: string[]): number {
   return -1;
 }
 
-export const builtinTools: RegisteredTool[] = [
-  readTool,
-  writeTool,
-  editTool,
-  lsTool,
-  grepTool,
-  globTool,
-  todoWriteTool,
-  applyPatchTool,
-  bashTool,
-  parallelTool, // 批量并行调用(feedback/4.10):内核内联展开,子调用逐一过准入链
-];
+/**
+ * 内置工具集（5.2a ExecBackend 单例提升）：装配层构造共享 ExecBackend 传入——bash 工具与
+ * extension-host 的 exec 面共用同一后端实例（沙箱档位/secret 剥离策略单点生效）。缺省自建 L1 后端。
+ */
+export function makeBuiltinTools(execBackend: ExecBackend = new LocalSubprocessExecBackend()): RegisteredTool[] {
+  return [
+    readTool,
+    writeTool,
+    editTool,
+    lsTool,
+    grepTool,
+    globTool,
+    todoWriteTool,
+    applyPatchTool,
+    makeBashTool(execBackend),
+    parallelTool, // 批量并行调用(feedback/4.10):内核内联展开,子调用逐一过准入链
+  ];
+}
+
+/** 缺省内置工具集（自建 L1 后端）；需要共享 ExecBackend 时用 makeBuiltinTools(backend)。 */
+export const builtinTools: RegisteredTool[] = makeBuiltinTools();

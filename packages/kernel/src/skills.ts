@@ -1,5 +1,5 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import type { FileSystem } from './env';
+import { joinPath } from './paths';
 
 /**
  * Skills 懒加载（DESIGN §5.4 / §8）：技能**摘要**（name+description）常驻上下文，**全文**仅在 `skill_activate`
@@ -64,27 +64,31 @@ export type LoadWarn = (msg: string) => void;
  * 支持 `<dir>/<name>.md` 与 `<dir>/<name>/SKILL.md` 两式。目录不存在/不可读 → 跳过（不抛）。
  * onWarn（4.9b）：单文件超限/为空/不可读时告警（曾经静默跳过——技能无声消失，feedback/4.8 病根 2）。
  */
-export async function loadSkills(dirs: Array<{ dir: string; source?: string }>, onWarn?: LoadWarn): Promise<Skill[]> {
+export async function loadSkills(
+  fs: FileSystem,
+  dirs: Array<{ dir: string; source?: string }>,
+  onWarn?: LoadWarn,
+): Promise<Skill[]> {
   const byName = new Map<string, Skill>();
   for (const { dir, source } of dirs) {
     let entries: string[];
     try {
-      entries = await readdir(dir);
+      entries = await fs.listDir(dir);
     } catch {
       continue; // 目录不存在 → 跳过
     }
     for (const entry of entries.sort()) {
-      const full = join(dir, entry);
+      const full = joinPath(dir, entry);
       let text: string | null = null;
       let fallbackName = entry.replace(/\.md$/i, '');
       try {
-        const st = await stat(full);
-        if (st.isDirectory()) {
+        const st = await fs.stat(full);
+        if (st.isDirectory) {
           // 目录式：无 SKILL.md 是常态（非技能目录），tryRead 对缺失静默；有但坏（超限/空/不可读）才告警。
-          text = await tryRead(join(full, 'SKILL.md'), onWarn);
+          text = await tryRead(fs, joinPath(full, 'SKILL.md'), onWarn);
           fallbackName = entry;
         } else if (entry.toLowerCase().endsWith('.md')) {
-          text = await tryRead(full, onWarn);
+          text = await tryRead(fs, full, onWarn);
         }
       } catch (e) {
         onWarn?.(`[skills] 读取 ${full} 失败，已跳过：${e instanceof Error ? e.message : String(e)}`);
@@ -107,10 +111,10 @@ export function renderSkillSummaries(skills: Skill[]): string {
 /** skill/recipe 单文件读取上限（审查 4D-LOW：不可信 workspace 放数 GB .md 会 OOM 撑爆启动）。 */
 export const MAX_SKILL_FILE_BYTES = 1024 * 1024; // 1 MiB
 
-async function tryRead(path: string, onWarn?: LoadWarn): Promise<string | null> {
+async function tryRead(fs: FileSystem, path: string, onWarn?: LoadWarn): Promise<string | null> {
   let size: number;
   try {
-    size = (await stat(path)).size;
+    size = (await fs.stat(path)).size;
   } catch {
     return null; // 不存在（目录式无 SKILL.md 是常态）→ 静默跳过
   }
@@ -119,7 +123,7 @@ async function tryRead(path: string, onWarn?: LoadWarn): Promise<string | null> 
     return null;
   }
   try {
-    const text = (await readFile(path, 'utf8')).trim();
+    const text = (await fs.readTextFile(path)).trim();
     if (!text) {
       onWarn?.(`[skills] 跳过 ${path}：内容为空`);
       return null;

@@ -14,6 +14,7 @@
 import {
   AgentKernel,
   DefaultSubagentManager,
+  NodeFileSystem,
   appendMemoryLine,
   createInProcessRunner,
   findWorkspaceRoot,
@@ -37,11 +38,13 @@ import { MemoryEventStore, ShadowGitCheckpointer, SqliteEventStore } from '@yo-a
 import type { EventStore } from '@yo-agent/store';
 import {
   InMemoryToolRegistry,
-  builtinTools,
+  LocalSubprocessExecBackend,
+  makeBuiltinTools,
   makeMemoryWriteTool,
   makeSkillActivateTool,
   makeSubagentSpawnTool,
 } from '@yo-agent/tools';
+import type { ExecBackend } from '@yo-agent/tools';
 import { ModelCatalog } from '@yo-agent/provider';
 import {
   HeadlessRenderer,
@@ -77,6 +80,9 @@ import type { EventEnvelope } from '@yo-agent/protocol';
 import { parseArgs } from './args';
 import type { Mode } from './args';
 
+/** 内核 I/O 的 Node 实现（5.2a EnvAdapter）：context-files/skills/recipes 经此注入（无状态，进程单例）。 */
+const contextFs = new NodeFileSystem();
+
 function buildStore(): EventStore {
   const dbPath = process.env.YO_DB;
   if (dbPath) {
@@ -97,19 +103,24 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   pluginHost: DefaultPluginHost;
   /** 信任门跳过的 MCP server 名单（bootstrapMcpHost 填充，systemSuffix 闭包引用 → 会话起点注入自知）。 */
   mcpSkippedUntrusted: string[];
+  /** 共享 exec 后端（5.2a 单例提升）：bash 工具已用；extension-host 的 exec 面（5.2b）复用。 */
+  execBackend: ExecBackend;
 }> {
   const { provider, model, demo } = selectProvider(opts.env, opts.prompt);
   const catalog = ModelCatalog.bundled();
   const tools = new InMemoryToolRegistry();
-  for (const t of builtinTools) tools.register(t);
+  // 5.2a ExecBackend 单例提升：bash 工具与 extension-host 的 exec 面（5.2b）共用同一后端实例。
+  const execBackend: ExecBackend = new LocalSubprocessExecBackend();
+  for (const t of makeBuiltinTools(execBackend)) tools.register(t);
 
   // 声明式扩展（4D）：从 ~/.yo-agent 与 workspace/.yo-agent 加载 skills（懒加载）+ recipes（子 agent 画像）。
   // global 在前、project 在后（project 同名覆盖）。提交 git 即全队共享。
-  const wsRoot = findWorkspaceRoot(opts.cwd);
+  const wsRoot = await findWorkspaceRoot(contextFs, opts.cwd);
   const home = homedir();
   // 4.9b：加载失败可见——坏文件/超限/非法字段出 stderr 告警（与 plugin/mcp 日志口径一致），不再三不见。
   const loadWarn = (m: string): void => console.error(m);
   const skills: Skill[] = await loadSkills(
+    contextFs,
     [
       { dir: join(home, '.yo-agent', 'skills'), source: 'global' },
       { dir: join(wsRoot, '.yo-agent', 'skills'), source: 'project' },
@@ -117,6 +128,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     loadWarn,
   );
   const recipes: Map<string, Recipe> = await loadRecipes(
+    contextFs,
     [
       { dir: join(home, '.yo-agent', 'agents'), source: 'global' },
       { dir: join(wsRoot, '.yo-agent', 'agents'), source: 'project' },
@@ -131,7 +143,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   tools.register(
     makeMemoryWriteTool(async (content) => {
       try {
-        return await appendMemoryLine(wsRoot, content);
+        return await appendMemoryLine(contextFs, wsRoot, content);
       } catch (e) {
         throw new Error(
           `写入长期记忆失败：${e instanceof Error ? e.message : String(e)}。请检查 ${join(wsRoot, 'MEMORY.md')} 的写权限与磁盘空间`,
@@ -274,7 +286,7 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       console.error(`[plugin] 启动异常（跳过）：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted };
+  return { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted, execBackend };
 }
 
 /**
@@ -410,7 +422,7 @@ async function main(): Promise<void> {
     console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server | acp]');
     process.exit(2);
   }
-  const workspaceRoot = findWorkspaceRoot(cwd);
+  const workspaceRoot = await findWorkspaceRoot(contextFs, cwd);
 
   // 手动记忆主路（3E）：`#remember <文本>` 落盘 MEMORY.md + 写结构化 MemoryStore，不耗 LLM 轮次。
   const remember = parseRememberDirective(prompt);
@@ -418,7 +430,7 @@ async function main(): Promise<void> {
     // 4.9b：写失败给可行动提示而非裸栈崩进程（只读文件系统/权限/磁盘满都可能命中）。
     // 4.9e：砍掉 MemoryStore 双写——MEMORY.md 是单一事实源（可 git 共享）；DB 轨保留给 Phase 6 向量检索。
     try {
-      const { line, deduped } = await appendMemoryLine(workspaceRoot, remember.content);
+      const { line, deduped } = await appendMemoryLine(contextFs, workspaceRoot, remember.content);
       console.error(deduped ? `[记忆] 已存在同内容，跳过（幂等）：${line}` : `[记忆] 已写入 ${workspaceRoot}/MEMORY.md：${line}`);
     } catch (e) {
       console.error(
@@ -429,7 +441,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const system = (await loadConventionFiles(cwd, { workspaceRoot })) || undefined;
+  const system = (await loadConventionFiles(contextFs, cwd, { workspaceRoot })) || undefined;
   const { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted } = await buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');

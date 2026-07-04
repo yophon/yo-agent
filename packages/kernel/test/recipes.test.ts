@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DefaultSubagentManager, loadRecipes, parseRecipe } from '@yo-agent/kernel';
+import { DefaultSubagentManager, NodeFileSystem, loadRecipes, parseRecipe } from '@yo-agent/kernel';
 import type { Id } from '@yo-agent/protocol';
 import type { Recipe, SubagentHost, SubagentRunSpec, SubagentRunner } from '@yo-agent/kernel';
 
@@ -43,7 +43,7 @@ describe('4D — loadRecipes', () => {
 
   it('从目录加载并按 name 建表', async () => {
     await writeFile(join(dir, 'r.md'), '---\nname: researcher\ntools: read\n---\nPROMPT');
-    const recipes = await loadRecipes([{ dir, source: 'project' }]);
+    const recipes = await loadRecipes(new NodeFileSystem(), [{ dir, source: 'project' }]);
     expect(recipes.get('researcher')?.tools).toEqual(['read']);
   });
 });

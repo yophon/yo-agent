@@ -189,6 +189,8 @@ export interface KernelDeps {
 export * from './kernel';
 export * from './loop-breaker';
 export * from './condenser';
+export * from './env';
+export * from './env-node';
 export * from './context-files';
 export * from './tokens';
 export * from './risk';

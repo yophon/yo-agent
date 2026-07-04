@@ -1,7 +1,7 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { PermissionModeSchema } from '@yo-agent/protocol';
 import type { PermissionMode } from '@yo-agent/protocol';
+import type { FileSystem } from './env';
+import { joinPath } from './paths';
 import { MAX_SKILL_FILE_BYTES, parseFrontmatter, parseList } from './skills';
 import type { LoadWarn } from './skills';
 
@@ -61,25 +61,29 @@ export function parseRecipe(text: string, fallbackName: string, source?: string,
  * 仅 `<dir>/<name>.md`。目录不存在/不可读 → 跳过（不抛）。
  * onWarn（4.9b）：单文件超限/为空/不可读、非法 permissionMode 时告警（曾经静默——画像无声消失）。
  */
-export async function loadRecipes(dirs: Array<{ dir: string; source?: string }>, onWarn?: LoadWarn): Promise<Map<string, Recipe>> {
+export async function loadRecipes(
+  fs: FileSystem,
+  dirs: Array<{ dir: string; source?: string }>,
+  onWarn?: LoadWarn,
+): Promise<Map<string, Recipe>> {
   const byName = new Map<string, Recipe>();
   for (const { dir, source } of dirs) {
     let entries: string[];
     try {
-      entries = await readdir(dir);
+      entries = await fs.listDir(dir);
     } catch {
       continue;
     }
     for (const entry of entries.sort()) {
       if (!entry.toLowerCase().endsWith('.md')) continue;
-      const full = join(dir, entry);
+      const full = joinPath(dir, entry);
       let text: string | null;
       try {
-        if ((await stat(full)).size > MAX_SKILL_FILE_BYTES) {
+        if ((await fs.stat(full)).size > MAX_SKILL_FILE_BYTES) {
           onWarn?.(`[recipes] 跳过 ${full}：超过 ${MAX_SKILL_FILE_BYTES} 字节上限（防 OOM）`); // 审查 4D-LOW
           continue;
         }
-        text = (await readFile(full, 'utf8')).trim() || null;
+        text = (await fs.readTextFile(full)).trim() || null;
         if (text == null) {
           onWarn?.(`[recipes] 跳过 ${full}：内容为空`);
           continue;

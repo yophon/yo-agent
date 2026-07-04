@@ -4,7 +4,7 @@
  * 模式 B「中转站直连」：用户自带 OpenAI 兼容 / Anthropic 端点 + 自己的 key；tools 可选（零工具纯对话）。
  * 两种模式 = 同一结构的不同取值，不设模式开关字段。
  */
-import type { ApprovalGate } from '@yo-agent/kernel/core';
+import type { ApprovalGate, FileSystem } from '@yo-agent/kernel/core';
 import type { Provider } from '@yo-agent/provider';
 import { AnthropicProvider, GeminiProvider, OpenAiCompatibleProvider, OpenAiResponsesProvider } from '@yo-agent/provider';
 import type { EventStore } from '@yo-agent/store/core';
@@ -49,6 +49,12 @@ export interface WebAgentConfig {
   store?: EventStore;
   /** 会话行的 agent 归属标识（5.1c）：多 agent 共享一个 store 时供会话列表区分。缺省 'default'。 */
   agentProfile?: string;
+  /**
+   * 内核 I/O 注入（5.2a EnvAdapter）：给了则装配层从该虚拟文件系统加载约定文件（'/' 起的 yo.md/AGENTS.md
+   * 链 + '/MEMORY.md'）与 skills（'/.yo-agent/skills'，注册 skill_activate + 摘要进 system）——
+   * 浏览器面因此解锁 CLI 同款 skills 能力（MemoryFileSystem 或宿主自实现，如 IndexedDB/HTTP 拉取）。
+   */
+  contextFs?: FileSystem;
 }
 
 export interface ResolvedWebAgentConfig {
@@ -62,6 +68,7 @@ export interface ResolvedWebAgentConfig {
   providerOverride?: Provider;
   store?: EventStore;
   agentProfile?: string;
+  contextFs?: FileSystem;
 }
 
 /** 配置解析校验（纯函数）：错误全部可行动——报缺什么、该怎么给。 */
@@ -89,6 +96,7 @@ export function resolveWebAgentConfig(cfg: WebAgentConfig): ResolvedWebAgentConf
     providerOverride: cfg.providerOverride,
     store: cfg.store,
     agentProfile: cfg.agentProfile,
+    contextFs: cfg.contextFs,
   };
 }
 

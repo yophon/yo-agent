@@ -3,12 +3,27 @@
  * 装配全部走 5A 的 core 子路径（浏览器安全面）：MemoryEventStore + InMemoryToolRegistry
  * + 按连接配置实例化 provider + 熔断/压缩。内核零改动，只做注入。
  */
-import type { ApprovalGate, Condenser } from '@yo-agent/kernel/core';
-import { AgentKernel, NoopCondenser, SummarizingCondenser, makeLoopBreaker, makeProviderSummarizer } from '@yo-agent/kernel/core';
+import type { ApprovalGate, Condenser, FileSystem } from '@yo-agent/kernel/core';
+import {
+  AgentKernel,
+  NoopCondenser,
+  SummarizingCondenser,
+  loadConventionFiles,
+  loadSkills,
+  makeLoopBreaker,
+  makeProviderSummarizer,
+  renderSkillSummaries,
+} from '@yo-agent/kernel/core';
 import type { Id } from '@yo-agent/protocol';
 import { ModelCatalog } from '@yo-agent/provider';
 import { MemoryEventStore } from '@yo-agent/store/core';
-import { InMemoryToolRegistry, MAX_PARALLEL_CALLS, PARALLEL_TOOL, parallelTool } from '@yo-agent/tools/core';
+import {
+  InMemoryToolRegistry,
+  MAX_PARALLEL_CALLS,
+  PARALLEL_TOOL,
+  makeSkillActivateTool,
+  parallelTool,
+} from '@yo-agent/tools/core';
 import type { WebAgentConfig } from './config';
 import { makeWebProvider, resolveWebAgentConfig } from './config';
 
@@ -52,6 +67,16 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
     }
   }
 
+  // 5.2a contextFs：惰性加载一次（首个 startSession await），约定文件 + skills 摘要拼进 system、
+  // 注册 skill_activate（懒加载全文）。虚拟 FS 约定：workspace 根 = '/'，skills 目录 = '/.yo-agent/skills'。
+  // 失败降级（如宿主已注册同名 skill_activate 撞名）：出声告警、按无上下文段继续——不留未处理 rejection。
+  const contextSections = r.contextFs
+    ? loadWebContextSections(r.contextFs, registry).catch((e) => {
+        console.warn(`[surface-web] contextFs 加载失败，已跳过：${e instanceof Error ? e.message : String(e)}`);
+        return undefined;
+      })
+    : undefined;
+
   const catalog = ModelCatalog.bundled();
   const contextWindow = catalog.contextWindow(r.connection.model);
   // 可用上下文 = 目录 contextWindow 的 80%，未知模型退默认（对齐 surface-cli/compose 语义）。
@@ -80,7 +105,25 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
     kernel,
     tools: registry,
     model: r.connection.model,
-    startSession: (opts) =>
-      kernel.startSession({ system: r.system, model: opts?.model ?? r.connection.model, sessionId: opts?.sessionId }),
+    startSession: async (opts) => {
+      const extra = contextSections ? await contextSections : undefined;
+      const system = [r.system, extra].filter(Boolean).join('\n\n') || undefined;
+      return kernel.startSession({ system, model: opts?.model ?? r.connection.model, sessionId: opts?.sessionId });
+    },
   };
+}
+
+/**
+ * 从注入的 FileSystem 组上下文段（5.2a）：约定文件链（'/' 起，MEMORY.md/@import 同 CLI 语义）+
+ * skills 摘要（全文经 skill_activate 懒加载）。仅在 createWebAgent 时跑一次；坏文件经 console.warn 可见。
+ */
+async function loadWebContextSections(fs: FileSystem, registry: InMemoryToolRegistry): Promise<string | undefined> {
+  const onWarn = (m: string): void => console.warn(`[surface-web] ${m}`);
+  const conventions = await loadConventionFiles(fs, '/', { workspaceRoot: '/' });
+  const skills = await loadSkills(fs, [{ dir: '/.yo-agent/skills', source: 'web' }], onWarn);
+  if (skills.length > 0) {
+    const byName = new Map(skills.map((s) => [s.name, s]));
+    registry.register(makeSkillActivateTool((n) => byName.get(n), () => [...byName.keys()]));
+  }
+  return [conventions, renderSkillSummaries(skills)].filter(Boolean).join('\n\n') || undefined;
 }
