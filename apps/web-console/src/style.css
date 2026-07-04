@@ -1,0 +1,30 @@
+* { box-sizing: border-box; margin: 0; }
+html, body, #app { height: 100%; }
+body {
+  font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1f2937;
+  background: #f3f4f6;
+}
+button { font: inherit; cursor: pointer; }
+input, textarea, select { font: inherit; color: inherit; }
+
+.btn {
+  padding: 6px 14px; border: none; border-radius: 8px;
+  background: #2563eb; color: #fff;
+}
+.btn:hover { background: #1d4ed8; }
+.btn:disabled { background: #93c5fd; cursor: not-allowed; }
+.btn-ghost { background: transparent; color: #2563eb; border: 1px solid #bfdbfe; }
+.btn-ghost:hover { background: #eff6ff; }
+.btn-danger { background: #fff; color: #dc2626; border: 1px solid #fecaca; }
+.btn-danger:hover { background: #fef2f2; }
+
+.field { display: block; margin-bottom: 12px; }
+.field > span { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+.field input[type="text"], .field input[type="password"], .field select, .field textarea {
+  width: 100%; padding: 7px 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff;
+}
+.field textarea { resize: vertical; }
+.hint { font-size: 12px; color: #9ca3af; }
+.warn { font-size: 12px; color: #b45309; }
+.error-text { font-size: 13px; color: #dc2626; white-space: pre-wrap; }

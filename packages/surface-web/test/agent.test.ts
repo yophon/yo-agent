@@ -63,7 +63,7 @@ describe('createWebAgent（浏览器组合根）', () => {
 
   it('parallel 批量工具：有工具时自动注册并可内联展开（两个子调用并发 fetch）；零工具时不注册', async () => {
     const fetchMock = vi.fn(
-      async (url: string, init?: RequestInit) =>
+      async (_url: string, init?: RequestInit) =>
         new Response(JSON.stringify({ echo: JSON.parse((init?.body as string) ?? '{}') })),
     );
     vi.stubGlobal('fetch', fetchMock);

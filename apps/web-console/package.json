@@ -1,0 +1,28 @@
+{
+  "name": "@yo-agent/web-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "yo-agent 官方 Web 控制台（Phase 5.1）：多 agent 配置 + 会话历史持久（IndexedDB）+ 旧会话续聊。Vue 3。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*",
+    "@yo-agent/surface-web": "workspace:*",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.3.5",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vue-tsc": "^2.2.0"
+  }
+}

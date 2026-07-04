@@ -7,7 +7,8 @@
 			"apps/**",
 			"scripts/**",
 			"*.ts",
-			"!packages/protocol/schema"
+			"!packages/protocol/schema",
+			"!**/*.vue"
 		]
 	},
 	"formatter": { "enabled": false },
