@@ -7,6 +7,7 @@
 import type { ApprovalGate } from '@yo-agent/kernel/core';
 import type { Provider } from '@yo-agent/provider';
 import { AnthropicProvider, GeminiProvider, OpenAiCompatibleProvider, OpenAiResponsesProvider } from '@yo-agent/provider';
+import type { EventStore } from '@yo-agent/store/core';
 import type { RegisteredTool } from '@yo-agent/tools/core';
 
 export type WebProviderKind = 'anthropic' | 'openai' | 'openai-responses' | 'gemini';
@@ -44,6 +45,10 @@ export interface WebAgentConfig {
   maxStepsPerTurn?: number;
   /** 注入自定义 Provider（测试 FakeProvider / 非内置协议）；设了则 connection 仅 model 生效。 */
   providerOverride?: Provider;
+  /** 事件存储（5.1c）：缺省 MemoryEventStore（刷新即失）；传 IndexedDBEventStore 得跨刷新持久+可 resume。 */
+  store?: EventStore;
+  /** 会话行的 agent 归属标识（5.1c）：多 agent 共享一个 store 时供会话列表区分。缺省 'default'。 */
+  agentProfile?: string;
 }
 
 export interface ResolvedWebAgentConfig {
@@ -55,6 +60,8 @@ export interface ResolvedWebAgentConfig {
   loopBreakerMode: 'off' | 'loose' | 'strict';
   maxStepsPerTurn?: number;
   providerOverride?: Provider;
+  store?: EventStore;
+  agentProfile?: string;
 }
 
 /** 配置解析校验（纯函数）：错误全部可行动——报缺什么、该怎么给。 */
@@ -80,6 +87,8 @@ export function resolveWebAgentConfig(cfg: WebAgentConfig): ResolvedWebAgentConf
     loopBreakerMode: cfg.loopBreakerMode ?? 'loose',
     maxStepsPerTurn: cfg.maxStepsPerTurn,
     providerOverride: cfg.providerOverride,
+    store: cfg.store,
+    agentProfile: cfg.agentProfile,
   };
 }
 

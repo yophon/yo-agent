@@ -98,13 +98,15 @@ describe('ChatController（事件流→聊天状态归约）', () => {
     expect(c.state.turnActive).toBe(false);
   });
 
-  it('TurnFailed：state.error 落文案、assistant 消息标 error、turnActive 复位', async () => {
+  it('TurnFailed：state.error 落文案、turnActive 复位；无助手输出则不留空 error 气泡（5.1c 惰性创建）', async () => {
     const provider = new FakeProvider().script(errorTurn('上游 401', { category: 'auth', status: 401 }));
     const c = new ChatController(makeAgent(provider));
     await c.send('在吗');
     expect(c.state.turnActive).toBe(false);
     expect(c.state.error).toContain('401');
-    expect(c.state.messages[1]?.status).toBe('error');
+    // 惰性创建：无任何助手侧事件 → 只有 user 气泡，错误经 state.error 呈现
+    expect(c.state.messages.map((m) => m.role)).toEqual(['user']);
+    expect(c.state.messages.filter((m) => m.status === 'streaming')).toHaveLength(0);
   });
 
   it('用量累计：TurnCompleted 的 usage/costUsd 进 totals，跨 turn 叠加', async () => {

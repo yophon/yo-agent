@@ -56,6 +56,8 @@ export class ChatController {
   private sessionId?: Id;
   private unsub?: () => void;
   private readonly listeners = new Set<(s: ChatState) => void>();
+  /** cursor 单调去重（5.1c）：open 回放与实时订阅可能重叠，重复事件会双记（参照 rpc-surface push 去重）。 */
+  private lastCursor = -1;
 
   readonly state: ChatState = {
     messages: [],
@@ -78,6 +80,43 @@ export class ChatController {
     return sid;
   }
 
+  /**
+   * 打开持久化的历史会话并续聊（5.1c）：resumeSession 重建内核内存态（必须先于 subscribe）
+   * → 先订阅入临时队列 → 回放 EventLog 重建聊天状态 → flush 队列（attachFrom 范式，防回放
+   * await 间隙的实时事件丢失/乱序；重叠靠 lastCursor 去重）。
+   */
+  async open(sessionId: Id): Promise<void> {
+    this.dispose();
+    this.resetState();
+    const ok = await this.agent.kernel.resumeSession(sessionId);
+    if (!ok) throw new Error(`会话不存在或已被删除：${sessionId}`);
+    this.sessionId = sessionId;
+    this.state.sessionId = sessionId;
+    const queue: EventEnvelope[] = [];
+    let replaying = true;
+    this.unsub = this.agent.kernel.subscribe(sessionId, null, (env) => {
+      if (replaying) queue.push(env);
+      else this.reduce(env);
+    });
+    for await (const env of this.agent.kernel.events.read(sessionId)) this.reduce(env);
+    // 上次是 turn 进行中被刷新/关页打断：EventLog 无收尾事件，收敛残留 streaming 态。
+    if (this.state.turnActive) {
+      this.state.turnActive = false;
+      this.closeAssistant('done');
+    }
+    replaying = false;
+    for (const env of queue) this.reduce(env);
+    this.emit();
+  }
+
+  private resetState(): void {
+    this.state.messages = [];
+    this.state.turnActive = false;
+    this.state.error = undefined;
+    this.state.totals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+    this.lastCursor = -1;
+  }
+
   onChange(cb: (s: ChatState) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
@@ -93,8 +132,8 @@ export class ChatController {
     }
     const sid = this.sessionId ?? (await this.start());
     this.state.error = undefined;
-    this.state.messages.push({ role: 'user', parts: [{ type: 'text', text }], status: 'done' });
     this.emit();
+    // 用户气泡由 UserMessage 事件驱动（5.1c，与回放同路径）——submitInput 内 TurnStarted 后即 emit，无感知延迟。
     try {
       await this.agent.kernel.submitInput(sid, text, globalThis.crypto.randomUUID());
     } catch (e) {
@@ -105,13 +144,11 @@ export class ChatController {
     }
   }
 
-  /** turn 进行中追加引导（显示为一条用户消息）。 */
+  /** turn 进行中追加引导（用户气泡由 UserMessage{source:steer} 事件驱动）。 */
   async steer(text: string): Promise<void> {
     if (!this.sessionId || !this.state.turnActive) {
       throw new Error('steer 只在 turn 进行中有效；空闲时用 send()');
     }
-    this.state.messages.push({ role: 'user', parts: [{ type: 'text', text }], status: 'done' });
-    this.emit();
     await this.agent.kernel.steer(this.sessionId, text);
   }
 
@@ -123,10 +160,7 @@ export class ChatController {
   /** 结束当前会话、清空状态、开新会话（挂件「新对话」按钮）。 */
   async newSession(): Promise<Id> {
     this.dispose();
-    this.state.messages = [];
-    this.state.turnActive = false;
-    this.state.error = undefined;
-    this.state.totals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+    this.resetState();
     return this.start();
   }
 
@@ -142,12 +176,19 @@ export class ChatController {
   // ───────────────────────── 事件归约 ─────────────────────────
 
   private reduce(env: EventEnvelope): void {
+    // cursor 单调去重（5.1c）：回放区间与实时队列重叠时防双记。
+    if (env.cursor <= this.lastCursor) return;
+    this.lastCursor = env.cursor;
     const e = env.event;
     switch (e.kind) {
       case 'TurnStarted': {
+        // 只置 turnActive（typing 指示由它驱动）；assistant 消息由首个助手侧事件惰性创建
+        // ——内核事件序是 TurnStarted → UserMessage → AssistantText/...，先开气泡会排到用户气泡前面。
         this.state.turnActive = true;
-        // 立即开 assistant 消息（挂件可显示输入中指示）。
-        this.state.messages.push({ role: 'assistant', parts: [], status: 'streaming' });
+        break;
+      }
+      case 'UserMessage': {
+        this.state.messages.push({ role: 'user', parts: [{ type: 'text', text: e.text }], status: 'done' });
         break;
       }
       case 'AssistantText': {

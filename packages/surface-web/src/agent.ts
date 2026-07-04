@@ -26,8 +26,8 @@ export interface WebAgent {
   readonly kernel: AgentKernel;
   readonly tools: InMemoryToolRegistry;
   readonly model: string;
-  /** 开新会话（system/model 取配置）；事件经 kernel.subscribe 消费，或直接交给 ChatController。 */
-  startSession(): Promise<Id>;
+  /** 开新会话（system 取配置，model 可覆盖）；事件经 kernel.subscribe 消费，或直接交给 ChatController。 */
+  startSession(opts?: { sessionId?: Id; model?: string }): Promise<Id>;
 }
 
 export function createWebAgent(cfg: WebAgentConfig): WebAgent {
@@ -61,7 +61,8 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
     : new NoopCondenser();
 
   const kernel = new AgentKernel({
-    store: new MemoryEventStore(),
+    store: r.store ?? new MemoryEventStore(),
+    agentProfile: r.agentProfile,
     provider,
     tools: registry,
     loopBreaker: makeLoopBreaker(r.loopBreakerMode),
@@ -79,6 +80,7 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
     kernel,
     tools: registry,
     model: r.connection.model,
-    startSession: () => kernel.startSession({ system: r.system, model: r.connection.model }),
+    startSession: (opts) =>
+      kernel.startSession({ system: r.system, model: opts?.model ?? r.connection.model, sessionId: opts?.sessionId }),
   };
 }
