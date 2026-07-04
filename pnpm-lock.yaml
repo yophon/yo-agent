@@ -97,6 +97,9 @@ importers:
       '@yo-agent/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@yo-agent/extension-host':
+        specifier: workspace:*
+        version: link:../../packages/extension-host
       '@yo-agent/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
@@ -143,6 +146,18 @@ importers:
       '@noble/hashes':
         specifier: ^1.6.0
         version: 1.8.0
+
+  packages/extension-host:
+    dependencies:
+      '@yo-agent/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@yo-agent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@yo-agent/tools':
+        specifier: workspace:*
+        version: link:../tools
 
   packages/kernel:
     dependencies:

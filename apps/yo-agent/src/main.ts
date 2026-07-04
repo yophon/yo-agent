@@ -71,9 +71,13 @@ import {
   makeMcpReadResourceTool,
 } from '@yo-agent/surface-mcp';
 import { DefaultPluginHost, loadPluginSpecs, workerTransportFactory } from '@yo-agent/plugin-host';
+import { ExtensionHost, discoverExtensions, loadTrustedExtensions, saveTrustedExtension } from '@yo-agent/extension-host';
+import type { ExtensionSpec } from '@yo-agent/extension-host';
+import type { SlashCommand } from '@yo-agent/surface-cli';
 import { PairingGate } from '@yo-agent/auth';
 import { homedir, release } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
@@ -105,6 +109,8 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   mcpSkippedUntrusted: string[];
   /** 共享 exec 后端（5.2a 单例提升）：bash 工具已用；extension-host 的 exec 面（5.2b）复用。 */
   execBackend: ExecBackend;
+  /** 进程内可信扩展档宿主（5.2b）：TUI 分支取其 commands() 适配 extraCommands。 */
+  extHost: ExtensionHost;
 }> {
   const { provider, model, demo } = selectProvider(opts.env, opts.prompt);
   const catalog = ModelCatalog.bundled();
@@ -170,8 +176,16 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
     transportFor: workerTransportFactory(pluginSpecs),
     log: (m) => console.error(m),
   });
-  // mcp + plugin 健康标志合并喂 availability（任一源熔断/崩溃 → 其工具从 resolveAvailable 消失）。
-  const allFlags = (): Set<string> => new Set([...mcpHost.flags(), ...pluginHost.flags()]);
+  // 进程内可信扩展档（5.2b / 与 plugin-host 分层并列）：主进程直载用户 TS（CLI 全局 tsx loader），
+  // 富 API（registerTool/Command/hooks/onEvent/exec/steer/followUp）；exec 面复用共享 execBackend。
+  const extHost = new ExtensionHost({
+    registry: tools,
+    execBackend,
+    defaultCwd: opts.cwd,
+    log: (m) => console.error(m),
+  });
+  // mcp + plugin + extension 健康标志合并喂 availability（任一源熔断/崩溃 → 其工具从 resolveAvailable 消失）。
+  const allFlags = (): Set<string> => new Set([...mcpHost.flags(), ...pluginHost.flags(), ...extHost.flags()]);
   const interactive = opts.mode === 'tui' || opts.mode === 'rpc' || opts.mode === 'acp';
   // mcp-server：autonomous 节点，放行所有工具（orchestrator 已委派信任，§3.3/§15.3 安全注见 surface-mcp）。
   const approvalGate: ApprovalGate | undefined = opts.mode === 'mcp-server' ? autoApproveGate : undefined;
@@ -216,6 +230,9 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
         mcpSkippedUntrusted,
       ),
       renderSkillSummaries(skills) || undefined,
+      // 5.2b：扩展 addSystemSection 段（逐段独立求值围栏在 host 内）；startSession 时随闭包晚求值，
+      // 彼时扩展已加载完毕（bindKernel + load 均在 buildKernel 内先于任何 startSession）。
+      ...extHost.renderSystemSections(info),
     );
   // 4.10a 熔断档位:YO_LOOP_BREAKER=off|loose|strict,默认 loose(真机反馈:并行 spawn 被误熔断)。
   const lbRaw = opts.env.YO_LOOP_BREAKER;
@@ -277,6 +294,33 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   // 插件 hook 跨进程兑现（4E）：聚合 Hooks 注册进 kernel HookBus 一次，按订阅 fan-out 经 IPC；
   // 插件不可用/超时/崩溃绝不抛（PreToolUse 视为放行，不因挂掉的插件拒主循环工具）。
   kernel.registerHook(pluginHost.hooks());
+  // 扩展档装配（5.2b）：绑内核（hooks 直通 HookBus + SessionStart 自动接 onEvent/followUp 订阅）→
+  // 发现（双目录 global 前 project 后）→ 信任门（global 默认信任；project 须 opt-in：TUI 交互确认落
+  // extension-trust.json，headless 跳过 + 告警）→ 主进程 import + setup（崩溃围栏在 host 内）。
+  extHost.bindKernel(kernel);
+  try {
+    const extSpecs = await discoverExtensions([
+      { dir: join(home, '.yo-agent', 'extensions'), source: 'global' },
+      { dir: join(wsRoot, '.yo-agent', 'extensions'), source: 'project' },
+    ]);
+    if (extSpecs.length > 0) {
+      let trustedExts: Set<string>;
+      try {
+        trustedExts = await loadTrustedExtensions(home, wsRoot);
+      } catch (e) {
+        console.error(`[ext] 信任清单读取失败，project 扩展全部按未信任处理：${e instanceof Error ? e.message : String(e)}`);
+        trustedExts = new Set();
+      }
+      // 交互确认仅 TUI + TTY（rpc/acp/mcp-server 的 stdin 是协议通道，不可占用）。
+      const canPrompt = opts.mode === 'tui' && process.stdin.isTTY === true;
+      await extHost.load(extSpecs, {
+        isProjectExtensionTrusted: (name) => trustedExts.has(name),
+        ...(canPrompt ? { confirmTrust: (spec) => confirmExtensionTrust(spec, home, wsRoot) } : {}),
+      });
+    }
+  } catch (e) {
+    console.error(`[ext] 扩展装载异常（跳过）：${e instanceof Error ? e.message : String(e)}`);
+  }
   // 启动插件（各自握手 ready 后注册其工具）；best-effort：失败/崩溃只记日志、不阻断本机 agent。
   if (pluginSpecs.length > 0) {
     try {
@@ -286,7 +330,38 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
       console.error(`[plugin] 启动异常（跳过）：${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted, execBackend };
+  return { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted, execBackend, extHost };
+}
+
+/**
+ * 项目扩展信任门交互确认（5.2b，TUI+TTY 场景；Ink render 前的 readline 一次性问答）：
+ * y → 落 ~/.yo-agent/extension-trust.json 持久信任并加载；其余 → 本次跳过。
+ */
+async function confirmExtensionTrust(spec: ExtensionSpec, home: string, projectDir: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const a = (
+      await rl.question(`[ext] 项目扩展「${spec.name}」将在主进程执行任意代码（${spec.modulePath}）。信任并加载？[y/N] `)
+    )
+      .trim()
+      .toLowerCase();
+    if (a !== 'y' && a !== 'yes') return false;
+    await saveTrustedExtension(home, projectDir, spec.name);
+    console.error(`[ext] 已信任「${spec.name}」（记入 ~/.yo-agent/extension-trust.json，下次启动免确认）`);
+    return true;
+  } finally {
+    rl.close();
+  }
+}
+
+/** 扩展命令 → TUI SlashCommand 适配（5.2b）：CommandDeps 面收敛为 ExtensionCommandCtx。 */
+function adaptExtensionCommands(extHost: ExtensionHost): SlashCommand[] {
+  return extHost.commands().map((c) => ({
+    name: c.name,
+    desc: c.desc,
+    run: (d, args) =>
+      c.run({ sessionId: d.sessionId(), notice: (text) => d.notice('info', text) }, args),
+  }));
 }
 
 /**
@@ -442,7 +517,7 @@ async function main(): Promise<void> {
   }
 
   const system = (await loadConventionFiles(contextFs, cwd, { workspaceRoot })) || undefined;
-  const { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted } = await buildKernel({ env, cwd, prompt, mode });
+  const { kernel, model, demo, mcpHost, pluginHost, mcpSkippedUntrusted, extHost } = await buildKernel({ env, cwd, prompt, mode });
   if (demo && mode !== 'jsonl') {
     console.error('[演示态] 未设 API key，使用 FakeProvider。设置 ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY 接真实模型。');
   }
@@ -475,7 +550,18 @@ async function main(): Promise<void> {
     if (mode === 'tui') {
       const mode0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.permissionMode ?? 'supervised';
       const model0 = kernel.listSessions().find((s) => s.sessionId === sessionId)?.model ?? model;
-      await runTui({ kernel, sessionId, prompt, model: model0, cwd, permissionMode: mode0, demo, openResumePicker, replayOnMount });
+      await runTui({
+        kernel,
+        sessionId,
+        prompt,
+        model: model0,
+        cwd,
+        permissionMode: mode0,
+        demo,
+        openResumePicker,
+        replayOnMount,
+        extraCommands: adaptExtensionCommands(extHost), // 5.2b：补全与 /help 同源自动带上
+      });
       return;
     }
     const renderer = mode === 'jsonl' ? new JsonlRenderer() : new HeadlessRenderer();

@@ -3,6 +3,7 @@
  * 单独成文件也解掉 commands.ts ↔ app.ts 的类型环依赖。
  */
 import type { ApprovalDecision, EventEnvelope, Id, PermissionMode } from '@yo-agent/protocol';
+import type { SlashCommand } from './commands';
 
 /** CliApp 仅依赖内核的这几个方法。可选项缺省时对应功能降级(FakeKernel 测试免实现)。 */
 export interface TuiKernel {
@@ -51,4 +52,6 @@ export interface CliAppProps {
   openResumePicker?: boolean;
   /** 挂载即回放历史事件(`--resume <id>/last` 已恢复的会话,4.7f)。 */
   replayOnMount?: boolean;
+  /** 扩展注入的 slash 命令(5.2b extension-host):与内置撞名时内置优先并告警;补全与 /help 同源自动带上。 */
+  extraCommands?: SlashCommand[];
 }

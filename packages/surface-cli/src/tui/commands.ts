@@ -70,12 +70,16 @@ export interface SlashCommand {
   run(deps: CommandDeps, args: string): void | Promise<void>;
 }
 
-export function buildCommands(): SlashCommand[] {
-  return [
+/**
+ * 构建命令表（5.2b：extra 注入扩展命令——与内置撞名（含别名）时内置优先，经 onClash 告警不静默覆盖）。
+ * /help 与补全同源自本返回值：extra 注入即自动进帮助与补全菜单。
+ */
+export function buildCommands(extra: SlashCommand[] = [], onClash?: (name: string) => void): SlashCommand[] {
+  const all: SlashCommand[] = [
     {
       name: '/help',
       desc: '显示命令与快捷键',
-      run: (d) => d.notice('info', helpText(buildCommands())),
+      run: (d) => d.notice('info', helpText(all)),
     },
     {
       name: '/clear',
@@ -301,6 +305,17 @@ export function buildCommands(): SlashCommand[] {
       run: (d) => d.exit(),
     },
   ];
+  const taken = new Set(all.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
+  for (const c of extra) {
+    const names = [c.name, ...(c.aliases ?? [])];
+    if (names.some((n) => taken.has(n))) {
+      onClash?.(c.name);
+      continue; // 内置/先注册者优先，不静默覆盖
+    }
+    for (const n of names) taken.add(n);
+    all.push(c);
+  }
+  return all;
 }
 
 /** 解析 `/cmd args`;非 slash(或首词不含 `/` 前缀)返回 null。 */

@@ -49,6 +49,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     demo = false,
     openResumePicker = false,
     replayOnMount = false,
+    extraCommands = [],
   } = props;
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -99,7 +100,15 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   const pasteStoreRef = useRef(newPasteStore());
 
   // ── 补全(4.6d):候选由 editor 状态派生;选中/抑制在 reducer(4.7c)──────
-  const commandsRef = useRef(buildCommands());
+  // 5.2b:扩展命令并入注册表(内置优先,撞名收集后挂载时告警——初始化期不可 dispatch)。
+  const clashesRef = useRef<string[]>([]);
+  const commandsRef = useRef(buildCommands(extraCommands, (n) => clashesRef.current.push(n)));
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 撞名告警仅挂载时报一次
+  useEffect(() => {
+    if (clashesRef.current.length > 0) {
+      dispatch({ type: 'notice', tone: 'warn', text: `扩展命令与内置撞名已被忽略:${clashesRef.current.join(', ')}(内置优先)` });
+    }
+  }, []);
   const filesBox = useSyncedRef<string[] | null>(null);
   const filesLoadingRef = useRef(false);
   const lastTokenRef = useRef<string | null>(null);

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@yo-agent/auth": "workspace:*",
+    "@yo-agent/extension-host": "workspace:*",
     "@yo-agent/kernel": "workspace:*",
     "@yo-agent/plugin-host": "workspace:*",
     "@yo-agent/protocol": "workspace:*",

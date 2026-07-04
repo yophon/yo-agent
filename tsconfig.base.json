@@ -33,6 +33,7 @@
       "@yo-agent/surface-acp": ["packages/surface-acp/src/index.ts"],
       "@yo-agent/surface-mcp": ["packages/surface-mcp/src/index.ts"],
       "@yo-agent/plugin-host": ["packages/plugin-host/src/index.ts"],
+      "@yo-agent/extension-host": ["packages/extension-host/src/index.ts"],
       "@yo-agent/auth": ["packages/auth/src/index.ts"]
     }
   }
