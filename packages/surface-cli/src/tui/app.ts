@@ -101,8 +101,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
 
   // ── 补全(4.6d):候选由 editor 状态派生;选中/抑制在 reducer(4.7c)──────
   // 5.2b:扩展命令并入注册表(内置优先,撞名收集后挂载时告警——初始化期不可 dispatch)。
+  // ??= 惰性一次构建:useRef 实参每帧重求值会重复 push 撞名(审查 LOW-7)。
   const clashesRef = useRef<string[]>([]);
-  const commandsRef = useRef(buildCommands(extraCommands, (n) => clashesRef.current.push(n)));
+  const commandsRef = useRef<ReturnType<typeof buildCommands> | null>(null);
+  commandsRef.current ??= buildCommands(extraCommands, (n) => clashesRef.current.push(n));
+  const commands = commandsRef.current;
   // biome-ignore lint/correctness/useExhaustiveDependencies: 撞名告警仅挂载时报一次
   useEffect(() => {
     if (clashesRef.current.length > 0) {
@@ -129,7 +132,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
       return c.result;
     }
     const comp = computeCompletion(edState.text, edState.cursor, {
-      commands: commandsRef.current.map((cm) => ({ name: cm.name, desc: cm.desc })),
+      commands: commands.map((cm) => ({ name: cm.name, desc: cm.desc })),
       files,
     });
     const result = comp && suppressed !== comp.token ? comp : null;
@@ -233,7 +236,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   // biome-ignore lint/correctness/useExhaustiveDependencies: 仅挂载时执行一次,启动参数不随渲染变化
   useEffect(() => {
     if (openResumePicker) {
-      const cmd = findCommand(commandsRef.current, '/resume');
+      const cmd = findCommand(commands, '/resume');
       if (cmd) void cmd.run(commandDeps, '');
     } else if (replayOnMount) {
       void replaySession(sidBox.current);
@@ -313,7 +316,7 @@ export function CliApp(props: CliAppProps): React.ReactElement {
     mode: () => modeBox.current,
     applyMode: (m) => applyMode(commandDeps, m),
     runSlash: (name, args) => {
-      const cmd = findCommand(commandsRef.current, name);
+      const cmd = findCommand(commands, name);
       if (!cmd) {
         dispatch({ type: 'notice', tone: 'warn', text: `未知命令:${name}(/help 看帮助)` });
         return;

@@ -5,8 +5,11 @@
  * extension-host = 进程内可信（主进程直载用户 TS/富 API/零 IPC 开销）。共享同一 ToolRegistry/HookBus。
  *
  * 围栏语义：
- *   - 单扩展 import/setup 抛错 → log + 跳过，不拖垮启动；其已注册工具因健康 flag（ext:<name>）
- *     缺失自动从 resolveAvailable 消失（复用 3C 熔断显隐，与 plugin-host 同构）。
+ *   - 单扩展 import/setup 抛错 → log + 跳过，不拖垮启动。setup 期注册物走 **staging 两段提交**
+ *     （审查 5.2c HIGH-1）：hooks/system 段/命令/onEvent 暂存，setup 成功才生效、抛错即回滚——
+ *     半初始化的 PreToolUse hook 若残留会 fail-closed deny 全部工具（坏扩展打死 agent）。
+ *     工具注册不回滚：健康 flag（ext:<name>）仅授予成功加载者 → 失败扩展的工具自动从
+ *     resolveAvailable 消失（复用 3C 熔断显隐，与 plugin-host 同构）。
  *   - hook 直通内核 HookBus（PreToolUse fail-closed / 观测型 fail-open，不另立语义）。
  *   - onEvent 回调抛错 → log，不影响其余监听者与事件流。
  */
@@ -47,6 +50,16 @@ export interface LoadExtensionsOpts {
   onSkippedUntrusted?: (name: string) => void;
 }
 
+/** setup 期注册物暂存（审查 HIGH-1）：commit 前不生效，setup 抛错整体回滚。 */
+interface Staging {
+  committed: boolean;
+  /** hooks 的反注册（已进 HookBus/pending，回滚时摘除）。 */
+  disposers: Array<() => void>;
+  sections: Array<{ ext: string; section: string | ((info: SessionSelfInfo) => string) }>;
+  cmds: ExtensionCommand[];
+  listeners: Array<{ ext: string; cb: (env: EventEnvelope) => void }>;
+}
+
 export class ExtensionHost {
   private readonly loaded: string[] = [];
   private readonly sections: Array<{ ext: string; section: string | ((info: SessionSelfInfo) => string) }> = [];
@@ -54,7 +67,8 @@ export class ExtensionHost {
   private readonly eventListeners: Array<{ ext: string; cb: (env: EventEnvelope) => void }> = [];
   private readonly pendingHooks: Hooks[] = [];
   private readonly followUpQueues = new Map<Id, string[]>();
-  private readonly subscribed = new Set<Id>();
+  /** 会话订阅句柄（unsubscribe）。resubscribe 换挂新 SessionState（审查 MED-4）。 */
+  private readonly sessionSubs = new Map<Id, () => void>();
   private kernel: ExtensionKernel | undefined;
   private followUpSeq = 0;
 
@@ -65,19 +79,26 @@ export class ExtensionHost {
   }
 
   /**
-   * 绑定内核（装配：new AgentKernel 后、load 前调用）：暂存 hooks 入 HookBus + 挂内部
-   * SessionStart hook（新会话自动接 onEvent/followUp 桥接订阅）。
+   * 绑定内核（装配：new AgentKernel 后、load 前调用）：暂存 hooks 入 HookBus + 挂内部桥接 hook。
+   * 订阅接入点（审查 MED-4）：SessionStart（新会话）+ UserPromptSubmit（每次提交都 fire，
+   * kernel.ts:328）——resume 会话不 fire SessionStart，首条续聊输入即接上；且 resubscribe 换挂
+   * 使「endSession 后同 id resumeSession 重建 SessionState」的旧死订阅得到刷新。
    */
   bindKernel(kernel: ExtensionKernel): void {
     this.kernel = kernel;
     for (const h of this.pendingHooks.splice(0)) kernel.registerHook(h);
-    kernel.registerHook({ onSessionStart: (ctx) => this.ensureSubscribed(ctx.sessionId) });
+    kernel.registerHook({
+      onSessionStart: (ctx) => this.resubscribe(ctx.sessionId),
+      onUserPromptSubmit: (ctx) => this.resubscribe(ctx.sessionId),
+    });
   }
 
   /**
    * 加载扩展：project 来源过信任门 → 主进程动态 import（CLI 全局 tsx loader 使 .ts 直载成立，
-   * 见 bin/yoagent.mjs）→ 校验 default export 为 defineExtension 产物 → setup(api)。
-   * 单扩展任何一步失败只 log + 跳过（崩溃围栏）。返回成功加载的扩展名。
+   * 见 bin/yoagent.mjs）→ 校验 default export 为 defineExtension 产物 → setup(api)（staging 两段提交）。
+   * 单扩展任何一步失败只 log + 跳过（崩溃围栏）。未信任 project 扩展若同名遮蔽了 global 版，
+   * 回落加载 global 版（审查 MED-3：恶意仓库放同名空壳不能零确认拆掉用户的 global 守卫扩展）。
+   * 返回成功加载的扩展名。
    */
   async load(specs: ExtensionSpec[], opts: LoadExtensionsOpts = {}): Promise<string[]> {
     const trusted = opts.isProjectExtensionTrusted ?? (() => false);
@@ -94,26 +115,43 @@ export class ExtensionHost {
         if (!ok) {
           this.log(`[ext] project 扩展「${spec.name}」未 opt-in 信任，已跳过（主进程跑任意代码，供应链防护；信任后启用）`);
           opts.onSkippedUntrusted?.(spec.name);
+          if (spec.shadowedGlobal) {
+            this.log(`[ext] 回落加载被其遮蔽的 global 版「${spec.name}」（${spec.shadowedGlobal.modulePath}）`);
+            await this.loadOne(spec.shadowedGlobal);
+          }
           continue;
         }
       }
-      try {
-        const mod: unknown = await import(pathToFileURL(spec.modulePath).href);
-        const m = (mod as { default?: unknown } | null)?.default;
-        if (!isExtensionModule(m)) {
-          this.log(`[ext] ${spec.name} 已跳过：default export 不是 defineExtension(...) 产物（${spec.modulePath}）`);
-          continue;
-        }
-        await m.setup(this.makeApi(spec.name));
-        this.loaded.push(spec.name);
-      } catch (e) {
-        // 围栏：import 语法错/依赖缺/setup 抛错——只跳过本扩展。其间已注册的工具因健康 flag
-        // 不含 ext:<name>（loaded 未收录）而自动不可见，不需回滚反注册。
-        this.log(`[ext] ${spec.name} 加载失败（已跳过）：${e instanceof Error ? e.message : String(e)}`);
-      }
+      await this.loadOne(spec);
     }
     if (this.loaded.length > 0) this.log(`[ext] 已加载 ${this.loaded.length}/${specs.length} 扩展：${this.loaded.join(', ')}`);
     return [...this.loaded];
+  }
+
+  /** import + 校验 + staging setup + 提交；任何一步失败 → 回滚 staging + log（围栏）。 */
+  private async loadOne(spec: ExtensionSpec): Promise<void> {
+    const staging: Staging = { committed: false, disposers: [], sections: [], cmds: [], listeners: [] };
+    try {
+      const mod: unknown = await import(pathToFileURL(spec.modulePath).href);
+      const m = (mod as { default?: unknown } | null)?.default;
+      if (!isExtensionModule(m)) {
+        this.log(`[ext] ${spec.name} 已跳过：default export 不是 defineExtension(...) 产物（${spec.modulePath}）`);
+        return;
+      }
+      await m.setup(this.makeApi(spec.name, staging));
+      // 提交：暂存注册物生效；此后 api 的注册调用（如事件回调里晚注册）直写。
+      staging.committed = true;
+      this.sections.push(...staging.sections);
+      this.cmds.push(...staging.cmds);
+      this.eventListeners.push(...staging.listeners);
+      this.loaded.push(spec.name);
+    } catch (e) {
+      // 围栏 + 回滚（审查 HIGH-1）：半初始化的 hooks 从 HookBus 摘除（残留的坏 PreToolUse 闭包会
+      // fail-closed deny 一切）、sections/cmds/listeners 随 staging 丢弃。工具不回滚——健康 flag
+      // 不含 ext:<name>（loaded 未收录）→ 自动不可见。
+      for (const dispose of staging.disposers) dispose();
+      this.log(`[ext] ${spec.name} 加载失败（已跳过）：${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** 健康 flag 集（喂 kernel.toolFlags 合并；加载成功才有 → 崩溃扩展的工具自动不可见）。 */
@@ -143,27 +181,29 @@ export class ExtensionHost {
     return out;
   }
 
-  // ───────────────────────── ExtensionApi 实现（每扩展一实例，闭包携带扩展名）─────────────────────────
+  // ───────────────────────── ExtensionApi 实现（每扩展一实例，闭包携带扩展名 + staging）─────────────────────────
 
-  private makeApi(ext: string): ExtensionApi {
+  private makeApi(ext: string, staging: Staging): ExtensionApi {
     const host = this;
+    // setup 期写 staging（commit 后直写宿主）——见 loadOne 的两段提交围栏。
+    const live = (): boolean => staging.committed;
     return {
       name: ext,
       registerTool(tool: RegisteredTool): void {
-        host.registerTool(ext, tool);
+        host.registerTool(ext, tool); // 不 staging：健康 flag 显隐已罩住失败扩展的工具
       },
       registerCommand(cmd: ExtensionCommand): void {
-        host.registerCommand(ext, cmd);
+        host.registerCommand(ext, cmd, live() ? undefined : staging);
       },
       addSystemSection(section): void {
-        host.sections.push({ ext, section });
+        (live() ? host.sections : staging.sections).push({ ext, section });
       },
       on(hooks: Hooks): void {
-        if (host.kernel) host.kernel.registerHook(hooks);
-        else host.pendingHooks.push(hooks);
+        const dispose = host.registerHooks(hooks);
+        if (!live()) staging.disposers.push(dispose);
       },
       onEvent(cb): void {
-        host.eventListeners.push({ ext, cb });
+        (live() ? host.eventListeners : staging.listeners).push({ ext, cb });
       },
       exec(cmd, opts): Promise<ExecResult> {
         return host.exec(cmd, opts);
@@ -205,13 +245,24 @@ export class ExtensionHost {
     }
   }
 
-  private registerCommand(ext: string, cmd: ExtensionCommand): void {
+  /** hooks 注册（含 bindKernel 前暂存），返回反注册（staging 回滚用）。 */
+  private registerHooks(h: Hooks): () => void {
+    if (this.kernel) return this.kernel.registerHook(h);
+    this.pendingHooks.push(h);
+    return () => {
+      const i = this.pendingHooks.indexOf(h);
+      if (i >= 0) this.pendingHooks.splice(i, 1);
+    };
+  }
+
+  private registerCommand(ext: string, cmd: ExtensionCommand, staging?: Staging): void {
     const name = cmd.name.startsWith('/') ? cmd.name : `/${cmd.name}`;
-    if (this.cmds.some((c) => c.name === name)) {
+    // 撞名对「已提交 + 本扩展暂存中」联合检查（先注册者优先）。
+    if (this.cmds.some((c) => c.name === name) || staging?.cmds.some((c) => c.name === name)) {
       this.log(`[ext:${ext}] 命令「${name}」与其他扩展撞名，已跳过（先注册者优先）`);
       return;
     }
-    this.cmds.push({ ...cmd, name });
+    (staging ? staging.cmds : this.cmds).push({ ...cmd, name });
   }
 
   private async exec(
@@ -249,13 +300,24 @@ export class ExtensionHost {
     return this.kernel;
   }
 
-  /** 幂等订阅一个会话（SessionStart hook 自动触发；followUp 对 resume 会话手动兜底）。 */
+  /**
+   * 换挂订阅（SessionStart/UserPromptSubmit hook 触发）：先摘旧再订新——同 id 会话被 endSession
+   * 后 resumeSession 会重建 SessionState（旧 handler 挂在已弃 subscribers 集上永久死亡，审查 MED-4），
+   * 每次 prompt 提交时换挂保证 handler 落在当前活 SessionState。unsub+sub 皆 O(1) set 操作。
+   */
+  private resubscribe(sessionId: Id): void {
+    if (!this.kernel) return;
+    this.sessionSubs.get(sessionId)?.();
+    this.sessionSubs.set(
+      sessionId,
+      this.kernel.subscribe(sessionId, null, (env) => this.onEnvelope(env)),
+    );
+  }
+
+  /** 幂等订阅（followUp 兜底：resume 会话在首条续聊输入前 followUp 也能接上）。 */
   private ensureSubscribed(sessionId: Id): void {
-    if (!this.kernel || this.subscribed.has(sessionId)) return;
-    // 无监听需求（无 onEvent 且无 followUp 队列）时也订阅——订阅是幂等轻量的（内存 set 分发），
-    // 换取「扩展在任意回调里晚注册 onEvent 也能收到后续事件」的确定性。
-    this.subscribed.add(sessionId);
-    this.kernel.subscribe(sessionId, null, (env) => this.onEnvelope(env));
+    if (!this.kernel || this.sessionSubs.has(sessionId)) return;
+    this.resubscribe(sessionId);
   }
 
   private onEnvelope(env: EventEnvelope): void {

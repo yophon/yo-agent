@@ -21,13 +21,20 @@ class FakeKernel implements ExtensionKernel {
   submitted: Array<{ sessionId: Id; prompt: string; idemKey: string }> = [];
   registerHook(h: Hooks): () => void {
     this.hooks.push(h);
-    return () => {};
+    return () => {
+      const i = this.hooks.indexOf(h);
+      if (i >= 0) this.hooks.splice(i, 1);
+    };
   }
   subscribe(sessionId: Id, _from: number | null, handler: (env: EventEnvelope) => void): () => void {
     const list = this.handlers.get(sessionId) ?? [];
     list.push(handler);
     this.handlers.set(sessionId, list);
-    return () => {};
+    return () => {
+      const cur = this.handlers.get(sessionId) ?? [];
+      const i = cur.indexOf(handler);
+      if (i >= 0) cur.splice(i, 1);
+    };
   }
   async steer(sessionId: Id, text: string): Promise<void> {
     this.steered.push({ sessionId, text });
@@ -127,8 +134,8 @@ describe('5.2b — 加载与围栏', () => {
     expect(decision).toEqual({ decision: 'deny', reason: 'fixture 拦截' });
   });
 
-  it('崩溃围栏：setup 抛错的扩展被跳过，其已注册工具因健康 flag 缺失不可见；不拖垮同批其它扩展', async () => {
-    const { host, registry, logs } = makeHost();
+  it('崩溃围栏（审查 HIGH-1）：setup 抛错 → hook/system 段/命令/onEvent 全部回滚，工具经健康 flag 不可见；不拖垮同批其它扩展', async () => {
+    const { host, kernel, registry, logs } = makeHost();
     const loaded = await host.load([spec('bad-throw.ts'), spec('good.ts')]);
     expect(loaded).toEqual(['good']); // bad-throw 跳过，good 照常
     expect(logs.join('\n')).toContain('bad-throw 加载失败');
@@ -136,6 +143,47 @@ describe('5.2b — 加载与围栏', () => {
     expect(
       registry.resolveAvailable({ sessionId: 's1', cwd: '/ws', flags: host.flags() }).some((d) => d.name === 'bad_tool'),
     ).toBe(false);
+    // staging 回滚：坏扩展的半初始化 PreToolUse（会 fail-closed deny 一切）已从 HookBus 摘除——
+    // 只剩 good 的那个，且对普通工具放行。
+    const preToolHooks = kernel.hooks.filter((h) => h.onPreToolUse);
+    expect(preToolHooks).toHaveLength(1);
+    expect(await preToolHooks[0]!.onPreToolUse!(
+      { sessionId: 's1', cwd: '/ws', permissionMode: 'supervised' },
+      { tool: 'bash', kind: 'execute', input: {} },
+    )).toBeUndefined();
+    // system 段/命令只剩 good 的；坏监听未挂上（发事件不出「onEvent 回调抛错」告警）。
+    expect(host.renderSystemSections({ model: 'm', cwd: '/ws', permissionMode: 'supervised' }).join('')).not.toContain('坏扩展');
+    expect(host.commands().map((c) => c.name)).toEqual(['/fixture']);
+    const sessionStart = kernel.hooks.find((x) => x.onSessionStart)!;
+    await sessionStart.onSessionStart!({ sessionId: 's1', cwd: '/ws', permissionMode: 'supervised' });
+    kernel.emit('s1', envelope('s1', { kind: 'Error', message: 'x' }));
+    expect(logs.join('\n')).not.toContain('onEvent 回调抛错');
+  });
+
+  it('信任门回落（审查 MED-3）：未信任 project 同名扩展不能拆掉 global 守卫——回落加载被遮蔽的 global 版', async () => {
+    const h = makeHost();
+    const projectSpec: ExtensionSpec = { ...spec('bad-export.ts', 'project'), name: 'good', shadowedGlobal: spec('good.ts') };
+    const loaded = await h.host.load([projectSpec]);
+    expect(loaded).toEqual(['good']); // project 版被信任门拒 → global 版照常生效
+    expect(h.logs.join('\n')).toContain('回落加载');
+    expect(h.host.commands().map((c) => c.name)).toEqual(['/fixture']);
+  });
+
+  it('订阅换挂（审查 MED-4）：resume 会话经 UserPromptSubmit 接上；endSession 重建后换挂刷新死订阅', async () => {
+    const h = makeHost();
+    const api = await captureApi(h);
+    const seen: string[] = [];
+    api.onEvent((env) => seen.push(env.event.kind));
+    // resume 会话不 fire SessionStart——首条续聊输入（UserPromptSubmit）即接上订阅。
+    const bridge = h.kernel.hooks.find((x) => x.onUserPromptSubmit)!;
+    await bridge.onUserPromptSubmit!({ sessionId: 'r1', cwd: '/ws', permissionMode: 'supervised' }, 'hi');
+    h.kernel.emit('r1', envelope('r1', { kind: 'Error', message: 'a' }));
+    expect(seen).toEqual(['Error']);
+    // 每次提交换挂（先摘旧再订新）→ handler 恒只有一份，不重复 fan-out。
+    await bridge.onUserPromptSubmit!({ sessionId: 'r1', cwd: '/ws', permissionMode: 'supervised' }, 'again');
+    expect(h.kernel.handlers.get('r1')).toHaveLength(1);
+    h.kernel.emit('r1', envelope('r1', { kind: 'Error', message: 'b' }));
+    expect(seen).toEqual(['Error', 'Error']);
   });
 
   it('default export 非 defineExtension 产物 → 跳过 + 可行动告警', async () => {

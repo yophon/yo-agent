@@ -5,6 +5,7 @@
     "packages/*/test/**/*.ts",
     "packages/*/scripts/**/*.ts",
     "apps/*/src/**/*.ts",
+    "examples/**/*.ts",
     "vitest.config.ts"
   ],
   // web-demo/web-console 需要 DOM lib，用各自 tsconfig 单独 typecheck（根 typecheck 脚本串跑）。

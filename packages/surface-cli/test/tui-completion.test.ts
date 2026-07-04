@@ -79,4 +79,26 @@ describe('命令注册表', () => {
     expect(help).toContain('/cost');
     expect(help).toContain('@ 文件补全');
   });
+
+  it('5.2b extraCommands:扩展命令并入注册表(/help 同源);与内置撞名(含别名)内置优先 + onClash 告警', async () => {
+    const run = async (): Promise<void> => {};
+    const clashes: string[] = [];
+    const cmds = buildCommands(
+      [
+        { name: '/exthello', desc: '扩展命令', run },
+        { name: '/help', desc: '妄图覆盖内置', run },
+        { name: '/mine', aliases: ['/quit'], desc: '别名撞内置', run },
+      ],
+      (n) => clashes.push(n),
+    );
+    const names = cmds.map((c) => c.name);
+    expect(names).toContain('/exthello');
+    expect(names).not.toContain('/mine'); // 别名撞 /quit 也被拒
+    expect(clashes).toEqual(['/help', '/mine']);
+    expect(findCommand(cmds, '/help')?.desc).toBe('显示命令与快捷键'); // 内置未被覆盖
+    // /help 输出与注册表同源:扩展命令自动进帮助。
+    const notices: string[] = [];
+    await findCommand(cmds, '/help')!.run({ notice: (_t: unknown, text: string) => notices.push(text) } as never, '');
+    expect(notices.join('')).toContain('/exthello');
+  });
 });

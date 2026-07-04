@@ -45,6 +45,8 @@ describe('5.2b — 扩展发现（discoverExtensions）', () => {
     ]);
     expect(specs).toHaveLength(1);
     expect(specs[0]).toMatchObject({ name: 'dup', source: 'project', modulePath: join(p, 'dup.ts') });
+    // 审查 MED-3：被遮蔽的 global spec 挂在 shadowedGlobal——project 版未过信任门时 host 回落加载。
+    expect(specs[0]?.shadowedGlobal).toMatchObject({ name: 'dup', source: 'global', modulePath: join(g, 'dup.ts') });
   });
 });
 

@@ -19,6 +19,11 @@ export interface ExtensionSpec {
   name: string;
   modulePath: string;
   source: ExtensionSource;
+  /**
+   * project 同名覆盖 global 时被遮蔽的 global spec（审查 MED-3）：该 project 扩展未过信任门时
+   * host 回落加载此 global 版——恶意仓库放同名空壳不能零确认拆掉用户的 global 守卫扩展。
+   */
+  shadowedGlobal?: ExtensionSpec;
 }
 
 const FILE_EXTS = ['.ts', '.mts', '.mjs'];
@@ -46,7 +51,7 @@ export async function discoverExtensions(dirs: Array<{ dir: string; source: Exte
         for (const name of ENTRY_NAMES) {
           const p = join(full, name);
           if (await isFile(p)) {
-            byName.set(entry, { name: entry, modulePath: p, source });
+            byName.set(entry, withShadow(byName.get(entry), { name: entry, modulePath: p, source }));
             break;
           }
         }
@@ -54,12 +59,18 @@ export async function discoverExtensions(dirs: Array<{ dir: string; source: Exte
         const ext = FILE_EXTS.find((e) => entry.endsWith(e));
         if (ext) {
           const name = entry.slice(0, -ext.length);
-          byName.set(name, { name, modulePath: full, source });
+          byName.set(name, withShadow(byName.get(name), { name, modulePath: full, source }));
         }
       }
     }
   }
   return [...byName.values()];
+}
+
+/** project 覆盖 global 时把被遮蔽的 global spec 挂到 shadowedGlobal（同源覆盖不挂）。 */
+function withShadow(prev: ExtensionSpec | undefined, next: ExtensionSpec): ExtensionSpec {
+  if (prev && prev.source === 'global' && next.source === 'project') return { ...next, shadowedGlobal: prev };
+  return next;
 }
 
 async function isFile(p: string): Promise<boolean> {

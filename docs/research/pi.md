@@ -6,11 +6,12 @@
 
 Pi 是一个"minimal terminal coding harness"——有意保持内核极简，通过 TypeScript 扩展机制让用户自定义一切。口号是"there are many agent harnesses, but this one is yours"，哲学为"primitives, not features"：提供积木而非现成解法。设计动机明确：Mario Zechner 认为 Claude Code 行为不可预测，希望打造一个行为稳定、尽可能少加特性的 AI harness。
 
-**核心组成（四包 monorepo）：**
-- `@earendil-works/pi-ai`：统一多 provider LLM API 抽象层
-- `@earendil-works/pi-agent-core`：工具调用 + 会话状态执行引擎
-- `@earendil-works/pi-coding-agent`：面向用户的 CLI TUI（即 `pi` 命令本身）
-- `@earendil-works/pi-tui`：差量渲染终端 UI 库
+**核心组成（五包 monorepo；行数为 2026-07-04 源码实测，见 §12）：**
+- `@earendil-works/pi-ai`：统一多 provider LLM API 抽象层（36,133 行——最大的一包，多 provider 适配是重头）
+- `@earendil-works/pi-agent`：工具调用 + 会话状态执行引擎（8,098 行——真正的"内核"非常小）
+- `@earendil-works/pi-coding-agent`：面向用户的 CLI TUI + 扩展系统（51,545 行，即 `pi` 命令本身）
+- `@earendil-works/pi-tui`：差量渲染终端 UI 库（12,118 行）
+- `@earendil-works/pi-orchestrator`：多会话编排（1,987 行；早期调研遗漏的第五包）
 
 版本现为 **0.80.2**（2026-06-23），npm 包名 `@earendil-works/pi-coding-agent`，约 **65.1k GitHub Stars**，240+ releases。2026 年 4 月 Mario Zechner 加入 Armin Ronacher 联合创立的公益公司 Earendil（详见 lucumr.pocoo.org/2026/4/8/mario-and-earendil/），项目迁至 `earendil-works` 组织，持续 MIT 许可。OpenClaw（378k+ stars）使用 pi SDK 驱动其整个 assistant 层，是 pi 成长最大的外部引用方。
 
@@ -280,6 +281,25 @@ yo-agent 针对不同聊天平台和场景（QQ 群聊 vs Telegram 频道 vs 编
 
 **6. 模型切换 + thinking level 快捷键**
 yo-agent 应内置 `Ctrl+P` 风格的模型循环切换和 thinking level 调节，尤其在聊天平台适配层：轻量任务用 haiku，复杂编程任务用 sonnet:high，无需重启 session。
+
+## 12. 实测更正与补充（Phase 5.2 源码级核查，2026-07-04）
+
+> 以下来自 `git clone --depth 1 https://github.com/earendil-works/pi` 的源码实测（0.80.x），修正上文网络调研的偏差；
+> 精确文件参照点见 docs/PHASE-5.2.md 附录。
+
+**更正：**
+- **四包 → 五包**：上文 §1 原记四包，实测 monorepo 为五包（漏了 `orchestrator`，1,987 行）；且执行引擎包名是 `agent`（非 `pi-agent-core`）。行数分布已并入 §1——值得注意的是"内核"（agent 包）只有 8k 行，体量大头在 provider 适配（ai 36k）与产品层（coding-agent 51k）。
+- **扩展事件 20+ → 实测 30 个**：`packages/coding-agent/src/core/extensions/types.ts`（1,638 行）实际定义 30 个生命周期事件；loader 用 jiti 加载用户 TS 并预绑定 pi 包依赖。
+- **官方示例扩展 68 个**（`packages/coding-agent/examples/extensions/`），API 使用分布实测：registerCommand 30 / registerTool 15 / import pi-tui（setWidget 等 UI 面）21 / 直接 import node: 10。
+
+**补充——ExecutionEnv 三层机制（Phase 5.2 抄进 yo-agent 的精华①）：**
+- `packages/agent/src/harness/types.ts:332`：`ExecutionEnv = FileSystem + Shell` 接口——**内核自身的 I/O 需求**（skills/AGENTS.md/模板加载）全部走此接口，Node 实现只在 `harness/env/nodejs.ts` 一个文件（569 行）。
+- 核心包双入口：`src/index.ts`（纯逻辑）/ `src/node.ts`（+NodeExecutionEnv）——浏览器/自定义宿主注入自己的 env。
+- 现实妥协：**内置工具不写在 ExecutionEnv 上**——`core/tools/read.ts` 直连 node:fs，另设 `ReadOperations` 按工具覆写接口（SSH 委托用）。验证了「产品层工具 Node 直连」与「内核 I/O 接口化」可以并存。yo-agent 5.2a 的 EnvAdapter（kernel/env.ts FileSystem + MemoryFileSystem/NodeFileSystem 双实现）即此范式的移植。
+
+**决策记录——pi ExtensionAPI 兼容层已否决（Phase 5.2 拍板）：**
+- 否决理由：① 扩展 UI 面深度绑定 pi-tui（68 个官方示例中 21 个 import pi-tui），yo-agent 的 Ink TUI 无法语义对齐；② API 未冻结（0.80.x、240+ releases），兼容是追移动目标；③ 事件模型差异（pi 30 事件 vs yo-agent HookBus 9 点 + AgentEvent 22 变体订阅流）强行映射失真。
+- 替代路线：只抄精华进自有架构——ExecutionEnv 范式 → 5.2a EnvAdapter；扩展系统能力面（registerTool/Command、事件钩子、exec、steer/followUp）→ 5.2b `@yo-agent/extension-host` 自有 `defineExtension` API（进程内可信档，与 plugin-host 不可信档分层并列）。交付见 docs/PHASE-5.2.md。
 
 ## 参考来源
 

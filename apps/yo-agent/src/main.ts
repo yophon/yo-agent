@@ -299,9 +299,13 @@ async function buildKernel(opts: { env: NodeJS.ProcessEnv; cwd: string; prompt: 
   // extension-trust.json，headless 跳过 + 告警）→ 主进程 import + setup（崩溃围栏在 host 内）。
   extHost.bindKernel(kernel);
   try {
+    // wsRoot 可能等于 home（$HOME 是 dotfiles git 仓库）——去重防 global 目录被二次扫描降级成
+    // project 源（否则全部 global 扩展莫名要求信任确认，审查 LOW-6）。
+    const globalExtDir = join(home, '.yo-agent', 'extensions');
+    const projectExtDir = join(wsRoot, '.yo-agent', 'extensions');
     const extSpecs = await discoverExtensions([
-      { dir: join(home, '.yo-agent', 'extensions'), source: 'global' },
-      { dir: join(wsRoot, '.yo-agent', 'extensions'), source: 'project' },
+      { dir: globalExtDir, source: 'global' },
+      ...(projectExtDir !== globalExtDir ? [{ dir: projectExtDir, source: 'project' as const }] : []),
     ]);
     if (extSpecs.length > 0) {
       let trustedExts: Set<string>;

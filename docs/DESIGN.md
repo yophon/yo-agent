@@ -897,6 +897,15 @@ yo-agent/
 - 基座：`IndexedDBEventStore`（对齐 sqlite 语义）+ 协议 `UserMessage` 事件（回放重建用户气泡）+ 内核 `agentProfile` 注入（会话归属）+ `ChatController.open` resume/回放；`ConsoleStore` 接口预留后端同步接缝（本期本地实现）。
 - **退出标准（已达成）**：headless 端到端——建配置 → 聊含工具 → 模拟刷新同库回放 → 续聊带上下文；全量 712 测试零回归。
 
+### Phase 5.2 — 抄 pi 精华：EnvAdapter + 进程内可信扩展档（✅ 已交付，见 [`PHASE-5.2.md`](PHASE-5.2.md)）
+
+> 对 pi 源码研究（[`research/pi.md`](research/pi.md) §12）拍板：**不做 pi ExtensionAPI 兼容层**（UI 面绑 pi-tui / API 未冻结），只抄两样精华进自有架构。
+
+- **EnvAdapter（5.2a）**：内核自身 I/O 需求接口化——`kernel/env.ts` 窄 `FileSystem` 接口 + `MemoryFileSystem` 进 core、`NodeFileSystem` 仅主入口；context-files/skills/recipes 注入 fs 变纯逻辑进 core → **浏览器面解锁 skills/约定文件**（surface-web `contextFs`）；ExecBackend 提升为装配层共享单例。
+- **`@yo-agent/extension-host`（5.2b）**：进程内**可信**扩展档，与 plugin-host（跨进程不可信档）分层并列——`defineExtension` 自有 API（registerTool 钳制/registerCommand→TUI extraCommands/addSystemSection/on hooks 直通 HookBus/onEvent/exec 共享后端/steer/followUp）+ 双目录发现 + 项目信任门（`extension-trust.json`，TUI 交互确认/headless 跳过）+ 崩溃围栏（健康 flag 显隐）。
+- **退出标准（已达成）**：既有 3E/4D/4B 测试喂 NodeFileSystem 零回归；示例扩展真机加载 + 信任门生效；`pnpm run check` 全绿。
+- **Phase 5.3 候选（本期不做）**：会话 DAG 兑现——`EventEnvelope.parentId` 真实挂树 + fork/tree/分支摘要（pi 的第三样精华；现 kernel doEmit 恒填 null）。
+
 ### Phase 6 — 聊天平台接入（QQ / Telegram，差异化空白点，依赖 Phase 4 底座）
 
 - ChatSurface：Transport + Adapter 二层 + OneBot v11（QQ）优先，Telegram / Discord 跟进；DM pairing。
