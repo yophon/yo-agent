@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// 注：tsconfig.base.json 须保持纯 JSON（勿加注释）——此处 JSON.parse 不容 JSONC。
 const { compilerOptions } = JSON.parse(readFileSync(path.join(root, 'tsconfig.base.json'), 'utf8'));
 const tsPaths = compilerOptions.paths ?? {};
 

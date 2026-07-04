@@ -125,6 +125,28 @@ describe('ChatController（事件流→聊天状态归约）', () => {
     await expect(c.send('again')).resolves.toBeUndefined();
   });
 
+  it('steer 插话后 turn 收尾不留幽灵 streaming 消息（审查 C2）', async () => {
+    const provider = new FakeProvider()
+      .script(toolCallTurn('slow_tool', 't1', {}))
+      .script(textTurn('好的，已参考你的补充'));
+    let controller: ChatController;
+    const steeringTool: RegisteredTool = {
+      ...echoTool('slow_tool', () => 'ok'),
+      executor: {
+        async *execute() {
+          await controller.steer('补充一下：要发顺丰'); // 工具执行期 = turn 进行中
+          yield { kind: 'output', chunk: 'ok' };
+        },
+      },
+    };
+    controller = new ChatController(makeAgent(provider, [steeringTool]));
+    await controller.send('帮我改配送');
+    expect(controller.state.messages.filter((m) => m.status === 'streaming')).toHaveLength(0);
+    expect(controller.state.turnActive).toBe(false);
+    // steer 的插话以 user 消息呈现
+    expect(controller.state.messages.some((m) => m.role === 'user' && m.parts[0]?.type === 'text' && m.parts[0].text.includes('顺丰'))).toBe(true);
+  });
+
   it('newSession：清空消息/错误/累计并换会话 id', async () => {
     const provider = new FakeProvider().script(textTurn('你好')).script(textTurn('新会话'));
     const c = new ChatController(makeAgent(provider));

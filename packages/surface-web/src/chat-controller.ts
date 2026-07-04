@@ -218,8 +218,11 @@ export class ChatController {
   }
 
   private closeAssistant(status: 'done' | 'error'): void {
-    const last = this.state.messages[this.state.messages.length - 1];
-    if (last?.role === 'assistant' && last.status === 'streaming') last.status = status;
+    // 扫全部而非只看末条：steer 插话会让 assistant 消息交错，turn 收尾须收敛所有
+    // 残留 streaming 态，否则宿主按 status 渲染会出现幽灵「输入中」指示（审查 C2）。
+    for (const m of this.state.messages) {
+      if (m.role === 'assistant' && m.status === 'streaming') m.status = status;
+    }
   }
 
   private findToolPart(id: string): ChatToolPart | undefined {

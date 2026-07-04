@@ -1,7 +1,8 @@
 /**
  * @yo-agent/tools/core —— 浏览器安全核心入口（Phase 5A）。
  * 只含 registry / parallel-tool / mcp 护栏纯函数；排除 builtins / bash / exec-local
- * / subagent-tool / skill-tool / memory-tool（node:fs / node:child_process 或按需另引）。
+ * （node:fs / node:child_process）。exec / subagent-tool / skill-tool / memory-tool 虽纯逻辑
+ * 但浏览器面暂不需要，未收——要用时在此补 export（包 exports 无文件级子路径，barrel 进不了）。
  * 类型经 type-only 转发（打包期整体擦除）。
  */
 export type {

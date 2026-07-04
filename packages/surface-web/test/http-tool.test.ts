@@ -52,6 +52,19 @@ describe('defineHttpTool', () => {
     expect(init.body).toBeUndefined();
   });
 
+  it('GET：嵌套对象/数组 JSON 序列化，不产出 [object Object]（审查 C3）', async () => {
+    const fetchMock = vi.fn(async () => new Response('ok'));
+    vi.stubGlobal('fetch', fetchMock);
+    const tool = defineHttpTool({ name: 't', description: 'd', inputSchema: {}, url: 'https://x.example/t', method: 'GET' });
+    await run(tool, { filter: { a: 1 }, tags: ['x', 'y'], q: '书' });
+    const url = (fetchMock.mock.calls[0] as unknown as [string])[0];
+    expect(url).not.toContain('object');
+    const params = new URL(url).searchParams;
+    expect(params.get('filter')).toBe('{"a":1}');
+    expect(params.get('tags')).toBe('["x","y"]');
+    expect(params.get('q')).toBe('书');
+  });
+
   it('headers 函数式：每次调用重新求值（宿主令牌轮换）', async () => {
     const fetchMock = vi.fn(async () => new Response('ok'));
     vi.stubGlobal('fetch', fetchMock);

@@ -86,6 +86,8 @@ async function proxyLlm(req: http.IncomingMessage, res: http.ServerResponse, pat
     return;
   }
   const reader = upstream.body.getReader();
+  // 客户端断开 → 取消上游读（不再白烧上游 token）（审查 S5）。
+  res.on('close', () => void reader.cancel().catch(() => {}));
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -143,6 +145,12 @@ const server = http.createServer(async (req, res) => {
     }
     json(res, 404, { error: `未知端点：${req.method} ${pathname}` });
   } catch (e) {
+    // 流式转发已发头后出错（上游中断）不能再 writeHead——直接断连，防 ERR_HTTP_HEADERS_SENT
+    // 变 unhandledRejection 拖崩整个进程（审查 C1）。
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     json(res, 500, { error: e instanceof Error ? e.message : String(e) });
   }
 });

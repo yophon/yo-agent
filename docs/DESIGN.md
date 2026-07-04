@@ -882,13 +882,23 @@ yo-agent/
 - 插件 SDK（Worker IPC 隔离）+ hooks 矩阵。
 - **退出标准**：安全审查通过；子 agent 崩溃不拖垮主循环；插件隔离生效。**（是聊天平台开放渠道的前置底座）**
 
-### Phase 5 — 聊天平台接入（QQ / Telegram，差异化空白点，依赖 Phase 4 底座）
+### Phase 5 — WebSurface：浏览器内嵌 agent（✅ 已交付，见 [`PHASE-5.md`](PHASE-5.md)）
+
+> 路线调整（2026-07）：客户端 agent 战略（内核嵌任意 app/网页当智能客服等，后端只需 LLM 代理网关 + 业务 API 按公开 API 标准暴露为工具）插队为 Phase 5；原 Phase 5 聊天平台顺延为 Phase 6，原 Phase 6 顺延为 Phase 7。
+
+- kernel/store/tools 各出 `/core` 浏览器安全子路径入口（纯逻辑面）+ `check:browser` esbuild 打包冒烟硬门（node: 触点解析期即红，进 CI）。
+- `@yo-agent/surface-web`：`createWebAgent` 双连接模式统一配置（模式 A 自建后端代理 + 宿主鉴权 / 模式 B 用户中转站直连自带 key，工具可选）+ `defineHttpTool`（后端业务 API 一个声明变工具）+ `ChatController`（headless 事件流→聊天状态，任意宿主 UI 可接）。
+- demo：`apps/demo-backend`（LLM 流式透传代理，key 只在服务端 + mock 工具端点独立鉴权示范）+ `apps/web-demo`（`<yo-chat>` shadow DOM 原生挂件）。
+- **退出标准（已达成）**：① check:browser 硬门全绿；② 真机模式 A——LLM 经代理流式回答 + 调 order_query 工具 + 订单数据进答案；③ 真机模式 B——中转站直连零工具纯对话；④ 全量 check 零回归。
+
+### Phase 6 — 聊天平台接入（QQ / Telegram，差异化空白点，依赖 Phase 4 底座）
 
 - ChatSurface：Transport + Adapter 二层 + OneBot v11（QQ）优先，Telegram / Discord 跟进；DM pairing。
 - ConfirmationPolicy 切聊天态（AlwaysConfirm + 配对码门禁）；群 / 频道级 yo.md（群级 persona）。
 - **退出标准**：QQ 群驱动 yo-agent（审批 / pairing / 压缩 / 开放渠道注入防护端到端跑通）。**没有任何编程 agent 原生支持 QQ/TG——这是 yo-agent 的空白机会。**
+- 另接收 Phase 4 顺延项：L2 容器沙箱 + OTel 可观测。
 
-### Phase 6 — 打磨 + 多用户接缝
+### Phase 7 — 打磨 + 多用户接缝
 
 - repo map（tree-sitter）；RAG 长期记忆（opt-in，Memory MCP）。
 - 多用户 / 团队接缝兑现（per-device → machine 授权矩阵）。

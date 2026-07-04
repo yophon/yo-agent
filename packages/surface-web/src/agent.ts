@@ -35,6 +35,14 @@ export function createWebAgent(cfg: WebAgentConfig): WebAgent {
   const provider = r.providerOverride ?? makeWebProvider(r.connection);
   const registry = new InMemoryToolRegistry();
   for (const t of r.tools) registry.register(t);
+  // approval:'always' 的工具语义是「必经真人审批」，缺省 auto gate 会静默放行——
+  // 不吞工具作者意图，出声提醒宿主传自定义 ApprovalGate（审查 S3）。
+  if (r.approval === 'auto') {
+    const always = r.tools.filter((t) => t.descriptor.approval === 'always').map((t) => t.descriptor.name);
+    if (always.length > 0) {
+      console.warn(`[surface-web] approval:'auto' 将自动放行声明 approval:'always' 的工具：${always.join(', ')}——需要真人审批请给 config.approval 传自定义 ApprovalGate`);
+    }
+  }
 
   const catalog = ModelCatalog.bundled();
   const contextWindow = catalog.contextWindow(r.connection.model);

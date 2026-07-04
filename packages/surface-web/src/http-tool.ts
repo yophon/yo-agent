@@ -73,7 +73,9 @@ function buildRequest(spec: HttpToolSpec, input: unknown): { url: string; init: 
     const params = new URLSearchParams();
     if (input && typeof input === 'object') {
       for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-        if (v !== undefined && v !== null) params.set(k, String(v));
+        if (v === undefined || v === null) continue;
+        // 嵌套对象/数组 JSON 序列化，防 String() 静默产出 "[object Object]"（审查 C3）。
+        params.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
       }
     }
     const qs = params.toString();
