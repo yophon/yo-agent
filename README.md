@@ -23,7 +23,8 @@
 ｜ ✅ **Phase 4.9 交付**（Agent 自知与失败可交互，六切片 4.9a-f）：起因真机反馈 [`docs/feedback/4.8.md`](docs/feedback/4.8.md)（LLM 裸猜模型名 404 / 子代理审批静默失败），三路审计定三病根（自知信息只给人不给 LLM / 失败静默化 / 建好未接线）→ **静态自知注入**（system 常驻 env 块/模型目录/记忆机制/画像枚举/MCP 摘要含信任门跳过名单，systemSuffix 函数化随会话起点求值）+ **解析加固**（空串 model 归一化 + 未知模型/画像早失败可行动错误 + skills/recipes 加载失败 onWarn 可见）+ **子代理审批上浮**（代理 ApprovalGate 转调父内核、TUI 面板零改动接管 + worker 跨线程审批 RPC + 超时/真拒归因分流不再谎称「用户拒绝」）+ **动态状态注入**（turn 起点接缝：toolset diff/MCP 状态变化/权限切档/上下文满度，入队去重）+ **记忆读写闭环**（`memory_write` 工具 + MEMORY.md 幂等查重 + 拍板砍 MemoryStore 双写、单一事实源）+ **MCP 自述接线**（`mcp_list_servers`/`mcp_list_resources`/`mcp_read_resource` + 工具描述来源前缀 + 失败文案行动尾句）—— 见 [`docs/PHASE-4.9.md`](docs/PHASE-4.9.md)。
 ｜ ✅ **Phase 4.10 交付**（真机反馈闭环:熔断降敏与子代理并行可观测，三切片 4.10a-c）：起因期中真机反馈 [`docs/feedback/4.9.md`](docs/feedback/4.9.md)（并行 spawn 被误熔断 / 多 tool_use 串行 / 子代理不可观测）→ **loop-breaker 降敏档位可配**（批内豁免:同响应批次同参重复是并行语义不计重 + 工具/类别豁免清单 + `YO_LOOP_BREAKER=off|loose|strict` 默认 loose 对齐 DESIGN 阈值 + warn 死码现役化接状态提醒接缝）+ **tool 循环批内并发**（两段式:串行准入判定 + 波次执行,无副作用调用并发/写类作屏障,EventLog 单写者与回填顺序不变量守住）+ **TUI 子代理任务面板**（`/tasks` 列表 + 进入子代理事件流快照,零协议改动）—— 见 [`docs/PHASE-4.10.md`](docs/PHASE-4.10.md)。
 ｜ ✅ **Phase 5 交付**（WebSurface：浏览器内嵌 agent——客户端智能客服底座，五切片 5A-5E）：客户端 agent 战略落地（内核嵌任意 app/网页，后端只需 **LLM 代理网关 + 业务 API 按公开 API 标准暴露为工具**，鉴权复用宿主机制）——**5A 浏览器安全入口**（kernel/store/tools 各出 `/core` 纯逻辑子路径 + kernel 值导入切子路径 + randomUUID/process.env 环境防御 + anthropic/gemini 补 headers 注入 + 自定义 baseUrl 空 key 不早退）+ **check:browser 硬门**（esbuild platform=browser 打包冒烟，node: 触点解析期即红，进 check 链与 CI）+ **5B `@yo-agent/surface-web`**（`createWebAgent` 双连接模式统一配置：模式 A 自建后端代理+宿主 headers 鉴权 / 模式 B 用户中转站直连自带 key、工具可选；`defineHttpTool` 后端业务 API 一个声明变工具，signal 透传可中断）+ **5C `ChatController`**（headless 事件流→聊天状态归约，流式增量/工具态/用量累计，零 DOM 任意宿主 UI 可接）+ **5D 端到端 demo**（`demo-backend` 零框架 LLM 流式透传代理 key 只在服务端 + mock 工具端点独立鉴权示范；`web-demo` `<yo-chat>` shadow DOM 原生挂件 + 双模式设置面板；**真机达标：gpt-5.5 经代理流式回答 + 调 order_query + 订单数据进答案；整内核进浏览器 gzip 36KB**）+ 5E 路线图顺延（聊天平台 → Phase 6）—— 见 [`docs/PHASE-5.md`](docs/PHASE-5.md)。
-验证门全绿：`pnpm run check` = typecheck（含 web-demo DOM 工程）+ lint + gen:schema + **check:browser 浏览器打包冒烟** + **685 测试（84 文件，1 真机冒烟门控跳过）**。
+｜ ✅ **Phase 5.1 交付**（yo-agent Web 控制台，六切片 5.1a-f）：通用网页客户端（`apps/web-console`，Vue 3）——左侧栏会话历史 + 多 agent 管理 + 每 agent 配置页（连接/功能/工具），会话 IndexedDB 持久、**刷新可续聊**——**5.1a `IndexedDBEventStore`**（三 object store 逐条对齐 sqlite 语义 + deleteSession，进 store/core，check:browser 覆盖）+ **5.1b 协议/内核小改**（`UserMessage` 第 22 事件变体让回放能重建用户气泡 + `agentProfile` 注入供会话归属标注）+ **5.1c surface-web 扩展**（`ChatController.open(sessionId)` resume+回放 attachFrom 范式 + cursor 去重 + store 注入）+ **5.1d/e web-console**（`ConsoleStore` 接口预留后端同步接缝 + `AgentRuntime` 懒建缓存 + 声明式 `AgentConfigRecord`⇆WebAgentConfig 物化 + confirm 审批弹窗队列 + 侧栏归属色点/续聊/删除）+ 5.1f 审查收口（审批单槽→队列化、配置变更定向 dispose）；**headless 端到端真机达标**（`scripts/e2e-console-resume.ts`：建配置→聊含工具→模拟刷新同库回放→续聊带上下文）—— 见 [`docs/PHASE-5.1.md`](docs/PHASE-5.1.md)。
+验证门全绿：`pnpm run check` = typecheck（根 tsc + web-demo tsc + web-console vue-tsc）+ lint + gen:schema + **check:browser 浏览器打包冒烟** + **712 测试（88 文件，1 真机冒烟门控跳过）**。
 
 - **Phase 0**（[`PHASE-0.md`](docs/PHASE-0.md)）协议单一事实源 `@yo-agent/protocol` 冻结：`AgentEvent`（20 变体）+ JSON-RPC 方法表 + cursor/resume，zod 定义、导出 JSON Schema（可 gen 多语言 binding 给任意客户端）；四接口冻结。
 - **Phase 1**（[`PHASE-1.md`](docs/PHASE-1.md)）内核 + 编程 CLI MVP：`AgentKernel` turn 循环（infer→tool→observe）+ 事件溯源 + 熔断 + `max_tokens` 续传 + 审批；**5 provider**（Anthropic / OpenAI Responses+Chat / Gemini / 兼容含 DeepSeek/Ollama）+ 双轨 tool-calling + 模型目录；内置工具 + L3 checkpoint（shadow-git）；`SummarizingCondenser`；CLI 三态（TUI / `--mode jsonl` / headless）+ yo.md 加载。**真机已验证**。
@@ -53,7 +54,8 @@ yo-agent/
 ├─ apps/yo-agent/     # CLI 入口：--tui / headless / rpc / rpc --listen <port>(WS) / mcp-server
 ├─ apps/demo-backend/ # Phase 5 演示后端：LLM 流式透传代理（key 只在服务端）+ mock 客服工具 API
 ├─ apps/web-demo/     # Phase 5 网页 demo：<yo-chat> shadow DOM 原生挂件 + 双模式设置面板
-└─ docs/{DESIGN,PHASE-0…5}.md + feedback/ + research/
+├─ apps/web-console/  # Phase 5.1 官方 Web 控制台（Vue 3）：多 agent 管理 + 会话历史持久 + 刷新续聊
+└─ docs/{DESIGN,PHASE-0…5,5.1}.md + feedback/ + research/
 ```
 
 ## 快速开始
@@ -90,6 +92,9 @@ pnpm --filter @yo-agent/cli start -- mcp-server      # 作 MCP server 被 Claude
 UPSTREAM_BASE=https://api.anthropic.com ANTHROPIC_API_KEY=sk-... \
   pnpm --filter @yo-agent/demo-backend start   # 演示后端 :8788（OpenAI 兼容上游改 UPSTREAM_BASE/UPSTREAM_KEY）
 pnpm --filter @yo-agent/web-demo dev           # 网页 demo :5177（模式A走上面的代理；模式B填自己的中转站+key）
+
+# Web 控制台（Phase 5.1）：多 agent 管理 + 会话历史 IndexedDB 持久 + 刷新续聊
+pnpm --filter @yo-agent/web-console dev         # 控制台 :5178（新增 agent → 配连接与工具 → 开聊；会话跨刷新保留）
 ```
 
 ## 工具链

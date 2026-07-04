@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { app } from '../services/app-state';
 
-const current = computed(() => app.approval.current);
+const current = computed(() => app.approval.queue[0] ?? null);
 const inputJson = computed(() => JSON.stringify(current.value?.input ?? {}, null, 2));
 </script>
 

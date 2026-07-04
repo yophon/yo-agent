@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { notifyAgentChanged } from '../composables/use-chat';
 import { parseHeaders, stringifyHeaders, testConnection, validateAgent } from '../services/agent-form';
 import { app } from '../services/app-state';
 import type { AgentConfigRecord, DeclarativeHttpTool } from '../services/types';
@@ -68,6 +69,7 @@ async function save(): Promise<void> {
   saving.value = true;
   try {
     await app.saveAgent(JSON.parse(JSON.stringify(rec)) as AgentConfigRecord);
+    notifyAgentChanged(rec.id); // 活会话属此 agent 则 dispose，强制下次拿新配置的 kernel
     void router.push('/');
   } finally {
     saving.value = false;
@@ -77,6 +79,7 @@ async function save(): Promise<void> {
 async function remove(): Promise<void> {
   if (!window.confirm(`删除 agent「${rec.name}」？其历史会话仍保留，可在侧栏查看。`)) return;
   await app.removeAgent(rec.id);
+  notifyAgentChanged(rec.id); // 活会话属此 agent 则 dispose（删除后会话变 orphaned，不可再驱动）
   void router.push('/');
 }
 </script>

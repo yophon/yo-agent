@@ -72,3 +72,11 @@ export function useChat() {
 export function activeSessionId(): string | undefined {
   return controller.value?.state.sessionId;
 }
+
+/**
+ * agent 配置变更/删除后调用：若当前活 controller 属于该 agent，dispose 它——
+ * 否则 openChat 会因 sessionId 相同而复用旧 controller（旧 kernel/旧配置），新配置直到切走再切回才生效。
+ */
+export function notifyAgentChanged(agentId: string): void {
+  if (activeAgentId.value === agentId) disposeChat();
+}

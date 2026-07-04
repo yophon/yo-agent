@@ -1,6 +1,6 @@
 # Phase 5.1 — yo-agent Web 控制台（通用网页客户端）
 
-> **状态：实施中（计划已批准，2026-07-04）。** 交付后按仓库惯例更新为交付报告。
+> **状态：✅ 已交付（2026-07-04，六切片 5.1a-f）。** 712 测试全绿；控制台端到端真机达标。
 
 ## Context
 
@@ -99,3 +99,25 @@ apps/web-console (Vue 3 + Vite)
 - 单测：IDB store 语义套（fake-indexeddb）、跨 kernel resume 集成、ChatController open/去重/UserMessage、AgentConfigRecord ⇆ WebAgentConfig 物化、console-store CRUD。
 - `pnpm run check` 全绿（typecheck 链加 vue-tsc；check:browser 覆盖 IDB store；gen:schema 漂移门过）。
 - 真机验收清单（demo-backend + 中转站）：建 2 个 agent（不同连接/工具）→ 各聊多轮含工具调用 → **刷新页面** → 侧栏两组会话都在、点开历史完整（含用户气泡与工具视图）→ **续聊成功** → 删除一条会话 → confirm 审批模式弹窗生效 → 隐私窗口降级提示。
+
+---
+
+## 交付记录（5.1f 收口）
+
+**六切片全交付**：5.1a IndexedDBEventStore（三 object store 对齐 sqlite 语义 + deleteSession）｜5.1b UserMessage 协议事件（第 22 变体）+ agentProfile 注入｜5.1c surface-web open 回放 + cursor 去重 + store 注入｜5.1d web-console 骨架 + 配置域｜5.1e 聊天/会话域｜5.1f 审查收口。
+
+**验证门**：`pnpm run check` = typecheck（根 tsc + web-demo tsc + web-console vue-tsc）+ lint（biome 排除 .vue）+ gen:schema 漂移 + check:browser（IDB 入 core 图仍干净）+ **712 测试** 全绿。
+
+**headless 端到端（真 demo-backend + 真 gpt-5.5）**：`scripts/e2e-console-resume.ts` 留作冒烟——建 agent 配置 → 聊一轮调 order_query → 模拟刷新（新 AgentRuntime 同库 `open`）→ 回放重建用户气泡+工具 part → 续聊查订单 7 带上下文 → 会话列表归属标注。实录全绿。
+
+**对抗式审查（自查，代理因额度中断转主 agent 核查）+ 修复**：
+- **审批弹窗单槽→队列化**（app-state.ts）：`current` 改 `queue[]`，并发审批不再互相覆盖丢 `resolve`（否则被覆盖的 turn 永久挂起）。当前内核串行准入不触发，属防御性加固。
+- **配置变更后活会话仍用旧配置**（use-chat.ts `notifyAgentChanged` + AgentConfigView save/remove 调用）：`invalidate` 只清缓存，活 controller 仍持旧 kernel；改为定向 dispose 强制下次 `open` 拿新配置的 kernel。
+- **TUI/RPC/ACP 对 UserMessage 事件**：TUI reducer `default` 忽略（model.ts:494），不与本地 submit 用户块双显；回放行为 5.1b 前后一致（本就不重建用户气泡），无回归。
+
+**已核可辩护**：
+- IndexedDBEventStore `append` 两事务非原子——内核 emitChain 串行化 emit + 同 sessionId 单 kernel（use-chat 保证同刻单活 controller），分区无撞；`add` 撞复合主键兜底抛错。
+- 快速切换会话的孤儿 `open`——旧 controller 已 unsub + endSession，残余 `read` 只 reduce 到不被 UI 引用的孤儿 state，无损坏。
+- `Number.±Infinity` 作 IDB 复合 key 上下界：合法 number key，fake-indexeddb 通过；真 Chrome 目视验收。
+
+**遗留（真 Chrome 目视，非本期阻塞）**：IndexedDB 在真浏览器的持久/事务行为、多 agent UI 交互、隐私窗口降级提示——`pnpm --filter @yo-agent/web-console dev`（:5178）人工验收。

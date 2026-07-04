@@ -891,6 +891,12 @@ yo-agent/
 - demo：`apps/demo-backend`（LLM 流式透传代理，key 只在服务端 + mock 工具端点独立鉴权示范）+ `apps/web-demo`（`<yo-chat>` shadow DOM 原生挂件）。
 - **退出标准（已达成）**：① check:browser 硬门全绿；② 真机模式 A——LLM 经代理流式回答 + 调 order_query 工具 + 订单数据进答案；③ 真机模式 B——中转站直连零工具纯对话；④ 全量 check 零回归。
 
+### Phase 5.1 — yo-agent Web 控制台（✅ 已交付，见 [`PHASE-5.1.md`](PHASE-5.1.md)）
+
+- 通用网页客户端 `apps/web-console`（Vue 3）：多 agent 管理 + 会话历史 **IndexedDB 持久 + 刷新续聊**。
+- 基座：`IndexedDBEventStore`（对齐 sqlite 语义）+ 协议 `UserMessage` 事件（回放重建用户气泡）+ 内核 `agentProfile` 注入（会话归属）+ `ChatController.open` resume/回放；`ConsoleStore` 接口预留后端同步接缝（本期本地实现）。
+- **退出标准（已达成）**：headless 端到端——建配置 → 聊含工具 → 模拟刷新同库回放 → 续聊带上下文；全量 712 测试零回归。
+
 ### Phase 6 — 聊天平台接入（QQ / Telegram，差异化空白点，依赖 Phase 4 底座）
 
 - ChatSurface：Transport + Adapter 二层 + OneBot v11（QQ）优先，Telegram / Discord 跟进；DM pairing。

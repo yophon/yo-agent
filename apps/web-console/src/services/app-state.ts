@@ -28,8 +28,12 @@ export class AppContext {
     sessions: [] as SessionListItem[],
   });
 
-  /** confirm 审批弹窗管道：gate 挂 Promise，UI 弹窗决策后 resolve。 */
-  readonly approval = reactive<{ current: PendingApproval | null }>({ current: null });
+  /**
+   * confirm 审批弹窗管道：gate 挂 Promise，UI 弹窗决策后 resolve。
+   * 用队列而非单槽——即便同一时刻涌入多个审批请求也不会互相覆盖丢 resolve（否则被覆盖的 turn 永久挂起）。
+   * UI 只显示 queue[0]，逐个裁决。
+   */
+  readonly approval = reactive<{ queue: PendingApproval[] }>({ queue: [] });
 
   async init(): Promise<void> {
     if (this.state.ready) return;
@@ -73,13 +77,13 @@ export class AppContext {
 
   private requestApproval(req: ApprovalPrompt): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      this.approval.current = { ...req, resolve };
+      this.approval.queue.push({ ...req, resolve });
     });
   }
 
   decideApproval(allow: boolean): void {
-    this.approval.current?.resolve(allow);
-    this.approval.current = null;
+    const cur = this.approval.queue.shift();
+    cur?.resolve(allow);
   }
 }
 
