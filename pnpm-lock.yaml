@@ -229,6 +229,24 @@ importers:
         specifier: ^8.5.13
         version: 8.18.1
 
+  packages/surface-web:
+    dependencies:
+      '@yo-agent/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@yo-agent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@yo-agent/provider':
+        specifier: workspace:*
+        version: link:../provider
+      '@yo-agent/store':
+        specifier: workspace:*
+        version: link:../store
+      '@yo-agent/tools':
+        specifier: workspace:*
+        version: link:../tools
+
   packages/tools:
     dependencies:
       '@yo-agent/protocol':

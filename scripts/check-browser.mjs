@@ -41,6 +41,8 @@ try {
     format: 'esm',
     target: 'es2022',
     write: false,
+    outdir: 'dist-browser-check', // write:false 下仅用于多入口命名，不落盘
+
     metafile: true,
     logLevel: 'error',
     plugins: [tsconfigPathsPlugin],

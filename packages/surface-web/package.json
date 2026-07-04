@@ -1,0 +1,18 @@
+{
+  "name": "@yo-agent/surface-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "浏览器内嵌 surface（Phase 5）：createWebAgent 双模式连接（自建后端代理 / 用户中转站直连）+ defineHttpTool + ChatController headless 聊天适配器。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*",
+    "@yo-agent/tools": "workspace:*"
+  }
+}
