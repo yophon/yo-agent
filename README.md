@@ -1,111 +1,210 @@
 # yo-agent
 
-一个自研的**通用 agent 引擎**（TypeScript / Node 单栈）。
+[English](README.en.md) | 中文
 
-一句话定位：一个 agent 内核（agent loop + 工具调用 + 上下文管理 + MCP），
-**既能当编程 agent**（读写代码、跑命令、diff 审批，对标 Claude Code / Codex / opencode / pi），
-**又能挂接聊天平台**（QQ / Telegram / Discord 等，对标 AstrBot / nanobot / openclaw），
-**还能整个嵌进浏览器**（Phase 5 WebSurface：客户端智能客服底座，对标 CopilotKit / assistant-ui——后端只需 LLM 代理网关 + 业务工具 API）。
+通用 Agent Runtime，使用 TypeScript 构建。同一个内核可以运行在终端、远程 RPC、MCP、ACP 和浏览器中。
 
-> 可被**任意远端客户端 / IDE（ACP）/ 编排器（MCP）** 用 cursor-可恢复的 JSON-RPC 驱动或集成，也可独立运行。
-> （早期曾以「被 yo-aichat 的 Go bridge 驱动」为命脉目标；yo-aichat 已废弃，该耦合移除，可恢复协议保留并泛化为**通用远端驱动协议**，鉴权改为 yo-agent 自带——见 [`DESIGN.md`](docs/DESIGN.md) §0/§6。）
+它提供完整的 agent loop、工具调用、审批、上下文压缩、会话恢复、MCP、子 agent 和扩展机制。当前仓库是源码工作区，所有包均为私有包，尚未发布到 npm。
 
----
+## 能力
 
-## 当前状态
-
-✅ **Phase 0-2 全部交付** ｜ ✅ **Phase 3 七片（3A-3G）全部交付 + 整体收口对抗式审查**：MCP host 连接/三层信任/韧性 + 真机冒烟①、结构化 Handoff/标识符保真、动态 auto-memory、**AcpSurface（被 Zed/JetBrains 经 ACP 接管，退出标准②离线对驱达成）**、MCP 进阶通道（resources/prompts/sampling/progress + Streamable HTTP/OAuth）；收口审查 85 agents、23 确认缺陷全修 —— 见 [`docs/PHASE-3.md`](docs/PHASE-3.md)。
-｜ ✅ **Phase 4 交付**（bash 工具集补全 + L1 子进程沙箱 + 子 agent + 插件隔离 —— 开放渠道前的安全底座，6 片 4A-4F；L2 容器/OTel 顺延 Phase 6）：**4A 横切底座**（Hook 矩阵 + permissionMode→PolicyEngine 闸门 + ExecBackend 抽象，无运行时行为变更）+ **4B 工具集补全 + L1 子进程隔离**（bash/edit/grep/glob/todo/apply_patch + 受限 env 剥离 secret + abort 杀进程组 + 大输出截断写盘 + 注入标注）+ **4C SubagentManager**（worker_threads 隔离 + 崩溃围栏 + deriveSubagentPolicy 只收紧 + 递归防护 + 前/后台 steering + `subagent_spawn` 工具，**退出标准②子 agent 崩溃不拖垮主循环达成**）+ **4D recipes/skills 懒加载**（skill 摘要常驻 + `skill_activate` 取全文 + 压缩保护 + subagent recipe profile 经 deriveSubagentPolicy 只收紧）+ **4E 插件 SDK**（独立包 `plugin-host`：第三方插件跑独立 Worker 经 IPC 隔离 + 心跳重连 + 崩溃围栏降级 + secret 剥离 + 工具走主审批流不可绕 + Hook 矩阵跨进程兑现，**退出标准③插件隔离生效达成**）+ **4F 健壮性**（`costUsd` 用量计费串接含 cache 分价 + provider fallback 链/auth rotation：错误归类 `category` 驱动 rate_limit 换 key/billing·auth 换 provider/context_overflow 压缩重试 + 工具循环内 commit 首个成功模型不漂移）已交付 → **六片 4A-4F 全交付 + 整体收口对抗式安全审查（52 agents，confirmed 12 缺陷全修含 3 HIGH），退出标准①②③全达成** → **443 测试**（58 文件）—— 见 [`docs/PHASE-4.md`](docs/PHASE-4.md)。
-｜ ✅ **Phase 4.5 交付**（安装分发 + 完整交互式 TUI）：全局命令 `yoagent`（源码态软链分发 + tsx 启动器）+ 私密运行配置 `~/.config/yo-agent/config.env` 自动加载（key 不进 git）+ **TUI 升级为交互式多轮 REPL**（结构化区块渲染 + ink `<Static>` 滚动区 + 状态栏 model/token/成本/cwd + 工具调用分组渲染 + 行内光标编辑 + 输入历史 + `/help /clear /model /cwd /exit` slash 命令 + Esc/Ctrl+C 中断当前轮 + 运行中 steer + 审批面板增强）；内核零改动，复用既有 interrupt/steer 接缝 → **460 测试**（59 文件）—— 见 [`docs/PHASE-4.5.md`](docs/PHASE-4.5.md)。
-｜ ✅ **Phase 4.6 交付**（TUI 重设计，五切片 4.6a-e）：surface-cli 分层重构（纯 reducer + keymap 路由 + `tui/` 分层，行为等价）+ 多行输入编辑器（字素簇/括号粘贴/持久历史/退出保护）+ 渲染语言（markdown/diff/工具专属视图 + 去噪 + 活动行）+ 命令系统与补全（slash 注册表 + 补全菜单 + @文件 + 通用选择器）+ 内核接缝 K1-K5（会话/模式/审批升级 + 排队 follow-up）—— 见 [`docs/PHASE-4.6.md`](docs/PHASE-4.6.md)。
-｜ ✅ **Phase 4.7 交付**（TUI 架构收敛，六切片 4.7a-f）：输入解码固化为纯状态机 `input/decoder.ts`（ink 私有行为依赖收拢单文件）+ 交互态统一进 reducer + 拆解 app.ts（853→430 行，执行器/契约/footer 各归其位）+ 渲染性能（BlockView memo + spinner tick 隔离 + computeMenu 缓存）+ 功能补口（/resume 历史回放 + 审批队列化 + 审批面板放行 Ctrl+C）—— 见 [`docs/PHASE-4.7.md`](docs/PHASE-4.7.md)。
-｜ ✅ **Phase 4.8 交付**（工程卫生与基建补课，五切片 4.8a-e）：README 对齐 + **Biome lint 落地**（linter-only，recommended + react domain，失效 eslint-disable 清零）+ **coverage 度量**（v8，首测全仓行覆盖 85.5%）/apps 纳入测试收集（parseArgs 抽纯函数补测）+ **GitHub Actions CI**（frozen install → typecheck → lint → schema 生成+漂移校验 → test）+ zod 统一单约束/TUI 静默降级出 notice —— 见 [`docs/PHASE-4.8.md`](docs/PHASE-4.8.md)。
-｜ ✅ **Phase 4.9 交付**（Agent 自知与失败可交互，六切片 4.9a-f）：起因真机反馈 [`docs/feedback/4.8.md`](docs/feedback/4.8.md)（LLM 裸猜模型名 404 / 子代理审批静默失败），三路审计定三病根（自知信息只给人不给 LLM / 失败静默化 / 建好未接线）→ **静态自知注入**（system 常驻 env 块/模型目录/记忆机制/画像枚举/MCP 摘要含信任门跳过名单，systemSuffix 函数化随会话起点求值）+ **解析加固**（空串 model 归一化 + 未知模型/画像早失败可行动错误 + skills/recipes 加载失败 onWarn 可见）+ **子代理审批上浮**（代理 ApprovalGate 转调父内核、TUI 面板零改动接管 + worker 跨线程审批 RPC + 超时/真拒归因分流不再谎称「用户拒绝」）+ **动态状态注入**（turn 起点接缝：toolset diff/MCP 状态变化/权限切档/上下文满度，入队去重）+ **记忆读写闭环**（`memory_write` 工具 + MEMORY.md 幂等查重 + 拍板砍 MemoryStore 双写、单一事实源）+ **MCP 自述接线**（`mcp_list_servers`/`mcp_list_resources`/`mcp_read_resource` + 工具描述来源前缀 + 失败文案行动尾句）—— 见 [`docs/PHASE-4.9.md`](docs/PHASE-4.9.md)。
-｜ ✅ **Phase 4.10 交付**（真机反馈闭环:熔断降敏与子代理并行可观测，三切片 4.10a-c）：起因期中真机反馈 [`docs/feedback/4.9.md`](docs/feedback/4.9.md)（并行 spawn 被误熔断 / 多 tool_use 串行 / 子代理不可观测）→ **loop-breaker 降敏档位可配**（批内豁免:同响应批次同参重复是并行语义不计重 + 工具/类别豁免清单 + `YO_LOOP_BREAKER=off|loose|strict` 默认 loose 对齐 DESIGN 阈值 + warn 死码现役化接状态提醒接缝）+ **tool 循环批内并发**（两段式:串行准入判定 + 波次执行,无副作用调用并发/写类作屏障,EventLog 单写者与回填顺序不变量守住）+ **TUI 子代理任务面板**（`/tasks` 列表 + 进入子代理事件流快照,零协议改动）—— 见 [`docs/PHASE-4.10.md`](docs/PHASE-4.10.md)。
-｜ ✅ **Phase 5 交付**（WebSurface：浏览器内嵌 agent——客户端智能客服底座，五切片 5A-5E）：客户端 agent 战略落地（内核嵌任意 app/网页，后端只需 **LLM 代理网关 + 业务 API 按公开 API 标准暴露为工具**，鉴权复用宿主机制）——**5A 浏览器安全入口**（kernel/store/tools 各出 `/core` 纯逻辑子路径 + kernel 值导入切子路径 + randomUUID/process.env 环境防御 + anthropic/gemini 补 headers 注入 + 自定义 baseUrl 空 key 不早退）+ **check:browser 硬门**（esbuild platform=browser 打包冒烟，node: 触点解析期即红，进 check 链与 CI）+ **5B `@yo-agent/surface-web`**（`createWebAgent` 双连接模式统一配置：模式 A 自建后端代理+宿主 headers 鉴权 / 模式 B 用户中转站直连自带 key、工具可选；`defineHttpTool` 后端业务 API 一个声明变工具，signal 透传可中断）+ **5C `ChatController`**（headless 事件流→聊天状态归约，流式增量/工具态/用量累计，零 DOM 任意宿主 UI 可接）+ **5D 端到端 demo**（`demo-backend` 零框架 LLM 流式透传代理 key 只在服务端 + mock 工具端点独立鉴权示范；`web-demo` `<yo-chat>` shadow DOM 原生挂件 + 双模式设置面板；**真机达标：gpt-5.5 经代理流式回答 + 调 order_query + 订单数据进答案；整内核进浏览器 gzip 36KB**）+ 5E 路线图顺延（聊天平台 → Phase 6）—— 见 [`docs/PHASE-5.md`](docs/PHASE-5.md)。
-｜ ✅ **Phase 5.1 交付**（yo-agent Web 控制台，六切片 5.1a-f）：通用网页客户端（`apps/web-console`，Vue 3）——左侧栏会话历史 + 多 agent 管理 + 每 agent 配置页（连接/功能/工具），会话 IndexedDB 持久、**刷新可续聊**——**5.1a `IndexedDBEventStore`**（三 object store 逐条对齐 sqlite 语义 + deleteSession，进 store/core，check:browser 覆盖）+ **5.1b 协议/内核小改**（`UserMessage` 第 22 事件变体让回放能重建用户气泡 + `agentProfile` 注入供会话归属标注）+ **5.1c surface-web 扩展**（`ChatController.open(sessionId)` resume+回放 attachFrom 范式 + cursor 去重 + store 注入）+ **5.1d/e web-console**（`ConsoleStore` 接口预留后端同步接缝 + `AgentRuntime` 懒建缓存 + 声明式 `AgentConfigRecord`⇆WebAgentConfig 物化 + confirm 审批弹窗队列 + 侧栏归属色点/续聊/删除）+ 5.1f 审查收口（审批单槽→队列化、配置变更定向 dispose）；**headless 端到端真机达标**（`scripts/e2e-console-resume.ts`：建配置→聊含工具→模拟刷新同库回放→续聊带上下文）—— 见 [`docs/PHASE-5.1.md`](docs/PHASE-5.1.md)。
-｜ ✅ **Phase 5.2 交付**（抄 pi 精华：EnvAdapter + 进程内可信扩展档，三切片 5.2a-c；已否决 pi ExtensionAPI 兼容层——UI 面绑 pi-tui/API 未冻结，见 [`docs/research/pi.md`](docs/research/pi.md) §12）：**5.2a EnvAdapter**（`kernel/env.ts` 窄 `FileSystem` 接口 + `MemoryFileSystem` 进 core、`NodeFileSystem` 仅 Node 入口；context-files/skills/recipes 注入 fs 变纯逻辑进 core → **浏览器面解锁 skills/约定文件**，surface-web 加 `contextFs`；ExecBackend 提共享单例）+ **5.2b `@yo-agent/extension-host`**（进程内**可信**扩展档，与 plugin-host 不可信档分层并列：`defineExtension` 自有 API——registerTool 钳制/registerCommand→TUI extraCommands 撞名内置优先/addSystemSection/on hooks 直通 HookBus/onEvent/exec 共享后端/steer/followUp 仅 end_turn 出队；双目录发现 + 项目信任门 `extension-trust.json`（TUI 交互确认/headless 跳过告警）+ 崩溃围栏健康 flag 显隐）+ **5.2c 收口**（`examples/extensions/` 三示例兼集成测试 fixture + 真机验收：global 直载/信任门/onEvent 桥接全通）—— 见 [`docs/PHASE-5.2.md`](docs/PHASE-5.2.md)。
-验证门全绿：`pnpm run check` = typecheck（根 tsc + web-demo tsc + web-console vue-tsc）+ lint + gen:schema + **check:browser 浏览器打包冒烟** + **743 测试（94 文件，1 真机冒烟门控跳过）**。
-
-- **Phase 0**（[`PHASE-0.md`](docs/PHASE-0.md)）协议单一事实源 `@yo-agent/protocol` 冻结：`AgentEvent`（20 变体）+ JSON-RPC 方法表 + cursor/resume，zod 定义、导出 JSON Schema（可 gen 多语言 binding 给任意客户端）；四接口冻结。
-- **Phase 1**（[`PHASE-1.md`](docs/PHASE-1.md)）内核 + 编程 CLI MVP：`AgentKernel` turn 循环（infer→tool→observe）+ 事件溯源 + 熔断 + `max_tokens` 续传 + 审批；**5 provider**（Anthropic / OpenAI Responses+Chat / Gemini / 兼容含 DeepSeek/Ollama）+ 双轨 tool-calling + 模型目录；内置工具 + L3 checkpoint（shadow-git）；`SummarizingCondenser`；CLI 三态（TUI / `--mode jsonl` / headless）+ yo.md 加载。**真机已验证**。
-- **Phase 2**（[`PHASE-2.md`](docs/PHASE-2.md)）协议化暴露：`RpcSurface`（JSON-RPC over JSONL/WS，通用远端驱动）+ resume/reconnect（cursor 缺口填充 + gap 溢出降级 + 审批跨重连存活）+ `McpServerSurface`（被 Claude Code/Cursor 当节点调用）+ **ed25519 + 配对码 + nonce 设备鉴权**。经 5 维对抗式审查加固。
-- **Phase 3**（[`PHASE-3.md`](docs/PHASE-3.md)，**七片全交付**）MCP **host**（挂外部 MCP server 用其工具）+ `AcpSurface`（被 Zed/JetBrains 经 ACP 接管）+ 结构化 Handoff / 标识符保真 / 动态 auto-memory。7 切片「护栏底座先行」：3A 工具集稳定性底座 + 3B/3C MCP host 连接/三层信任/韧性（熔断/TTL/重连/连接状态）+ **真机冒烟①达成**（真实 `server-filesystem`，LLM 调其 `read_file`）+ 3D Condenser 结构化交接/标识符保真机制 + 3E 独立 `MemoryStore`/workspace 隔离/@import 防逃逸 + 3F **AcpSurface**（真实 `ClientSideConnection` 离线对驱跑通含审批+fs 的一轮编程对话，退出标准②）+ 3G MCP 进阶通道（resources/prompts/sampling/progress + Streamable HTTP/OAuth）。审查节奏（ADR-14）：3B/3C（接外部连接，高危）已逐片对抗式审查；3D-3G 随 Phase 3 整体收口统一审查。
-
-竞品调研 15 份 + 横向综述见 [`docs/research/`](docs/research/)；全面设计见 [`docs/DESIGN.md`](docs/DESIGN.md)（14 章 + §15 实现补遗 + ADR）。
-
-## 仓库结构（pnpm workspace）
-
-```
-yo-agent/
-├─ packages/
-│  ├─ protocol/     # ★ 单一事实源：AgentEvent + JSON-RPC + cursor/resume（zod → TS + JSON Schema）
-│  │  └─ schema/    #   生成的 JSON Schema（给任意远端客户端对接）
-│  ├─ provider/     # Provider 抽象 + Fake / Anthropic / OpenAI Responses+Chat / Gemini / 兼容（DeepSeek/Ollama）+ 双轨 tool-calling + 模型目录
-│  ├─ tools/        # ToolRegistry + 内置 read/write/ls（声明/执行分离 + availability）
-│  ├─ store/        # Memory / Sqlite(node:sqlite) EventLog（append-only）+ ShadowGit checkpoint + ResumeBuffer
-│  ├─ kernel/       # AgentKernel turn 循环 + LoopBreaker + SummarizingCondenser + yo.md/记忆加载
-│  ├─ auth/         # 设备身份 ed25519 + 配对码 + nonce 握手（Phase 2D）
-│  ├─ plugin-host/  # 插件 SDK：第三方插件独立 Worker 经 IPC 隔离 + 心跳重连 + 崩溃围栏降级（Phase 4E，不可信档）
-│  ├─ extension-host/ # 进程内可信扩展档（Phase 5.2b）：defineExtension 直载用户 TS + 信任门 + 崩溃围栏
-│  ├─ surface-cli/  # CliSurface：交互式多轮 Ink TUI（纯 reducer + decoder + 审批面板）+ headless + --mode jsonl
-│  ├─ surface-rpc/  # RpcSurface：JSON-RPC 2.0 over JSONL/WS（通用远端驱动）+ resume/reconnect
-│  ├─ surface-mcp/  # McpServerSurface（yo-agent 作 MCP server 被编排）+ MCP host（挂外部 MCP server 用其工具）
-│  ├─ surface-acp/  # AcpSurface：被 Zed/JetBrains 经 ACP 接管（Phase 3F）
-│  └─ surface-web/  # 浏览器内嵌 surface（Phase 5）：createWebAgent 双模式 + defineHttpTool + ChatController
-├─ apps/yo-agent/     # CLI 入口：--tui / headless / rpc / rpc --listen <port>(WS) / mcp-server
-├─ apps/demo-backend/ # Phase 5 演示后端：LLM 流式透传代理（key 只在服务端）+ mock 客服工具 API
-├─ apps/web-demo/     # Phase 5 网页 demo：<yo-chat> shadow DOM 原生挂件 + 双模式设置面板
-├─ apps/web-console/  # Phase 5.1 官方 Web 控制台（Vue 3）：多 agent 管理 + 会话历史持久 + 刷新续聊
-├─ examples/extensions/ # Phase 5.2 示例扩展（dirty-repo-guard / word-count / queue-and-nudge，兼集成测试 fixture）
-└─ docs/{DESIGN,PHASE-0…5,5.1,5.2}.md + feedback/ + research/
-```
+- 多模型：Anthropic、OpenAI Responses、OpenAI-compatible、Gemini
+- 编程工具：文件读写、搜索、编辑、patch、shell、todo
+- 交互终端：多轮对话、流式输出、审批、会话恢复、任务查看
+- 持久化：内存、SQLite、IndexedDB；事件流支持回放和断线续接
+- 工具生态：MCP host、MCP server、可信扩展、隔离插件
+- 集成接口：JSON-RPC、WebSocket、ACP、浏览器内嵌 API
+- 运行保护：权限模式、风险判断、工具超时、循环熔断、checkpoint
 
 ## 快速开始
 
+要求：Node.js 22.5+、pnpm 10。Node 20 可以运行大部分功能，但不支持内置的 `node:sqlite` 持久化。
+
 ```bash
-pnpm install        # 需 Node ≥ 20、pnpm 10
-pnpm run check      # typecheck + 生成 JSON Schema + 跑测试
-
-# 安装全局命令（Phase 4.5）：软链 yoagent 到 PATH，随 git pull 即时生效
-pnpm run install:cli                          # 之后任意目录直接 `yoagent`
-# 私密配置（key 不进 git）：~/.config/yo-agent/config.env（权限 600，shell 显式同名变量优先）
-#   OPENAI_API_KEY=... / OPENAI_BASE_URL=https://gateway/v1 / YO_MODEL=gpt-5.5
-#   （或 ANTHROPIC_API_KEY / GEMINI_API_KEY）
-
-yoagent --tui                    # 交互式多轮 REPL（推荐日常；/help 看命令）
-yoagent --tui -p "你的提问"       # 带首问进入，之后多轮
-yoagent -p "你的提问"             # headless 单次问答
-yoagent --mode jsonl -p "..."    # 结构化 JSONL
-
-# 等价的源码态调用（未装全局命令时，FakeProvider 演示无需 key）
-pnpm --filter @yo-agent/cli start -- -p "你的提问"              # headless 文本
-pnpm --filter @yo-agent/cli start -- --tui -p "你的提问"        # Ink TUI
-pnpm --filter @yo-agent/cli start -- --mode jsonl -p "你的提问"  # 结构化 JSONL
-
-# 接真实 provider（可叠 YO_DB= / YO_COMPACT=1 / YO_CHECKPOINT=1 / YO_MODEL=）
-ANTHROPIC_API_KEY=sk-... pnpm --filter @yo-agent/cli start -- -p "用 ts 写个快排"
-
-# 协议化暴露（Phase 2）
-pnpm --filter @yo-agent/cli start -- rpc              # JSON-RPC over stdin/stdout（通用远端驱动）
-pnpm --filter @yo-agent/cli start -- rpc --listen 8799  # WS server（打印配对码，建议仅经 Tailscale/WireGuard 隧道）
-pnpm --filter @yo-agent/cli start -- mcp-server      # 作 MCP server 被 Claude Code/Cursor 调用
-
-# 浏览器内嵌 demo（Phase 5）：内核跑在网页里，后端只出 LLM 代理 + 工具 API
-UPSTREAM_BASE=https://api.anthropic.com ANTHROPIC_API_KEY=sk-... \
-  pnpm --filter @yo-agent/demo-backend start   # 演示后端 :8788（OpenAI 兼容上游改 UPSTREAM_BASE/UPSTREAM_KEY）
-pnpm --filter @yo-agent/web-demo dev           # 网页 demo :5177（模式A走上面的代理；模式B填自己的中转站+key）
-
-# Web 控制台（Phase 5.1）：多 agent 管理 + 会话历史 IndexedDB 持久 + 刷新续聊
-pnpm --filter @yo-agent/web-console dev         # 控制台 :5178（新增 agent → 配连接与工具 → 开聊；会话跨刷新保留）
-
-# 进程内可信扩展（Phase 5.2）：TS 文件放目录即用（主进程执行任意代码——global 目录默认信任，
-# 项目目录 <repo>/.yo-agent/extensions 首次启动交互确认落 ~/.yo-agent/extension-trust.json）
-mkdir -p ~/.yo-agent/extensions && cp examples/extensions/word-count.ts ~/.yo-agent/extensions/
-yoagent --tui    # 自定义工具 word_count 可被 LLM 调用；/exthello 进补全与 /help；不可信代码请用 plugin-host
+pnpm install
+pnpm run install:cli
 ```
 
-## 工具链
+配置一个模型：
 
-- **Node ≥ 20 / TypeScript ≥ 5 / pnpm 10**。
-- 源码态 workspace（`exports` 指向 `src`，`tsc --noEmit` 类型检查 + vitest），无构建产物；CLI 经 `tsx` 直跑。
+```bash
+export ANTHROPIC_API_KEY=sk-...
+# 或
+export OPENAI_API_KEY=sk-...
+# 或
+export GEMINI_API_KEY=...
+```
+
+启动交互终端：
+
+```bash
+yoagent --tui
+```
+
+未安装全局命令时，可以从工作区直接运行：
+
+```bash
+pnpm --filter @yo-agent/cli start -- --tui
+```
+
+没有配置 API key 时会使用 `FakeProvider`，只用于验证安装和界面。
+
+## CLI
+
+```bash
+# 交互式多轮会话
+yoagent --tui
+yoagent --tui -p "检查这个项目"
+
+# 单次执行
+yoagent -p "解释 src/main.ts"
+
+# JSONL 事件流
+yoagent --mode jsonl -p "运行测试并总结结果"
+
+# 恢复会话，需要配置 YO_DB
+yoagent --continue
+yoagent --resume
+yoagent --resume <session-id>
+
+# 远程协议
+yoagent rpc
+yoagent rpc --listen 8799
+yoagent mcp-server
+yoagent acp
+```
+
+TUI 内使用 `/help` 查看命令。常用命令包括 `/model`、`/cwd`、`/resume`、`/compact` 和 `/tasks`。
+
+## 配置
+
+CLI 会读取当前进程环境变量。通过全局 `yoagent` 启动时，还会加载 `~/.config/yo-agent/config.env`；Shell 中显式设置的变量优先。源码态 pnpm 命令不会自动加载这个文件。
+
+| 变量 | 作用 |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | 使用 Anthropic |
+| `OPENAI_API_KEY` | 使用 OpenAI 或兼容接口 |
+| `OPENAI_BASE_URL` | 自定义 OpenAI-compatible 地址 |
+| `OPENAI_MODE=responses` | 使用 OpenAI Responses API |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | 使用 Gemini |
+| `YO_MODEL` | 覆盖默认模型 |
+| `YO_DB` | SQLite 会话数据库路径 |
+| `YO_COMPACT=1` | 启用上下文压缩 |
+| `YO_COMPACT_MODEL` | 指定压缩摘要模型 |
+| `YO_CHECKPOINT=1` | 编辑后创建 shadow-git checkpoint |
+| `YO_LOOP_BREAKER` | `off`、`loose` 或 `strict`，默认 `loose` |
+| `YO_TOOL_SHIM=1` | 为不支持原生工具调用的兼容模型启用 prompt shim |
+| `YO_HISTORY` | TUI 输入历史路径；空字符串表示关闭 |
+| `YO_TRUSTED_KEYS` | RPC WebSocket 允许的设备公钥列表 |
+| `YO_CONFIG` | 覆盖全局启动器读取的配置文件路径 |
+
+示例：
+
+```bash
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://gateway.example.com/v1
+YO_MODEL=gpt-4o
+YO_DB=~/.local/share/yo-agent/sessions.db
+YO_COMPACT=1
+```
+
+## 项目上下文
+
+yo-agent 会从当前目录向工作区根目录加载 `yo.md` 和 `AGENTS.md`，作为项目约定注入 system prompt。
+
+长期记忆存放在工作区的 `MEMORY.md`：
+
+```bash
+yoagent -p "#remember 本项目使用 pnpm，不使用 npm"
+```
+
+技能与子 agent 配置目录：
+
+```text
+~/.yo-agent/skills/                 # 全局 skills
+<workspace>/.yo-agent/skills/       # 项目 skills
+~/.yo-agent/agents/                 # 全局 agent recipes
+<workspace>/.yo-agent/agents/       # 项目 agent recipes
+```
+
+## Web
+
+启动官方 Web 控制台：
+
+```bash
+pnpm --filter @yo-agent/web-console dev
+```
+
+默认地址为 `http://localhost:5178`。控制台支持多 agent 配置、流式聊天、工具审批和 IndexedDB 会话恢复。
+
+运行浏览器内嵌示例：
+
+```bash
+UPSTREAM_KEY=sk-... pnpm --filter @yo-agent/demo-backend start
+pnpm --filter @yo-agent/web-demo dev
+```
+
+默认后端地址为 `http://localhost:8788`，Web demo 为 `http://localhost:5177`。可用 `UPSTREAM_BASE` 配置 Anthropic 或 OpenAI-compatible 上游地址，也可以用 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 代替 `UPSTREAM_KEY`。
+
+## 扩展
+
+可信扩展可以注册工具、命令、system prompt 段和生命周期 hook：
+
+```bash
+mkdir -p ~/.yo-agent/extensions
+cp examples/extensions/word-count.ts ~/.yo-agent/extensions/
+yoagent --tui
+```
+
+项目扩展放在 `<workspace>/.yo-agent/extensions/`，首次交互加载时需要确认信任。扩展在主进程中执行，拥有当前用户的完整权限；不可信代码应使用 `plugin-host`，不要作为可信扩展加载。
+
+## 架构
+
+```text
+packages/protocol        事件、RPC 和运行时 schema
+packages/provider        模型适配与模型目录
+packages/tools           工具注册、内置工具和执行后端
+packages/store           EventLog、SQLite、IndexedDB、checkpoint
+packages/kernel          agent loop、审批、压缩、子 agent、策略
+packages/surface-cli     headless、JSONL 和 TUI
+packages/surface-rpc     JSON-RPC over stdio/WebSocket
+packages/surface-mcp     MCP server 与 MCP host
+packages/surface-acp     ACP 接入
+packages/surface-web     浏览器 Agent API 和 ChatController
+packages/plugin-host     Worker 隔离插件
+packages/extension-host  进程内可信扩展
+apps/yo-agent            CLI 组合入口
+apps/web-console         Vue Web 控制台
+apps/web-demo            浏览器内嵌示例
+```
+
+核心数据模型是 append-only `EventLog`。`AgentKernel` 是事件的唯一写入方，各 surface 只消费内核接口和事件流，因此会话可以被持久化、回放和远程续接。
+
+更完整的设计决策见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+
+## 开发
+
+```bash
+pnpm run typecheck
+pnpm run lint
+pnpm run test
+pnpm run check
+pnpm run test:coverage
+```
+
+`pnpm run check` 依次执行类型检查、lint、schema 生成、浏览器打包检查和全部测试。
+
+## 安全边界
+
+- 默认 shell 后端只是进程级 L1 防护：会剥离 API key 等环境变量并在中断时清理进程组，但仍可访问本机文件系统和网络。
+- `bypass` 权限模式会跳过审批，只应在明确受信任的环境使用。
+- WebSocket RPC 会监听 `0.0.0.0`，应放在 Tailscale、WireGuard 或其他可信网络后面。
+- 浏览器端审批不是服务端授权。业务工具 API 必须独立校验用户身份和权限。
+- 可信扩展等同于执行本地代码；项目内容更新后不会按文件 hash 重新确认。
+
+## 当前限制
+
+- 仓库包仍是源码态私有包，没有稳定 npm 发布和 API 兼容承诺。
+- 同一会话不应并发启动多个 turn；调用方应等待当前 turn 完成或使用 steer。
+- EventLog 已保留 `parentId`，但会话 DAG、fork 和 tree UI 尚未完整实现。
+- 容器级执行隔离、完整可观测性和多用户授权仍在规划中。
