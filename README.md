@@ -73,7 +73,7 @@ yoagent rpc --listen 8799
 yoagent mcp-server
 yoagent acp
 
-# 微信接入（官方 iLink Bot 协议）
+# 微信接入（官方 iLink Bot 协议，详见 docs/weixin.md）
 yoagent weixin login                          # 扫码登录
 yoagent weixin run                            # 常驻收发（建议配 YO_DB）
 yoagent weixin allow <accountId> <userId>     # 授权发件人

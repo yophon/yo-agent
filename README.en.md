@@ -73,7 +73,7 @@ yoagent rpc --listen 8799
 yoagent mcp-server
 yoagent acp
 
-# WeChat integration (official iLink Bot protocol)
+# WeChat integration (official iLink Bot protocol, see docs/weixin.md)
 yoagent weixin login                          # QR-code login
 yoagent weixin run                            # resident send/receive loop (YO_DB recommended)
 yoagent weixin allow <accountId> <userId>     # authorize a sender
