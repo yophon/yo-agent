@@ -146,6 +146,25 @@ interface SessionState {
   lastToolsetNames?: string[];
   /** 上下文满度已提醒标志（降回阈下自动重置，再次跨阈重报，不逐 step 刷屏）。 */
   ctxHighNoted: boolean;
+  /**
+   * 并发闸（5.3a）：turn 进行中标志。startTurnNow 在首个 await 前同步置位，封死同 tick 双进；
+   * done 收尾（含 TurnFailed 兜底后）清位并 drain 队列。currentTurnId 不能兼任——它在 runTurn 内才设置（异步晚于闸点）。
+   */
+  turnActive: boolean;
+  /** 并发闸（5.3a）：turn 进行中到达的输入排队串行，当前 turn 完结自动出队起跑（互斥拒绝会误伤「TurnCompleted 回调内提交下一条」的既有合法模式——fan-out 发生在 runTurn 未返回的同栈上）。 */
+  turnQueue: QueuedTurn[];
+  /** 并发闸（5.3a）：活跃 turn 的对账信息（idemKey 去重 —— RPC 重连重试同一 turn/start 返回既有 turnId 而非排成重复 turn）。 */
+  activeTurn?: { turnId: Id; idemKey: string; done: Promise<void> };
+}
+
+/** 排队中的 turn（5.3a）：turnId 预分配；done 为 deferred，实际起跑后管道至真实完成，被取消（interrupt/endSession）则 reject。 */
+interface QueuedTurn {
+  prompt: string;
+  idemKey: string;
+  turnId: Id;
+  done: Promise<void>;
+  resolveDone: () => void;
+  rejectDone: (e: unknown) => void;
 }
 
 interface ToolCallAccum {
@@ -216,6 +235,8 @@ export class AgentKernel implements Kernel, SubagentHost {
       routeIdx: 0,
       pendingStatusNotes: [],
       ctxHighNoted: false,
+      turnActive: false,
+      turnQueue: [],
     };
     this.sessions.set(id, s);
     await this.emit(s, {
@@ -265,6 +286,8 @@ export class AgentKernel implements Kernel, SubagentHost {
       routeIdx: 0,
       pendingStatusNotes: [],
       ctxHighNoted: false,
+      turnActive: false,
+      turnQueue: [],
     };
     this.sessions.set(sessionId, s);
     return true;
@@ -275,6 +298,8 @@ export class AgentKernel implements Kernel, SubagentHost {
     const s = this.sessions.get(sessionId);
     // 审查 gap#3：mid-turn 驱逐须 abort 在跑 turn，否则 turn 循环持已移除的 SessionState 引用继续 append/mutate（孤儿 turn）。
     s?.turnAbort?.abort(new Error('session ended'));
+    // 5.3a：清排队——不清则 deferred 永久悬挂 + 在跑 turn 收尾时 drain 会在已驱逐的 SessionState 上起孤儿 turn。
+    if (s) this.cancelQueuedTurns(s, '会话已结束，排队 turn 取消');
     this.sessions.delete(sessionId);
     // 审查 gap#2：通知外部回收该会话派生的背景子 agent（abortInflight 死代码的下游危害——背景子 agent 不随会话回收）。
     this.d.sessionReaper?.(sessionId);
@@ -304,38 +329,100 @@ export class AgentKernel implements Kernel, SubagentHost {
     }
   }
 
-  /** 阻塞版（CLI 用）：跑完整 turn 才 resolve。 */
+  /** 阻塞版（CLI 用）：跑完整 turn 才 resolve（排队则含排队等待）；排队被取消（interrupt/endSession）reject。 */
   async submitInput(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }> {
     const { turnId, done } = await this.launchTurn(this.require(sessionId), prompt, idemKey);
     await done;
     return { turnId };
   }
 
-  /** 非阻塞版（RpcSurface 用）：发出 TurnStarted 后立即返回 turnId，turn 在后台跑、事件经订阅推送。 */
+  /** 非阻塞版（RpcSurface 用）：立即返回 turnId（进行中则排队预分配），turn 在后台跑、事件经订阅推送。 */
   async beginTurn(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }> {
     const { turnId } = await this.launchTurn(this.require(sessionId), prompt, idemKey);
     return { turnId };
   }
 
-  /** 公共起 turn 逻辑：emit TurnStarted → 后台跑 runTurn（异常兜底 TurnFailed）。返回 turnId 与完成 Promise。 */
+  /**
+   * 公共起 turn 逻辑（5.3a 并发闸）：空闲直接起跑；turn 进行中则入队（turnId 预分配），当前 turn 完结自动出队串行。
+   * 同 idemKey 命中活跃/排队 turn 时返回既有 {turnId, done} 不新建（RPC 重连重试对账）。
+   */
   private async launchTurn(s: SessionState, prompt: string, idemKey: string): Promise<{ turnId: Id; done: Promise<void> }> {
-    s.interrupted = false;
+    if (s.activeTurn?.idemKey === idemKey) return { turnId: s.activeTurn.turnId, done: s.activeTurn.done };
+    const dup = s.turnQueue.find((q) => q.idemKey === idemKey);
+    if (dup) return { turnId: dup.turnId, done: dup.done };
     const turnId = randomUUID();
-    await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
-    // 用户输入落事件流（5.1b）：回放可重建用户气泡（此前只进 messages 快照）。
-    await this.emit(s, { kind: 'UserMessage', text: prompt, source: 'prompt' }, turnId);
-    s.messages.push({ role: 'user', content: prompt });
-    await this.hooks.fireUserPromptSubmit(this.hookCtx(s), prompt, this.hookErr(s, turnId)); // UserPromptSubmit hook（4A）
-    const done = this.runTurn(s, turnId).catch(async (e) => {
-      // 兜底 emit 自身也可能抛（cursor 冲突 / 落库失败）；务必吞掉，否则后台 turn（beginTurn 丢弃 done）
-      // 会成为 unhandledRejection 击垮常驻进程、连带所有会话（审查 high）。
-      try {
-        await this.emit(s, { kind: 'TurnFailed', error: { message: e instanceof Error ? e.message : String(e) } }, turnId);
-      } catch {
-        /* 落库失败也不得崩进程 */
-      }
+    if (s.turnActive) {
+      let resolveDone!: () => void;
+      let rejectDone!: (e: unknown) => void;
+      const done = new Promise<void>((res, rej) => {
+        resolveDone = res;
+        rejectDone = rej;
+      });
+      // 标记 handled：beginTurn 调用方丢弃 done，排队被取消（interrupt/endSession）时 reject 不得成为 unhandledRejection。
+      done.catch(() => {});
+      s.turnQueue.push({ prompt, idemKey, turnId, done, resolveDone, rejectDone });
+      return { turnId, done };
+    }
+    return this.startTurnNow(s, prompt, idemKey, turnId);
+  }
+
+  /** 实际起跑一个 turn：emit TurnStarted → 后台跑 runTurn（异常兜底 TurnFailed）→ 收尾清闸 + drain 队列。 */
+  private async startTurnNow(s: SessionState, prompt: string, idemKey: string, turnId: Id): Promise<{ turnId: Id; done: Promise<void> }> {
+    s.turnActive = true; // 首个 await 前同步置位：封死同 tick 双进
+    let resolveDone!: () => void;
+    let rejectDone!: (e: unknown) => void;
+    const done = new Promise<void>((res, rej) => {
+      resolveDone = res;
+      rejectDone = rej;
     });
+    done.catch(() => {}); // 标记 handled（启动期落库失败 reject 时，去重调用方可能未 await）
+    s.activeTurn = { turnId, idemKey, done };
+    try {
+      s.interrupted = false;
+      await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
+      // 用户输入落事件流（5.1b）：回放可重建用户气泡（此前只进 messages 快照）。
+      await this.emit(s, { kind: 'UserMessage', text: prompt, source: 'prompt' }, turnId);
+      s.messages.push({ role: 'user', content: prompt });
+      await this.hooks.fireUserPromptSubmit(this.hookCtx(s), prompt, this.hookErr(s, turnId)); // UserPromptSubmit hook（4A）
+    } catch (e) {
+      // 启动期落库失败：清闸 + drain（排队 turn 不得因此永久卡死），错误向调用方传播。
+      s.turnActive = false;
+      s.activeTurn = undefined;
+      rejectDone(e);
+      this.drainTurnQueue(s);
+      throw e;
+    }
+    void this.runTurn(s, turnId)
+      .catch(async (e) => {
+        // 兜底 emit 自身也可能抛（cursor 冲突 / 落库失败）；务必吞掉，否则后台 turn（beginTurn 丢弃 done）
+        // 会成为 unhandledRejection 击垮常驻进程、连带所有会话（审查 high）。
+        try {
+          await this.emit(s, { kind: 'TurnFailed', error: { message: e instanceof Error ? e.message : String(e) } }, turnId);
+        } catch {
+          /* 落库失败也不得崩进程 */
+        }
+      })
+      .finally(() => {
+        s.turnActive = false;
+        s.activeTurn = undefined;
+        resolveDone();
+        this.drainTurnQueue(s);
+      });
     return { turnId, done };
+  }
+
+  /** 出队下一条排队 turn 起跑，其真实完成/启动失败管道至排队时发出的 done。 */
+  private drainTurnQueue(s: SessionState): void {
+    const next = s.turnQueue.shift();
+    if (!next) return;
+    void this.startTurnNow(s, next.prompt, next.idemKey, next.turnId)
+      .then(({ done }) => done)
+      .then(next.resolveDone, next.rejectDone);
+  }
+
+  /** 取消全部排队 turn（interrupt=立即全停 / endSession=防孤儿 drain 与 deferred 悬挂），逐一 reject。 */
+  private cancelQueuedTurns(s: SessionState, reason: string): void {
+    for (const q of s.turnQueue.splice(0)) q.rejectDone(new Error(reason));
   }
 
   /** 列活动会话摘要（RpcSurface session/list）。 */
@@ -407,6 +494,8 @@ export class AgentKernel implements Kernel, SubagentHost {
   async interrupt(sessionId: Id): Promise<void> {
     const s = this.require(sessionId);
     s.interrupted = true;
+    // 5.3a：中断 = 立即全停——排队 turn 一并取消（否则中断后排队 turn 自动起跑，违背用户意图）。
+    this.cancelQueuedTurns(s, 'turn 排队已随中断取消');
     // 取消 in-flight 工具调用（响应 signal 者，如 MCP callTool）；不响应 signal 的内置工具在 step 间被拦。
     s.turnAbort?.abort(new Error('turn interrupted'));
     // 若当前卡在等待交互审批，逐一以 deny 解除挂起，否则 turn 永不返回 + pending 泄漏。

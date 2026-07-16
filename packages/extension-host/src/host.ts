@@ -348,6 +348,13 @@ export class ExtensionHost {
     if (next === undefined) return;
     void this.requireKernel()
       .submitInput(sessionId, next, `ext-followup-${++this.followUpSeq}`)
-      .catch((e) => this.log(`[ext] followUp 提交失败：${e instanceof Error ? e.message : String(e)}`));
+      .catch((e) => {
+        // reject 只发生在「turn 未运行」路径（内核排队被 interrupt/endSession 取消、启动期落库失败、会话不存在）——
+        // runTurn 异常被内核 TurnFailed 兜底吞掉不走此处。回队无双跑风险，下一次 end_turn 再试。
+        const cur = this.followUpQueues.get(sessionId) ?? [];
+        cur.unshift(next);
+        this.followUpQueues.set(sessionId, cur);
+        this.log(`[ext] followUp 提交失败（已回队）：${e instanceof Error ? e.message : String(e)}`);
+      });
   }
 }

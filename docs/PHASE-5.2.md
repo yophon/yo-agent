@@ -77,7 +77,7 @@ TUI 交互信任确认（readline y/N）与「LLM 真实调用扩展工具 / Pre
 
 **评估后接受（记录取舍）：**
 
-- **MED-2 followUp 双队列同源触发的并发 turn 竞态**：TUI 队列与扩展队列同时非空时，同一 `TurnCompleted{end_turn}` 双路触发 submit，而 kernel 无「同会话 turn 进行中」互斥闸——极端 timing 下两 turn 并发交错消息。根因是**内核层并发闸缺失**（RPC 客户端并发 submitInput 同样命中，非本期引入），收口期不动内核；扩展档判据已与 TUI 完全对齐（仅 end_turn、一次一条）。列为内核已知缺口，随 Phase 5.3/6 内核工作处理。
+- **MED-2 followUp 双队列同源触发的并发 turn 竞态**：TUI 队列与扩展队列同时非空时，同一 `TurnCompleted{end_turn}` 双路触发 submit，而 kernel 无「同会话 turn 进行中」互斥闸——极端 timing 下两 turn 并发交错消息。根因是**内核层并发闸缺失**（RPC 客户端并发 submitInput 同样命中，非本期引入），收口期不动内核；扩展档判据已与 TUI 完全对齐（仅 end_turn、一次一条）。列为内核已知缺口，随 Phase 5.3/6 内核工作处理。**（已于 5.3a 内核 turn 队列收口，见 PHASE-5.3.md。）**
 - **LOW-5 信任按「项目+扩展名」持久**：git pull 换掉已信任扩展的全部内容照常执行（无 hash 校验）——与 mcp-trust 形制一致的既定取舍，已在下方已知限制标注；路径键不做 realpath 归一（`/tmp` vs `/private/tmp` 两键只导致重复确认，fail-safe）。
 
 **查过未发现问题的重点项**：@import 防逃逸/路径语义等价（resolveOne realpath→前缀判定逐行等价、isWithinPath 仅修 `/` 根误拒、TextEncoder 与 Buffer 对孤立代理项同为 3 字节）；extraCommands 撞名（含别名双向、/help 同源）；registerTool 钳制（无 availability 自设逃逸）；host.exec 收敛（timer/listener 清理完整，exec 抛错→fail-closed 语义成立）；contextFs/MemoryFileSystem（无未处理 rejection、listDir 排序差异被调用方 sort 抹平）。
@@ -86,7 +86,7 @@ TUI 交互信任确认（readline y/N）与「LLM 真实调用扩展工具 / Pre
 
 - **扩展 = 任意代码执行**：定位就是可信档（与 pi 同立场）；防线是项目信任门 + 文档醒目声明，不是沙箱。不可信场景用 plugin-host。信任按「项目 + 扩展名」持久（同 mcp-trust）——已信任扩展的内容变更（如 git pull）不重新确认，无 hash 校验（审查 LOW-5 记录的取舍）。
 - **onEvent 对 resume 会话**：经 UserPromptSubmit 换挂接上（审查 MED-4 修复）——resume 后、首条续聊输入前的回放事件收不到（onEvent 语义即「后续事件」）。
-- **followUp 与 TUI 队列并发竞态**（审查 MED-2）：两队列同时非空时极端 timing 可能双发 turn——根因是内核无同会话并发 turn 闸（非本期引入），列为内核已知缺口。
+- **followUp 与 TUI 队列并发竞态**（审查 MED-2）：两队列同时非空时极端 timing 可能双发 turn——根因是内核无同会话并发 turn 闸（非本期引入），列为内核已知缺口。**（已于 5.3a 内核 turn 队列收口。）**
 - **会话中途动态 system 注入不做**（pushStatusNote 保持 private）；free-text input 面板不做（扩展命令用 args 传参）；浏览器运行时加载扩展不做（动态 import TS 是 Node 能力；web 侧仅保证 sdk 类型面无 node:）。
 - **扩展分发**（npm/git 安装）——目录放置即用，分发工具后续。
 

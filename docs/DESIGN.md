@@ -906,6 +906,12 @@ yo-agent/
 - **退出标准（已达成）**：既有 3E/4D/4B 测试喂 NodeFileSystem 零回归；示例扩展真机加载 + 信任门生效；`pnpm run check` 全绿。
 - **Phase 5.3 候选（本期不做）**：会话 DAG 兑现——`EventEnvelope.parentId` 真实挂树 + fork/tree/分支摘要（pi 的第三样精华；现 kernel doEmit 恒填 null）。
 
+### Phase 5.3 — 内核并发闸 + 会话 DAG（5.3a ✅ 已交付，5.3b/c 规划中，见 [`PHASE-5.3.md`](PHASE-5.3.md)）
+
+- **5.3a 并发闸（✅）**：内核 turn 队列——`launchTurn` 拆「入队/起跑」两段，turn 进行中到达的输入排队串行（互斥拒绝会误伤「TurnCompleted 回调内提交下一条」的既有合法模式：fan-out 在 runTurn 未返回的同栈上）；同 idemKey 命中活跃/排队 turn 去重返回既有 turnId（RPC 重连重试对账）；interrupt/endSession 清队 reject；扩展 followUp 被取消回队重试。收口 5.2 审查 MED-2（双队列双发竞态）。
+- **5.3b fork 最小闭环（规划）**：fork = 新 sessionId（per-session cursor 线性保持，否决单会话内 DAG 多头）；历史点 messages 用 per-turn 快照（否决事件回放重建——压缩不可逆，ContextCompacted 事件重建不出真实消息窗口）；`SessionRow.forkedFrom` + RPC `session/fork`；shadow-git checkpoint 联动可选（对话+文件系统双时间旅行）。
+- **5.3c 表面兑现（规划）**：TUI `/fork` `/tree` + web-console 分支树；Phase 6 聊天 replyToId → 会话内 parentId 标注接点。
+
 ### Phase 6 — 聊天平台接入（QQ / Telegram，差异化空白点，依赖 Phase 4 底座）
 
 - ChatSurface：Transport + Adapter 二层 + OneBot v11（QQ）优先，Telegram / Discord 跟进；DM pairing。

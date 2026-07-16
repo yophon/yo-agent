@@ -205,6 +205,5 @@ pnpm run test:coverage
 ## Current Limitations
 
 - Workspace packages are private, source-only packages without a stable npm release or API compatibility guarantee.
-- Do not start multiple turns concurrently in the same session; wait for the active turn to complete or use steering.
 - The EventLog reserves `parentId`, but session DAGs, forks, and the tree UI are not fully implemented.
 - Container-level execution isolation, full observability, and multi-user authorization are still planned work.

@@ -205,6 +205,5 @@ pnpm run test:coverage
 ## 当前限制
 
 - 仓库包仍是源码态私有包，没有稳定 npm 发布和 API 兼容承诺。
-- 同一会话不应并发启动多个 turn；调用方应等待当前 turn 完成或使用 steer。
 - EventLog 已保留 `parentId`，但会话 DAG、fork 和 tree UI 尚未完整实现。
 - 容器级执行隔离、完整可观测性和多用户授权仍在规划中。

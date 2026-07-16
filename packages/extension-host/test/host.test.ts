@@ -39,7 +39,13 @@ class FakeKernel implements ExtensionKernel {
   async steer(sessionId: Id, text: string): Promise<void> {
     this.steered.push({ sessionId, text });
   }
+  /** >0 时接下来 N 次 submitInput reject（模拟内核排队被 interrupt/endSession 取消，5.3a）。 */
+  rejectSubmits = 0;
   async submitInput(sessionId: Id, prompt: string, idemKey: string): Promise<unknown> {
+    if (this.rejectSubmits > 0) {
+      this.rejectSubmits--;
+      throw new Error('turn 排队已随中断取消');
+    }
     this.submitted.push({ sessionId, prompt, idemKey });
     return {};
   }
@@ -279,6 +285,22 @@ describe('5.2b — 行动面（exec / steer / followUp / onEvent）', () => {
     h.kernel.emit('s1', envelope('s1', { kind: 'TurnCompleted', stopReason: 'end_turn', usage }));
     expect(h.kernel.submitted.map((s) => s.prompt)).toEqual(['第一条', '第二条']);
     expect(new Set(h.kernel.submitted.map((s) => s.idemKey)).size).toBe(2); // idemKey 不重复
+  });
+
+  it('followUp 提交被内核取消（5.3a 清队 reject）→ 回队保留，下一次 end_turn 重试成功', async () => {
+    const h = makeHost();
+    const api = await captureApi(h);
+    api.followUp('s1', '被取消的跟进');
+
+    const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+    h.kernel.rejectSubmits = 1;
+    h.kernel.emit('s1', envelope('s1', { kind: 'TurnCompleted', stopReason: 'end_turn', usage }));
+    await new Promise((r) => setTimeout(r, 0)); // 等 reject 的 .catch 回队落定
+    expect(h.kernel.submitted).toHaveLength(0);
+    expect(h.logs.join('\n')).toContain('已回队');
+
+    h.kernel.emit('s1', envelope('s1', { kind: 'TurnCompleted', stopReason: 'end_turn', usage }));
+    expect(h.kernel.submitted.map((s) => s.prompt)).toEqual(['被取消的跟进']); // 同一条重试成功，无丢失无双跑
   });
 
   it('onEvent：SessionStart hook 自动接订阅、全量事件 fan-out、单回调抛错围栏', async () => {
