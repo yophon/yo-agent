@@ -2,8 +2,8 @@
  * RpcSurface（DESIGN §6 / §7.2）：把内核事件流暴露为 JSON-RPC 2.0 通用远端驱动协议。
  * 只消费内核（startSession / beginTurn / steer / interrupt / decideApproval / 事件订阅），永不按内核内部分支。
  *
- * 方法：session/new · session/list · session/resume · turn/start · turn/steer · turn/interrupt
- *      · approval/decide · model/list · ping。事件经 `event` 推送；ApprovalRequested 另发 `approval/request`。
+ * 方法：session/new · session/list · session/resume · session/fork · turn/start · turn/steer
+ *      · turn/interrupt · approval/decide · model/list · ping。事件经 `event` 推送；ApprovalRequested 另发 `approval/request`。
  */
 import type { Kernel, Surface, SurfaceKind } from '@yo-agent/kernel';
 import type { EventEnvelope, Id } from '@yo-agent/protocol';
@@ -11,6 +11,7 @@ import {
   ApprovalDecideParamsSchema,
   RpcMethod,
   RpcServerMethod,
+  SessionForkParamsSchema,
   SessionNewParamsSchema,
   SessionReconnectParamsSchema,
   SessionResumeParamsSchema,
@@ -40,6 +41,7 @@ export class RpcSurface implements Surface {
     this.peer.on(RpcMethod.SessionList, () => ({ sessions: kernel.listSessions() }));
     this.peer.on(RpcMethod.SessionResume, (p) => this.sessionResume(p));
     this.peer.on(RpcMethod.SessionReconnect, (p) => this.sessionReconnect(p));
+    this.peer.on(RpcMethod.SessionFork, (p) => this.sessionFork(p));
     this.peer.on(RpcMethod.TurnStart, (p) => this.turnStart(p));
     this.peer.on(RpcMethod.TurnSteer, async (p) => {
       const x = TurnSteerParamsSchema.parse(p);
@@ -93,13 +95,24 @@ export class RpcSurface implements Surface {
     }
     const ok = await this.kernel.resumeSession(sessionId);
     if (!ok) throw new Error(`未知会话：${sessionId}`);
-    // 带历史全量重放（fromCursor 之后）。
+    // 带历史全量重放（fromCursor 之后）；readThread 跨 fork 链——fork 会话的历史存在源会话日志（5.3b），
+    // 无谱系时与 events.read 逐事件等价。
     await this.attachFrom(sessionId, p.fromCursor ?? -1, async () => {
-      for await (const env of this.kernel.events.read(sessionId, p.fromCursor === undefined || p.fromCursor < 0 ? undefined : p.fromCursor)) {
+      for await (const env of this.kernel.readThread(sessionId, p.fromCursor === undefined || p.fromCursor < 0 ? undefined : p.fromCursor)) {
         this.push(env);
       }
     });
     return { sessionId };
+  }
+
+  /** fork（5.3b）：源会话 turn 边界分支出新会话，随后订阅接实时（新会话历史经 session/resume 的 readThread 取）。 */
+  private async sessionFork(params: unknown): Promise<{ sessionId: Id }> {
+    const p = SessionForkParamsSchema.parse(params);
+    const newId = await this.kernel.forkSession(p.sessionId, p.atCursor);
+    await this.attachFrom(newId, -1, async () => {
+      for await (const env of this.kernel.readThread(newId)) this.push(env);
+    });
+    return { sessionId: newId };
   }
 
   /**

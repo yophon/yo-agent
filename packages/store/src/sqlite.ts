@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import type { Cursor, EventEnvelope, Id } from '@yo-agent/protocol';
 import { EVENTLOG_SCHEMA_VERSION } from '@yo-agent/protocol';
 import type { AgentEvent } from '@yo-agent/protocol';
-import type { Checkpoint, EventStore, SessionRow } from './index';
+import type { Checkpoint, EventStore, SessionRow, TurnSnapshot } from './index';
 
 // node:sqlite 经 createRequire 加载，避免对 @types/node 版本的硬依赖（Node ≥ 22.5）。
 interface SqliteStmt {
@@ -41,6 +41,9 @@ export class SqliteEventStore implements EventStore {
   private readonly selectSession: SqliteStmt;
   private readonly selectAllSessions: SqliteStmt;
   private readonly insertCheckpoint: SqliteStmt;
+  private readonly upsertSnapshot: SqliteStmt;
+  private readonly selectSnapshot: SqliteStmt;
+  private readonly selectSnapshotCursors: SqliteStmt;
 
   private constructor(db: SqliteDb) {
     this.db = db;
@@ -58,6 +61,12 @@ export class SqliteEventStore implements EventStore {
       );
       CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, row_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS checkpoints (checkpoint_id TEXT PRIMARY KEY, row_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS turn_snapshots (
+        session_id TEXT NOT NULL,
+        cursor INTEGER NOT NULL,
+        row_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, cursor)
+      );
     `);
     this.insertEvent = db.prepare(
       `INSERT INTO events (session_id, cursor, parent_cursor, turn_id, ts, kind, payload_json, schema_version)
@@ -71,6 +80,13 @@ export class SqliteEventStore implements EventStore {
     this.selectSession = db.prepare(`SELECT row_json FROM sessions WHERE session_id = ?`);
     this.selectAllSessions = db.prepare(`SELECT row_json FROM sessions`);
     this.insertCheckpoint = db.prepare(`INSERT OR REPLACE INTO checkpoints (checkpoint_id, row_json) VALUES (?, ?)`);
+    this.upsertSnapshot = db.prepare(
+      `INSERT OR REPLACE INTO turn_snapshots (session_id, cursor, row_json) VALUES (?, ?, ?)`,
+    );
+    this.selectSnapshot = db.prepare(`SELECT row_json FROM turn_snapshots WHERE session_id = ? AND cursor = ?`);
+    this.selectSnapshotCursors = db.prepare(
+      `SELECT cursor FROM turn_snapshots WHERE session_id = ? ORDER BY cursor ASC`,
+    );
   }
 
   static open(path = ':memory:'): SqliteEventStore {
@@ -134,6 +150,22 @@ export class SqliteEventStore implements EventStore {
 
   async saveCheckpoint(cp: Checkpoint): Promise<void> {
     this.insertCheckpoint.run(cp.checkpointId, JSON.stringify(cp));
+  }
+
+  // ── 5.3b turn 快照（旧库 CREATE IF NOT EXISTS 自动补表）──
+
+  async saveTurnSnapshot(snap: TurnSnapshot): Promise<void> {
+    this.upsertSnapshot.run(snap.sessionId, snap.cursor, JSON.stringify(snap));
+  }
+
+  async getTurnSnapshot(sessionId: Id, cursor: Cursor): Promise<TurnSnapshot | null> {
+    const row = this.selectSnapshot.get(sessionId, cursor) as { row_json: string } | undefined;
+    return row ? (JSON.parse(row.row_json) as TurnSnapshot) : null;
+  }
+
+  async listTurnSnapshots(sessionId: Id): Promise<Cursor[]> {
+    const rows = this.selectSnapshotCursors.all(sessionId) as Array<{ cursor: number }>;
+    return rows.map((r) => Number(r.cursor));
   }
 
   close(): void {

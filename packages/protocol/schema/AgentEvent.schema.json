@@ -42,6 +42,23 @@
             },
             "gitRef": {
               "type": "string"
+            },
+            "forkedFrom": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/definitions/AgentEvent/anyOf/0/properties/externalId"
+                },
+                "cursor": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "sessionId",
+                "cursor"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -444,11 +461,10 @@
               "const": "ContextCompacted"
             },
             "fromCursor": {
-              "type": "integer",
-              "minimum": 0
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/forkedFrom/properties/cursor"
             },
             "toCursor": {
-              "$ref": "#/definitions/AgentEvent/anyOf/14/properties/fromCursor"
+              "$ref": "#/definitions/AgentEvent/anyOf/0/properties/forkedFrom/properties/cursor"
             },
             "tokensSaved": {
               "type": "integer",

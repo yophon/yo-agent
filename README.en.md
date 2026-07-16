@@ -11,7 +11,7 @@ It provides a complete agent loop, tool calling, approvals, context compaction, 
 - Multiple providers: Anthropic, OpenAI Responses, OpenAI-compatible APIs, and Gemini
 - Coding tools: file access, search, editing, patches, shell commands, and todos
 - Interactive terminal: multi-turn conversations, streaming output, approvals, session recovery, and task inspection
-- Persistence: in-memory, SQLite, and IndexedDB stores with event replay and reconnect support
+- Persistence: in-memory, SQLite, and IndexedDB stores with event replay, reconnect, and session forking
 - Tool ecosystem: MCP host, MCP server, trusted extensions, and isolated plugins
 - Integration surfaces: JSON-RPC, WebSocket, ACP, and an embeddable browser API
 - Runtime safeguards: permission modes, risk assessment, tool timeouts, loop detection, and checkpoints
@@ -74,7 +74,7 @@ yoagent mcp-server
 yoagent acp
 ```
 
-Use `/help` inside the TUI to list available commands. Common commands include `/model`, `/cwd`, `/resume`, `/compact`, and `/tasks`.
+Use `/help` inside the TUI to list available commands. Common commands include `/model`, `/cwd`, `/resume`, `/compact`, `/tasks`, `/fork`, and `/tree`.
 
 ## Configuration
 
@@ -205,5 +205,5 @@ pnpm run test:coverage
 ## Current Limitations
 
 - Workspace packages are private, source-only packages without a stable npm release or API compatibility guarantee.
-- The EventLog reserves `parentId`, but session DAGs, forks, and the tree UI are not fully implemented.
+- Session fork/tree is implemented (a cross-session DAG via `forkedFrom` lineage); `EventEnvelope.parentId` remains unused, reserved for chat-platform reply threading.
 - Container-level execution isolation, full observability, and multi-user authorization are still planned work.

@@ -134,3 +134,31 @@ describe('ChatController.open —— 历史会话回放与续聊（5.1c）', () 
     store.close();
   });
 });
+
+describe('ChatController.fork（5.3b/c）', () => {
+  it('fork 切到分支：跨链回放重建源历史气泡；分支续聊带源上下文且不写回源会话', async () => {
+    const store = await freshDb();
+    const p = new FakeProvider().script(textTurn('答一')).script(textTurn('分支答'));
+    const c = new ChatController(makeAgent(store, p));
+    await c.send('第一问');
+    const srcSid = c.state.sessionId;
+    if (!srcSid) throw new Error('no sid');
+    const bubblesBefore = JSON.parse(JSON.stringify(c.state.messages));
+
+    const forkSid = await c.fork();
+    expect(forkSid).not.toBe(srcSid);
+    expect(c.state.sessionId).toBe(forkSid);
+    expect(c.state.messages).toEqual(bubblesBefore); // readThread 跨链回放重建源历史气泡
+
+    await c.send('分支问');
+    expect(JSON.stringify(p.seen[1]?.messages)).toContain('第一问'); // 源上下文进分支
+
+    // 分支消息不写回源会话事件流
+    const srcUserTexts: string[] = [];
+    for await (const env of store.read(srcSid)) {
+      if (env.event.kind === 'UserMessage') srcUserTexts.push((env.event as { text: string }).text);
+    }
+    expect(srcUserTexts).toEqual(['第一问']);
+    store.close();
+  });
+});

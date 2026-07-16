@@ -11,7 +11,7 @@
 - 多模型：Anthropic、OpenAI Responses、OpenAI-compatible、Gemini
 - 编程工具：文件读写、搜索、编辑、patch、shell、todo
 - 交互终端：多轮对话、流式输出、审批、会话恢复、任务查看
-- 持久化：内存、SQLite、IndexedDB；事件流支持回放和断线续接
+- 持久化：内存、SQLite、IndexedDB；事件流支持回放、断线续接和会话 fork 分支
 - 工具生态：MCP host、MCP server、可信扩展、隔离插件
 - 集成接口：JSON-RPC、WebSocket、ACP、浏览器内嵌 API
 - 运行保护：权限模式、风险判断、工具超时、循环熔断、checkpoint
@@ -74,7 +74,7 @@ yoagent mcp-server
 yoagent acp
 ```
 
-TUI 内使用 `/help` 查看命令。常用命令包括 `/model`、`/cwd`、`/resume`、`/compact` 和 `/tasks`。
+TUI 内使用 `/help` 查看命令。常用命令包括 `/model`、`/cwd`、`/resume`、`/compact`、`/tasks`、`/fork` 和 `/tree`。
 
 ## 配置
 
@@ -205,5 +205,5 @@ pnpm run test:coverage
 ## 当前限制
 
 - 仓库包仍是源码态私有包，没有稳定 npm 发布和 API 兼容承诺。
-- EventLog 已保留 `parentId`，但会话 DAG、fork 和 tree UI 尚未完整实现。
+- 会话 fork/tree 已实现（会话间 DAG，`forkedFrom` 谱系）；`EventEnvelope.parentId` 仍空置，预留给聊天平台的 reply 线程标注。
 - 容器级执行隔离、完整可观测性和多用户授权仍在规划中。

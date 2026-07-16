@@ -98,7 +98,9 @@ export class ChatController {
       if (replaying) queue.push(env);
       else this.reduce(env);
     });
-    for await (const env of this.agent.kernel.events.read(sessionId)) this.reduce(env);
+    // readThread 跨 fork 链回放（5.3b）：fork 会话的历史在源会话日志里，合并时间线 cursor 全局单调
+    // （lastCursor 去重语义不变）；无谱系时与 events.read 逐事件等价。
+    for await (const env of this.agent.kernel.readThread(sessionId)) this.reduce(env);
     // 上次是 turn 进行中被刷新/关页打断：EventLog 无收尾事件，收敛残留 streaming 态。
     if (this.state.turnActive) {
       this.state.turnActive = false;
@@ -107,6 +109,14 @@ export class ChatController {
     replaying = false;
     for (const env of queue) this.reduce(env);
     this.emit();
+  }
+
+  /** fork（5.3b）：从当前会话的 turn 边界分支出新会话并切换打开（缺省最近边界）。返回新会话 id。 */
+  async fork(atCursor?: number): Promise<Id> {
+    if (!this.sessionId) throw new Error('无活动会话，无法 fork');
+    const id = await this.agent.kernel.forkSession(this.sessionId, atCursor);
+    await this.open(id); // fork 会话已在内核内存态，open 内 resumeSession 直接命中
+    return id;
   }
 
   private resetState(): void {

@@ -142,6 +142,31 @@ describe('RpcSurface（JSON-RPC 通用远端驱动）', () => {
     expect(h.envelopes.length).toBeGreaterThan(before); // 历史被重放
   });
 
+  it('session/fork（5.3b）：turn 边界分支新会话，跨链历史重放 + 分支续聊带源上下文', async () => {
+    const h = await harness();
+    h.provider.script(textTurn('答一'));
+    const { sessionId } = (await h.client.request('session/new', { project: '/tmp', permissionMode: 'supervised', surfaceKind: 'rpc' })) as { sessionId: string };
+    await h.client.request('turn/start', { sessionId, prompt: '第一问', idemKey: 'k1' });
+    await h.waitFor((e) => e.kind === 'TurnCompleted');
+
+    const points = await h.kernel.listForkPoints(sessionId);
+    const res = (await h.client.request('session/fork', { sessionId, atCursor: points[0] })) as { sessionId: string };
+    expect(res.sessionId).not.toBe(sessionId);
+    // fork 时 attach 已跨链重放：客户端收到源会话的历史信封 + 分支 SessionStarted。
+    await new Promise((r) => setTimeout(r, 10));
+    const branchStarted = h.envelopes.find((e) => e.sessionId === res.sessionId && e.event.kind === 'SessionStarted');
+    expect(branchStarted && 'forkedFrom' in branchStarted.event ? branchStarted.event.forkedFrom : null).toEqual({
+      sessionId,
+      cursor: points[0],
+    });
+
+    h.provider.script(textTurn('分支答'));
+    await h.client.request('turn/start', { sessionId: res.sessionId, prompt: '分支问', idemKey: 'k2' });
+    await h.waitFor((e) => e.kind === 'TurnCompleted' && h.envelopes.some((x) => x.sessionId === res.sessionId && x.event === e));
+    const branchReq = h.provider.seen[h.provider.seen.length - 1]!;
+    expect(JSON.stringify(branchReq.messages)).toContain('第一问'); // 源历史进分支上下文
+  });
+
   it('未知方法 → JSON-RPC error（-32601）', async () => {
     const h = await harness();
     await expect(h.client.request('no/such/method', {})).rejects.toThrow(/method not found/);

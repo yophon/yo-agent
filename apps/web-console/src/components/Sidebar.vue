@@ -69,9 +69,11 @@ async function removeSession(sessionId: string): Promise<void> {
         :key="s.sessionId"
         class="session"
         :class="{ active: s.sessionId === currentSid }"
+        :style="s.depth ? { paddingLeft: `${8 + s.depth * 14}px` } : undefined"
         @click="router.push(`/chat/${s.sessionId}`)"
       >
         <span class="dot" :style="{ background: s.agentColor }" :title="s.agentName"></span>
+        <span v-if="s.forkedFrom" class="forkmark" title="fork 分支">⑂</span>
         <span class="title" :class="{ orphan: s.orphaned }">{{ s.title }}</span>
         <span class="time">{{ formatRelativeTime(s.lastActiveAt) }}</span>
         <button type="button" class="del" title="删除会话" @click.stop="removeSession(s.sessionId)">✕</button>
@@ -105,6 +107,7 @@ async function removeSession(sessionId: string): Promise<void> {
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .name, .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .title.orphan { color: #6b7280; font-style: italic; }
+.forkmark { color: #60a5fa; font-size: 11px; flex: none; }
 .time { font-size: 11px; color: #6b7280; flex: none; }
 .mini {
   border: 1px solid #374151; background: transparent; color: #9ca3af;

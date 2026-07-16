@@ -241,6 +241,84 @@ export function buildCommands(extra: SlashCommand[] = [], onClash?: (name: strin
       },
     },
     {
+      name: '/fork',
+      desc: '从 turn 边界分支新会话(缺省最近;/fork <序号> 选历史点)',
+      run: async (d, args) => {
+        if (!d.kernel.forkSession || !d.kernel.listForkPoints) {
+          d.notice('warn', '/fork 不可用:需要支持 turn 快照的持久化 store(YO_DB=路径)');
+          return;
+        }
+        try {
+          const points = await d.kernel.listForkPoints(d.sessionId());
+          if (!points.length) {
+            d.notice('info', '当前会话尚无已完成的 turn,没有可 fork 的边界');
+            return;
+          }
+          let at: number | undefined;
+          let label = points.length;
+          if (args.trim()) {
+            const n = Number.parseInt(args.trim(), 10);
+            if (!Number.isInteger(n) || n < 1 || n > points.length) {
+              d.notice('error', `无效 turn 序号:${args.trim()}(可选 1-${points.length})`);
+              return;
+            }
+            at = points[n - 1];
+            label = n;
+          }
+          const id = await d.kernel.forkSession(d.sessionId(), at);
+          d.switchSession(id);
+          d.notice('info', `已从 turn ${label} 边界 fork → 新会话 ${String(id).slice(0, 8)}(源会话不受影响,/tree 看谱系)`);
+        } catch (e) {
+          d.notice('error', `fork 失败:${e instanceof Error ? e.message : String(e)}`);
+        }
+      },
+    },
+    {
+      name: '/tree',
+      desc: '会话谱系树(fork 关系)',
+      run: async (d) => {
+        if (!d.kernel.listPersistedSessions) {
+          d.notice('warn', '/tree 不可用:需要持久化 store(YO_DB=路径)');
+          return;
+        }
+        let rows: Awaited<ReturnType<NonNullable<typeof d.kernel.listPersistedSessions>>>;
+        try {
+          rows = await d.kernel.listPersistedSessions();
+        } catch (e) {
+          d.notice('error', `读取会话失败:${e instanceof Error ? e.message : String(e)}`);
+          return;
+        }
+        if (!rows.length) {
+          d.notice('info', '暂无持久会话');
+          return;
+        }
+        type Row = (typeof rows)[number];
+        const current = d.sessionId();
+        const byId = new Set(rows.map((r) => r.sessionId));
+        const children = new Map<Id, Row[]>();
+        const roots: Row[] = [];
+        for (const r of rows) {
+          const p = r.forkedFrom?.sessionId;
+          // 源会话行已被删的孤儿分支按根展示(标注来源),不静默丢
+          if (p !== undefined && byId.has(p)) children.set(p, [...(children.get(p) ?? []), r]);
+          else roots.push(r);
+        }
+        const lines: string[] = [];
+        const render = (r: Row, depth: number): void => {
+          if (depth > 64) return; // 谱系数据损坏成环兜底
+          const mark = r.sessionId === current ? ' ← 当前' : '';
+          const src = r.forkedFrom ? ` (自 ${String(r.forkedFrom.sessionId).slice(0, 8)}@${r.forkedFrom.cursor})` : '';
+          const indent = depth === 0 ? '' : `${'  '.repeat(depth - 1)}└─ `;
+          lines.push(`  ${indent}${String(r.sessionId).slice(0, 8)} · ${r.model} · ${new Date(r.lastActiveAt).toLocaleString()}${src}${mark}`);
+          for (const c of (children.get(r.sessionId) ?? []).sort((a, b) => (a.forkedFrom?.cursor ?? 0) - (b.forkedFrom?.cursor ?? 0))) {
+            render(c, depth + 1);
+          }
+        };
+        for (const r of roots.sort((a, b) => b.lastActiveAt - a.lastActiveAt)) render(r, 0);
+        d.notice('info', ['会话谱系:', ...lines].join('\n'));
+      },
+    },
+    {
       name: '/cost',
       desc: '本会话用量明细(按轮)',
       run: (d) => {

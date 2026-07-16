@@ -1,5 +1,5 @@
 import type { Cursor, EventEnvelope, Id } from '@yo-agent/protocol';
-import type { Checkpoint, EventStore, SessionRow } from './index';
+import type { Checkpoint, EventStore, SessionRow, TurnSnapshot } from './index';
 
 /**
  * 内存 EventStore（DESIGN ADR-1）。证明 append-only / cursor 单调 / resume(fromCursor) /
@@ -48,5 +48,22 @@ export class MemoryEventStore implements EventStore {
 
   async saveCheckpoint(cp: Checkpoint): Promise<void> {
     this.checkpoints.push(cp);
+  }
+
+  // ── 5.3b turn 快照 ──
+  private readonly snapshots = new Map<Id, Map<Cursor, TurnSnapshot>>();
+
+  async saveTurnSnapshot(snap: TurnSnapshot): Promise<void> {
+    const bySession = this.snapshots.get(snap.sessionId) ?? new Map<Cursor, TurnSnapshot>();
+    bySession.set(snap.cursor, snap);
+    this.snapshots.set(snap.sessionId, bySession);
+  }
+
+  async getTurnSnapshot(sessionId: Id, cursor: Cursor): Promise<TurnSnapshot | null> {
+    return this.snapshots.get(sessionId)?.get(cursor) ?? null;
+  }
+
+  async listTurnSnapshots(sessionId: Id): Promise<Cursor[]> {
+    return [...(this.snapshots.get(sessionId)?.keys() ?? [])].sort((a, b) => a - b);
   }
 }

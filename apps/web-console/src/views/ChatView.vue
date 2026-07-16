@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { disposeChat, openChat, useChat } from '../composables/use-chat';
 import { app } from '../services/app-state';
 
 const route = useRoute();
-const { chatState, send, steer, interrupt } = useChat();
+const router = useRouter();
+const { chatState, send, steer, interrupt, fork } = useChat();
 
 const input = ref('');
 const loadError = ref('');
+const forkError = ref('');
 const orphaned = ref(false);
 const msgBox = ref<HTMLElement | null>(null);
 
@@ -65,6 +67,17 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
+/** 分支（5.3c）：从最近 turn 边界 fork 新会话并跳转（route watch 里 openChat 因 sessionId 相同直接复用）。 */
+async function forkSession(): Promise<void> {
+  forkError.value = '';
+  try {
+    const sid = await fork();
+    if (sid) void router.push(`/chat/${sid}`);
+  } catch (e) {
+    forkError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
 // 离开视图（切到配置页等）不主动 dispose——会话保活以便快速切回；删除/换会话由 use-chat 统一收口。
 void disposeChat; // 引用留存：显式生命周期出口在侧栏删除路径
 </script>
@@ -101,6 +114,7 @@ void disposeChat; // 引用留存：显式生命周期出口在侧栏删除路�
       </div>
 
       <div class="status">
+        <span v-if="forkError" class="err">分支失败：{{ forkError }}</span>
         <span v-if="chatState.error" class="err">{{ chatState.error }}</span>
         <span v-if="chatState.totals.inputTokens + chatState.totals.outputTokens > 0" class="usage">
           {{ chatState.totals.inputTokens }}↑ {{ chatState.totals.outputTokens }}↓ tokens
@@ -116,6 +130,15 @@ void disposeChat; // 引用留存：显式生命周期出口在侧栏删除路�
         ></textarea>
         <div class="btns">
           <button v-if="turnActive" type="button" class="btn-danger" @click="interrupt()">中断</button>
+          <button
+            v-if="!turnActive && chatState.messages.length > 0"
+            type="button"
+            class="btn-ghost"
+            title="从最近 turn 边界分支新会话（原会话不受影响）"
+            @click="forkSession()"
+          >
+            分支
+          </button>
           <button type="button" class="btn" @click="submit()">{{ turnActive ? '插话' : '发送' }}</button>
         </div>
       </div>

@@ -65,6 +65,14 @@ export function useChat() {
     },
     steer: (text: string) => controller.value?.steer(text) ?? Promise.resolve(),
     interrupt: () => controller.value?.interrupt() ?? Promise.resolve(),
+    /** fork（5.3c）：从最近 turn 边界分支新会话并切换；无活 controller 返回 null。 */
+    fork: async (): Promise<string | null> => {
+      const c = controller.value;
+      if (!c) return null;
+      const sid = await c.fork();
+      await app.refreshSessions();
+      return sid;
+    },
   };
 }
 

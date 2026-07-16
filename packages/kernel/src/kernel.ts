@@ -155,6 +155,8 @@ interface SessionState {
   turnQueue: QueuedTurn[];
   /** 并发闸（5.3a）：活跃 turn 的对账信息（idemKey 去重 —— RPC 重连重试同一 turn/start 返回既有 turnId 而非排成重复 turn）。 */
   activeTurn?: { turnId: Id; idemKey: string; done: Promise<void> };
+  /** fork 谱系（5.3b）：本会话从源会话哪个 turn 边界分出；随 persistState 落 SessionRow（readThread/tree 数据源）。 */
+  forkedFrom?: { sessionId: Id; cursor: number };
 }
 
 /** 排队中的 turn（5.3a）：turnId 预分配；done 为 deferred，实际起跑后管道至真实完成，被取消（interrupt/endSession）则 reject。 */
@@ -288,9 +290,97 @@ export class AgentKernel implements Kernel, SubagentHost {
       ctxHighNoted: false,
       turnActive: false,
       turnQueue: [],
+      forkedFrom: row.forkedFrom,
     };
     this.sessions.set(sessionId, s);
     return true;
+  }
+
+  /**
+   * fork（5.3b）：从源会话的 turn 边界快照点开新会话（DESIGN §6.2 session/fork；不复制事件，DESIGN:714）。
+   * 新会话 headCursor 从 fork 点续起 → readThread 跨链合并时间线 cursor 全局单调。缺省 atCursor = 最近边界。
+   * 对源会话是纯读（不可变快照 + 元数据），turn 进行中亦可 fork 已完成边界——「收到 TurnCompleted 立即
+   * session/fork」的远端模式必须成立（fan-out 在 runTurn 未返回同栈上，此刻 turnActive 仍 true，不得据此拒绝）。
+   */
+  async forkSession(sessionId: Id, atCursor?: number): Promise<Id> {
+    const src = this.sessions.get(sessionId);
+    if (!this.events.getTurnSnapshot || !this.events.listTurnSnapshots) {
+      throw new Error('当前 EventStore 不支持 turn 快照，无法 fork');
+    }
+    const points = await this.events.listTurnSnapshots(sessionId);
+    const cursor = atCursor ?? points[points.length - 1];
+    if (cursor === undefined) throw new Error('无可 fork 的 turn 边界（会话尚无已完成的 turn）');
+    const snap = await this.events.getTurnSnapshot(sessionId, cursor);
+    if (!snap) throw new Error(`cursor ${cursor} 不是 turn 边界（可选 fork 点：${points.join(', ') || '无'}）`);
+    // 源会话元数据：优先在内存态，冷会话读持久行（fork 不要求先 resume）。
+    const row = src ? null : await this.events.getSession(sessionId);
+    if (!src && !row) throw new Error(`未知会话：${sessionId}`);
+    const id = randomUUID();
+    const s: SessionState = {
+      id,
+      model: src?.model ?? row!.model,
+      cwd: src?.cwd ?? row!.workspacePath,
+      permissionMode: src?.permissionMode ?? ((row!.permissionMode as PermissionMode) || 'supervised'),
+      // 快照即当时完整消息窗口（含 system/压缩效果），再 clone 一层防内存 store 引用往返串改。
+      messages: structuredClone(snap.messages) as CanonMessage[],
+      headCursor: cursor,
+      interrupted: false,
+      subscribers: new Set(),
+      lastCompactCursor: cursor, // 同 resumeSession：fork 点之后才是新压缩区间合法起点
+      stepsSinceCompact: 0,
+      approvalCache: new Map(),
+      pendingApprovalIds: new Set(),
+      lastMcpStatus: new Map(),
+      emitChain: Promise.resolve(),
+      pendingSteering: [],
+      routeIdx: 0,
+      pendingStatusNotes: [],
+      ctxHighNoted: false,
+      turnActive: false,
+      turnQueue: [],
+      forkedFrom: { sessionId, cursor },
+    };
+    this.sessions.set(id, s);
+    await this.emit(s, {
+      kind: 'SessionStarted',
+      externalId: id,
+      model: s.model,
+      tools: this.toolNames(s),
+      workspacePath: s.cwd,
+      permissionMode: s.permissionMode,
+      profile: 'default',
+      forkedFrom: { sessionId, cursor },
+    });
+    await this.syncMcpStatus(s);
+    await this.persistState(s);
+    await this.hooks.fireSessionStart(this.hookCtx(s), this.hookErr(s)); // 扩展 onEvent 桥接等依赖 SessionStart
+    return id;
+  }
+
+  /** 合法 fork 点列表（turn 边界快照 cursor 升序；store 不支持返回空）。 */
+  async listForkPoints(sessionId: Id): Promise<number[]> {
+    return (await this.events.listTurnSnapshots?.(sessionId)) ?? [];
+  }
+
+  /**
+   * 跨 fork 链回放（5.3b）：自谱系根到本会话按序 yield——fork 不复制事件，历史存在源会话日志里；
+   * fork 会话 cursor 从 fork 点续起，合并时间线 cursor 全局单调（既有 cursor 去重/续接语义全部成立）。
+   */
+  async *readThread(sessionId: Id, fromCursor?: number): AsyncIterable<EventEnvelope> {
+    const chain: Array<{ sessionId: Id; toCursor?: number }> = [{ sessionId }];
+    let cur = sessionId;
+    for (let depth = 0; depth < 64; depth++) {
+      // 64 层封顶：防谱系数据损坏成环（正常使用远达不到）
+      const row = await this.events.getSession(cur);
+      const f = row?.forkedFrom;
+      if (!f) break;
+      chain.unshift({ sessionId: f.sessionId, toCursor: f.cursor });
+      cur = f.sessionId;
+    }
+    for (const link of chain) {
+      // fromCursor 对合并时间线过滤：cursor 全局单调，直接透传各段 read 即可。
+      for await (const env of this.events.read(link.sessionId, fromCursor, link.toCursor)) yield env;
+    }
   }
 
   /** 驱逐一次性会话（MCP run 等常驻进程防内存无界泄漏）。 */
@@ -1241,10 +1331,17 @@ export class AgentKernel implements Kernel, SubagentHost {
       event,
     };
     await this.events.append(env);
+    // 在 turn 完成态把会话状态（含 messages 快照）落库，供跨进程 resume 重建。
+    // 落库先于 fan-out（5.3b）：订阅方观察到 TurnCompleted 即可 fork——快照必已可查，
+    // 否则「收到完成事件立即 session/fork」的远端客户端会撞上快照未写完的竞态。
+    if (event.kind === 'TurnCompleted' || event.kind === 'TurnFailed') {
+      await this.persistState(s);
+      // 5.3b：turn 边界快照留存（fork 在历史点续聊的数据源；store 不支持则跳过，fork 面同步降级）。
+      // structuredClone 必须：MemoryEventStore 按引用存，s.messages 是活数组——不拷贝则源会话续写串改历史快照。
+      await this.events.saveTurnSnapshot?.({ sessionId: s.id, cursor, messages: structuredClone(s.messages), createdAt: Date.now() });
+    }
     this.resumeBuffer.add(env); // 服务实时重连缺口
     for (const h of s.subscribers) h(env);
-    // 在 turn 完成态把会话状态（含 messages 快照）落库，供跨进程 resume 重建。
-    if (event.kind === 'TurnCompleted' || event.kind === 'TurnFailed') await this.persistState(s);
   }
 
   /** upsert 会话行（含 messages 窗口快照 + headCursor），跨进程 resume 重建用（§6.3 / §10.1）。 */
@@ -1263,6 +1360,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       createdAt: now,
       lastActiveAt: now,
       messages: s.messages,
+      ...(s.forkedFrom ? { forkedFrom: s.forkedFrom } : {}),
     };
     await this.events.createSession(row);
   }

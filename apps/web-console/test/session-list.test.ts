@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SessionRow } from '@yo-agent/store/core';
 import { MemoryEventStore } from '@yo-agent/store/core';
 import { MemoryConsoleStore } from '../src/services/console-store';
-import { deriveTitle, formatRelativeTime, listSessionItems } from '../src/services/session-list';
+import { deriveTitle, formatRelativeTime, listSessionItems, treeOrder } from '../src/services/session-list';
 import { newAgentRecord } from '../src/services/types';
 
 function row(sessionId: string, agentProfile: string, lastActiveAt: number, messages: unknown[] = []): SessionRow {
@@ -46,6 +46,35 @@ describe('listSessionItems', () => {
     expect(items[0]).toMatchObject({ agentName: '客服', agentColor: '#111', orphaned: false, title: '第二问' });
     expect(items[1]).toMatchObject({ orphaned: true, agentName: '（已删除的 agent）' });
     expect(items[2]?.title).toBe('改过名');
+  });
+});
+
+describe('treeOrder（5.3c fork 谱系）', () => {
+  it('分支紧随源之下带 depth；多分支按 fork cursor 升序；孤儿分支按根保留不静默丢', () => {
+    const rows = [
+      { sessionId: 'root', lastActiveAt: 100 },
+      { sessionId: 'b2', lastActiveAt: 300, forkedFrom: { sessionId: 'root', cursor: 9 } },
+      { sessionId: 'b1', lastActiveAt: 200, forkedFrom: { sessionId: 'root', cursor: 3 } },
+      { sessionId: 'other-root', lastActiveAt: 400 },
+      { sessionId: 'orphan', lastActiveAt: 50, forkedFrom: { sessionId: 'gone', cursor: 1 } },
+      { sessionId: 'nested', lastActiveAt: 250, forkedFrom: { sessionId: 'b1', cursor: 5 } },
+    ];
+    const out = treeOrder(rows);
+    expect(out.map((r) => r.sessionId)).toEqual(['other-root', 'root', 'b1', 'nested', 'b2', 'orphan']);
+    expect(out.map((r) => r.depth)).toEqual([0, 0, 1, 2, 1, 0]);
+  });
+
+  it('listSessionItems 透传谱系：分支挂源下', async () => {
+    const events = new MemoryEventStore();
+    const consoleStore = new MemoryConsoleStore();
+    const agent = { ...newAgentRecord(), id: 'a1', name: '客服', color: '#111' };
+    await events.createSession(row('src', 'a1', 100, [{ role: 'user', content: '源' }]));
+    await events.createSession({ ...row('branch', 'a1', 300), forkedFrom: { sessionId: 'src', cursor: 4 } });
+    await events.createSession(row('newer', 'a1', 200));
+
+    const items = await listSessionItems(events, consoleStore, [agent]);
+    expect(items.map((i) => i.sessionId)).toEqual(['newer', 'src', 'branch']);
+    expect(items[2]).toMatchObject({ depth: 1, forkedFrom: { sessionId: 'src', cursor: 4 } });
   });
 });
 

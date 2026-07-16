@@ -46,6 +46,13 @@ export interface Kernel {
   listModels(): Promise<ModelInfo[]>;
   /** 跨进程 resume：会话不在内存则从持久态重建；store 无此会话返回 false。 */
   resumeSession(sessionId: Id): Promise<boolean>;
+  // ── 5.3b fork / DAG ──
+  /** 从源会话 turn 边界快照点 fork 新会话（缺省最近边界；不复制事件；对源纯读，turn 进行中亦可 fork 已完成边界）。非边界点 / store 不支持快照时抛可行动错误。 */
+  forkSession(sessionId: Id, atCursor?: number): Promise<Id>;
+  /** 合法 fork 点（turn 边界快照 cursor 升序；store 不支持返回空）。 */
+  listForkPoints(sessionId: Id): Promise<number[]>;
+  /** 跨 fork 链回放：自谱系根到本会话按序 yield，合并时间线 cursor 全局单调（fork 会话的 UI 回放用此替代 events.read）。 */
+  readThread(sessionId: Id, fromCursor?: number): AsyncIterable<EventEnvelope>;
   /** 实时重连缺口（内存 ring）；null=gap 溢出，调用方走 EventLog 降级。 */
   bufferedSince(sessionId: Id, fromCursor: number): EventEnvelope[] | null;
   /** 驱逐一次性会话（常驻进程防泄漏）。 */

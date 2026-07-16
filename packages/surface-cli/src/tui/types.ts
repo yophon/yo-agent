@@ -21,7 +21,14 @@ export interface TuiKernel {
   compactNow?(sessionId: Id): Promise<boolean>;
   contextState?(sessionId: Id): { usedTokens: number; usableTokens: number };
   listPersistedSessions?(): Promise<
-    ReadonlyArray<{ sessionId: Id; model: string; workspacePath: string; lastActiveAt: number }>
+    ReadonlyArray<{
+      sessionId: Id;
+      model: string;
+      workspacePath: string;
+      lastActiveAt: number;
+      /** 5.3c /tree:fork 谱系(缺省=根会话)。 */
+      forkedFrom?: { sessionId: Id; cursor: number };
+    }>
   >;
   resumeSession?(sessionId: Id): Promise<boolean>;
   // ── 4.7f 历史回放接缝 ──
@@ -29,6 +36,13 @@ export interface TuiKernel {
   events?: { read(sessionId: Id): AsyncIterable<EventEnvelope> };
   /** 审批是否仍挂起(回放跳过已决审批的 ApprovalRequested;缺省一律跳过)。 */
   isApprovalPending?(requestId: Id): boolean;
+  // ── 5.3c fork 接缝(全部可选,缺省时 /fork 与 /tree 降级提示)──
+  /** 从 turn 边界 fork 新会话(缺省最近边界)。 */
+  forkSession?(sessionId: Id, atCursor?: number): Promise<Id>;
+  /** 合法 fork 点(turn 边界 cursor 升序)。 */
+  listForkPoints?(sessionId: Id): Promise<number[]>;
+  /** 跨 fork 链回放(fork 会话的历史在源会话日志;缺省时回放退回 events.read,分支历史缺失)。 */
+  readThread?(sessionId: Id, fromCursor?: number): AsyncIterable<EventEnvelope>;
 }
 
 export interface CliAppProps {

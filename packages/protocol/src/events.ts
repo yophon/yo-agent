@@ -107,6 +107,8 @@ export const AgentEventSchema = z.discriminatedUnion('kind', [
     permissionMode: PermissionModeSchema,
     profile: z.string(),
     gitRef: z.string().optional(), // resume 四要素之一（§6.3）
+    /** 5.3b fork 谱系：本会话从源会话的哪个 turn 边界分出（tree 视图 / 回放链数据源之一）。 */
+    forkedFrom: z.object({ sessionId: IdSchema, cursor: CursorSchema }).optional(),
   }),
   z.object({
     kind: z.literal('TurnStarted'),

@@ -194,9 +194,11 @@ export function CliApp(props: CliAppProps): React.ReactElement {
   // 已决审批的 ApprovalRequested 跳过(isApprovalPending 缺省一律跳);失败静默,仍可继续对话。
   const replaySession = useCallback(
     async (id: Id): Promise<void> => {
-      if (!kernel.events?.read) return;
+      // readThread 优先(5.3c):fork 会话的历史存在源会话日志,跨链取;无谱系时与 events.read 等价。
+      const source = kernel.readThread ? kernel.readThread(id) : kernel.events?.read(id);
+      if (!source) return;
       try {
-        for await (const env of kernel.events.read(id)) {
+        for await (const env of source) {
           if (env.event.kind === 'ApprovalRequested' && !(kernel.isApprovalPending?.(env.event.requestId) ?? false)) {
             continue;
           }

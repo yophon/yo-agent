@@ -75,6 +75,22 @@
                 },
                 "gitRef": {
                   "type": "string"
+                },
+                "forkedFrom": {
+                  "type": "object",
+                  "properties": {
+                    "sessionId": {
+                      "$ref": "#/definitions/rpc.event/properties/sessionId"
+                    },
+                    "cursor": {
+                      "$ref": "#/definitions/rpc.event/properties/cursor"
+                    }
+                  },
+                  "required": [
+                    "sessionId",
+                    "cursor"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [

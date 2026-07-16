@@ -9,7 +9,7 @@
  */
 import type { AgentEvent, Cursor, EventEnvelope, Id } from '@yo-agent/protocol';
 import { EVENTLOG_SCHEMA_VERSION } from '@yo-agent/protocol';
-import type { Checkpoint, EventStore, SessionRow } from './index';
+import type { Checkpoint, EventStore, SessionRow, TurnSnapshot } from './index';
 
 // ───────────────────────── 最小 IndexedDB 结构类型 ─────────────────────────
 
@@ -81,6 +81,7 @@ interface StoredEvent {
 const EVENTS = 'events';
 const SESSIONS = 'sessions';
 const CHECKPOINTS = 'checkpoints';
+const SNAPSHOTS = 'turn_snapshots';
 
 export class IndexedDBEventStore implements EventStore {
   private readonly db: IdbDatabase;
@@ -91,10 +92,10 @@ export class IndexedDBEventStore implements EventStore {
     this.KeyRange = keyRange;
   }
 
-  /** 打开/建库。环境无 IndexedDB 抛可行动错误，调用方降级 MemoryEventStore。 */
+  /** 打开/建库。环境无 IndexedDB 抛可行动错误，调用方降级 MemoryEventStore。v2：+turn_snapshots（5.3b，contains 判缺旧库自动补）。 */
   static async open(dbName = 'yo-agent'): Promise<IndexedDBEventStore> {
     const { factory, KeyRange } = idbGlobals();
-    const openReq = factory.open(dbName, 1);
+    const openReq = factory.open(dbName, 2);
     openReq.onupgradeneeded = () => {
       const db = openReq.result;
       if (!db.objectStoreNames.contains(EVENTS)) {
@@ -105,6 +106,9 @@ export class IndexedDBEventStore implements EventStore {
       }
       if (!db.objectStoreNames.contains(CHECKPOINTS)) {
         db.createObjectStore(CHECKPOINTS, { keyPath: 'checkpointId' });
+      }
+      if (!db.objectStoreNames.contains(SNAPSHOTS)) {
+        db.createObjectStore(SNAPSHOTS, { keyPath: ['sessionId', 'cursor'] });
       }
     };
     const db = await req(openReq);
@@ -182,15 +186,36 @@ export class IndexedDBEventStore implements EventStore {
     await req(store.put(cp));
   }
 
+  // ── 5.3b turn 快照 ──
+
+  async saveTurnSnapshot(snap: TurnSnapshot): Promise<void> {
+    const store = this.db.transaction(SNAPSHOTS, 'readwrite').objectStore(SNAPSHOTS);
+    await req(store.put(snap));
+  }
+
+  async getTurnSnapshot(sessionId: Id, cursor: Cursor): Promise<TurnSnapshot | null> {
+    const store = this.db.transaction(SNAPSHOTS, 'readonly').objectStore(SNAPSHOTS);
+    const row = (await req(store.get([sessionId, cursor]))) as TurnSnapshot | undefined;
+    return row ?? null;
+  }
+
+  async listTurnSnapshots(sessionId: Id): Promise<Cursor[]> {
+    const store = this.db.transaction(SNAPSHOTS, 'readonly').objectStore(SNAPSHOTS);
+    const rows = (await req(store.getAll(this.sessionRange(sessionId)))) as TurnSnapshot[];
+    return rows.map((r) => r.cursor); // getAll 按复合主键升序，天然 cursor 有序
+  }
+
   /**
    * 删除会话（EventStore 冻结接口无删除——控制台等持有具体类型的调用方使用）：
-   * 事件分区 + 会话行 + 该会话的 checkpoints 一并清理。
+   * 事件分区 + 会话行 + turn 快照分区 + 该会话的 checkpoints 一并清理。
    */
   async deleteSession(sessionId: Id): Promise<void> {
     const events = this.db.transaction(EVENTS, 'readwrite').objectStore(EVENTS);
     await req(events.delete(this.sessionRange(sessionId)));
     const sessions = this.db.transaction(SESSIONS, 'readwrite').objectStore(SESSIONS);
     await req(sessions.delete(sessionId));
+    const snaps = this.db.transaction(SNAPSHOTS, 'readwrite').objectStore(SNAPSHOTS);
+    await req(snaps.delete(this.sessionRange(sessionId)));
     const cps = this.db.transaction(CHECKPOINTS, 'readwrite').objectStore(CHECKPOINTS);
     const all = (await req(cps.getAll())) as Checkpoint[];
     for (const cp of all) {
