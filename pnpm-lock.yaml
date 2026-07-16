@@ -127,6 +127,9 @@ importers:
       '@yo-agent/surface-rpc':
         specifier: workspace:*
         version: link:../../packages/surface-rpc
+      '@yo-agent/surface-weixin':
+        specifier: workspace:*
+        version: link:../../packages/surface-weixin
       '@yo-agent/tools':
         specifier: workspace:*
         version: link:../../packages/tools
@@ -311,6 +314,28 @@ importers:
       '@yo-agent/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@yo-agent/provider':
+        specifier: workspace:*
+        version: link:../provider
+      '@yo-agent/store':
+        specifier: workspace:*
+        version: link:../store
+      '@yo-agent/tools':
+        specifier: workspace:*
+        version: link:../tools
+
+  packages/surface-weixin:
+    dependencies:
+      '@yo-agent/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      '@yo-agent/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      qrcode-terminal:
+        specifier: 0.12.0
+        version: 0.12.0
+    devDependencies:
       '@yo-agent/provider':
         specifier: workspace:*
         version: link:../provider
@@ -1892,6 +1917,10 @@ packages:
   proxy-addr@2.0.7:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
+
+  qrcode-terminal@0.12.0:
+    resolution: {integrity: sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==}
+    hasBin: true
 
   qs@6.15.2:
     resolution: {integrity: sha512-Rzq0KEyX/w/tEybncDgdkZrJgVUsUMk3xjh3t5bv3S1HTAtg+uOYt72+ZfwiQwKdysThkTBdL/rTi6HDmX9Ddw==}
@@ -3678,6 +3707,8 @@ snapshots:
     dependencies:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
+
+  qrcode-terminal@0.12.0: {}
 
   qs@6.15.2:
     dependencies:

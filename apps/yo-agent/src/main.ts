@@ -56,6 +56,7 @@ import {
 } from '@yo-agent/surface-cli';
 import { JsonlStreamChannel, RpcSurface, serveWebSocket } from '@yo-agent/surface-rpc';
 import { AcpSurface } from '@yo-agent/surface-acp';
+import { WeixinSurface, addAllowFrom, loadAccounts, loginWithQr, monitorAccount, notifyStart, notifyStop, DEFAULT_BASE_URL as WEIXIN_BASE_URL } from '@yo-agent/surface-weixin';
 import { ndJsonStream } from '@zed-industries/agent-client-protocol';
 import { Readable, Writable } from 'node:stream';
 import {
@@ -431,10 +432,75 @@ async function main(): Promise<void> {
   const cwd = process.cwd();
   const env = process.env;
 
-  // 常驻服务（rpc/mcp/acp）兜底：后台 turn 异常不崩进程。管道断开/退出信号经各分支 installShutdown 回收子进程。
-  if (mode === 'rpc' || mode === 'mcp-server' || mode === 'acp') {
+  // 常驻服务（rpc/mcp/acp/weixin）兜底：后台 turn 异常不崩进程。管道断开/退出信号经各分支 installShutdown 回收子进程。
+  if (mode === 'rpc' || mode === 'mcp-server' || mode === 'acp' || mode === 'weixin') {
     process.on('uncaughtException', (e) => console.error('[uncaught]', e));
     process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+  }
+
+  // 微信模式（Phase 6b）：yoagent weixin login|run|allow —— iLink Bot 协议接入，见 docs/PHASE-6.md。
+  if (mode === 'weixin') {
+    const args = parseArgs(process.argv.slice(2));
+    const action = args.weixinArgs?.[0] ?? 'run';
+    if (action === 'login') {
+      const { account, alreadyBound } = await loginWithQr({ log: (m) => console.error(`[weixin] ${m}`) });
+      console.error(`[weixin] ${alreadyBound ? '沿用既有绑定' : '登录成功'}：账号 ${account.accountId}${account.ownerUserId ? `（机主 ${account.ownerUserId} 已自动授权）` : ''}`);
+      console.error('[weixin] 启动收发：yoagent weixin run（建议配 YO_DB 使会话跨重启续接）');
+      process.exit(0);
+    }
+    if (action === 'allow') {
+      const [, accountId, userId] = args.weixinArgs ?? [];
+      if (!accountId || !userId) {
+        console.error('用法：yoagent weixin allow <accountId> <userId>');
+        process.exit(2);
+      }
+      addAllowFrom(accountId, userId);
+      console.error(`[weixin] 已授权 ${userId}（账号 ${accountId}）`);
+      process.exit(0);
+    }
+    if (action !== 'run') {
+      console.error(`未知 weixin 子命令：${action}（可用：login | run [--allow-all] | allow <accountId> <userId>）`);
+      process.exit(2);
+    }
+    const accounts = loadAccounts();
+    if (accounts.length === 0) {
+      console.error('[weixin] 尚未登录任何账号——先执行：yoagent weixin login');
+      process.exit(2);
+    }
+    const { kernel, mcpHost, pluginHost, mcpSkippedUntrusted } = await buildKernel({ env, cwd, prompt: '', mode });
+    await bootstrapMcpHost(mcpHost, cwd, env, mcpSkippedUntrusted);
+    installShutdown(mcpHost, pluginHost);
+    setInterval(() => void mcpHost.sweepIdle(), 60_000).unref();
+    const abort = new AbortController();
+    process.on('SIGINT', () => abort.abort());
+    process.on('SIGTERM', () => abort.abort());
+    const loops = accounts.map(async (account) => {
+      const log = (m: string): void => console.error(`[weixin:${account.accountId}] ${m}`);
+      const surface = new WeixinSurface({
+        kernel: kernel as Kernel,
+        account,
+        allowAll: args.allowAll ?? false,
+        ...(env.YO_WEIXIN_SYSTEM ? { system: env.YO_WEIXIN_SYSTEM } : {}),
+        log,
+      });
+      const apiOpts = { baseUrl: account.baseUrl || WEIXIN_BASE_URL, token: account.token };
+      await notifyStart(apiOpts).catch(() => {}); // 生命周期上报：观测用，失败不阻断
+      try {
+        await monitorAccount({
+          account,
+          signal: abort.signal,
+          onMessage: (m) => surface.handleMessage(m),
+          onStaleToken: () => log('登录凭证已失效，请重新执行 yoagent weixin login'),
+          log,
+        });
+      } finally {
+        surface.dispose();
+        await notifyStop(apiOpts).catch(() => {});
+      }
+    });
+    console.error(`[weixin] 收发已启动（${accounts.length} 个账号，权限模式 ci；Ctrl+C 退出）`);
+    await Promise.allSettled(loops);
+    return;
   }
 
   // ACP 模式：stdin/stdout 是 ACP（JSON-RPC over ndjson）协议通道，被 Zed/JetBrains 接管为编程 agent 后端。

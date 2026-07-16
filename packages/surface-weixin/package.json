@@ -1,0 +1,21 @@
+{
+  "name": "@yo-agent/surface-weixin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WeixinSurface：微信官方 iLink Bot 协议直连接入（Phase 6a/6b）——扫码登录 + 长轮询收发 + 内核会话映射。协议研究见 docs/research/weixin-ilink.md。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@yo-agent/kernel": "workspace:*",
+    "@yo-agent/protocol": "workspace:*",
+    "qrcode-terminal": "0.12.0"
+  },
+  "devDependencies": {
+    "@yo-agent/provider": "workspace:*",
+    "@yo-agent/store": "workspace:*",
+    "@yo-agent/tools": "workspace:*"
+  }
+}

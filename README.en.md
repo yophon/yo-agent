@@ -13,7 +13,7 @@ It provides a complete agent loop, tool calling, approvals, context compaction, 
 - Interactive terminal: multi-turn conversations, streaming output, approvals, session recovery, and task inspection
 - Persistence: in-memory, SQLite, and IndexedDB stores with event replay, reconnect, and session forking
 - Tool ecosystem: MCP host, MCP server, trusted extensions, and isolated plugins
-- Integration surfaces: JSON-RPC, WebSocket, ACP, and an embeddable browser API
+- Integration surfaces: JSON-RPC, WebSocket, ACP, an embeddable browser API, and WeChat bots (iLink)
 - Runtime safeguards: permission modes, risk assessment, tool timeouts, loop detection, and checkpoints
 
 ## Quick Start
@@ -72,6 +72,11 @@ yoagent rpc
 yoagent rpc --listen 8799
 yoagent mcp-server
 yoagent acp
+
+# WeChat integration (official iLink Bot protocol)
+yoagent weixin login                          # QR-code login
+yoagent weixin run                            # resident send/receive loop (YO_DB recommended)
+yoagent weixin allow <accountId> <userId>     # authorize a sender
 ```
 
 Use `/help` inside the TUI to list available commands. Common commands include `/model`, `/cwd`, `/resume`, `/compact`, `/tasks`, `/fork`, and `/tree`.
@@ -171,6 +176,7 @@ packages/surface-rpc     JSON-RPC over stdio or WebSocket
 packages/surface-mcp     MCP server and MCP host
 packages/surface-acp     ACP integration
 packages/surface-web     Browser Agent API and ChatController
+packages/surface-weixin  Official WeChat iLink Bot protocol integration
 packages/plugin-host     Worker-isolated plugins
 packages/extension-host  In-process trusted extensions
 apps/yo-agent            CLI composition root

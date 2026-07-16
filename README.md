@@ -13,7 +13,7 @@
 - 交互终端：多轮对话、流式输出、审批、会话恢复、任务查看
 - 持久化：内存、SQLite、IndexedDB；事件流支持回放、断线续接和会话 fork 分支
 - 工具生态：MCP host、MCP server、可信扩展、隔离插件
-- 集成接口：JSON-RPC、WebSocket、ACP、浏览器内嵌 API
+- 集成接口：JSON-RPC、WebSocket、ACP、浏览器内嵌 API、微信 Bot（iLink）
 - 运行保护：权限模式、风险判断、工具超时、循环熔断、checkpoint
 
 ## 快速开始
@@ -72,6 +72,11 @@ yoagent rpc
 yoagent rpc --listen 8799
 yoagent mcp-server
 yoagent acp
+
+# 微信接入（官方 iLink Bot 协议）
+yoagent weixin login                          # 扫码登录
+yoagent weixin run                            # 常驻收发（建议配 YO_DB）
+yoagent weixin allow <accountId> <userId>     # 授权发件人
 ```
 
 TUI 内使用 `/help` 查看命令。常用命令包括 `/model`、`/cwd`、`/resume`、`/compact`、`/tasks`、`/fork` 和 `/tree`。
@@ -171,6 +176,7 @@ packages/surface-rpc     JSON-RPC over stdio/WebSocket
 packages/surface-mcp     MCP server 与 MCP host
 packages/surface-acp     ACP 接入
 packages/surface-web     浏览器 Agent API 和 ChatController
+packages/surface-weixin  微信官方 iLink Bot 协议接入
 packages/plugin-host     Worker 隔离插件
 packages/extension-host  进程内可信扩展
 apps/yo-agent            CLI 组合入口

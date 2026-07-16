@@ -22,6 +22,7 @@
     "@yo-agent/surface-cli": "workspace:*",
     "@yo-agent/surface-mcp": "workspace:*",
     "@yo-agent/surface-rpc": "workspace:*",
+    "@yo-agent/surface-weixin": "workspace:*",
     "@yo-agent/tools": "workspace:*",
     "@zed-industries/agent-client-protocol": "0.4.5"
   },

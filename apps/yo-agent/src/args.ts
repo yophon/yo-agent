@@ -1,6 +1,6 @@
 /** CLI 参数解析(纯函数,从 main.ts 抽出可测,4.8c)。 */
 
-export type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server' | 'acp';
+export type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server' | 'acp' | 'weixin';
 
 export interface Args {
   /** 4.6e：'last'（--continue）| 'picker'（--resume 不带 id）| 具体会话 id。 */
@@ -9,6 +9,10 @@ export interface Args {
   mode: Mode;
   /** rpc --listen <port>：WS server 模式（带设备鉴权），否则 stdio。 */
   listenPort?: number;
+  /** weixin 子命令参数（6b）：['login'] | ['run'] | ['allow', <accountId>, <userId>]。 */
+  weixinArgs?: string[];
+  /** weixin run --allow-all：跳过授权名单放行全部发件人（仅显式要求时开）。 */
+  allowAll?: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -18,6 +22,8 @@ export function parseArgs(argv: string[]): Args {
   let wantRpc = false;
   let wantMcp = false;
   let wantAcp = false;
+  let wantWeixin = false;
+  let allowAll = false;
   let listenPort: number | undefined;
   /** 4.6e:'last'(--continue)| 'picker'(--resume 不带 id)| 具体会话 id。 */
   let resume: string | undefined;
@@ -83,8 +89,20 @@ export function parseArgs(argv: string[]): Args {
       wantAcp = true;
       continue;
     }
+    if (a === 'weixin') {
+      wantWeixin = true;
+      continue;
+    }
+    if (a === '--allow-all') {
+      allowAll = true;
+      continue;
+    }
     if (a.startsWith('-')) continue; // 未知 flag 跳过
     positional.push(a);
+  }
+  // weixin 子命令：positional 是动作与参数（login/run/allow …），不并入 prompt。
+  if (wantWeixin) {
+    return { prompt: '', mode: 'weixin', listenPort, resume, weixinArgs: positional, allowAll };
   }
   if (!prompt) prompt = positional.join(' ');
   const mode: Mode = wantAcp
