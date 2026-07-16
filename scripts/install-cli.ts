@@ -8,7 +8,7 @@
  *   pnpm run install:cli            # 自动选址
  *   YO_BIN_DIR=~/.local/bin pnpm run install:cli
  */
-import { chmodSync, mkdirSync, accessSync, constants, symlinkSync, rmSync, existsSync, lstatSync } from 'node:fs';
+import { chmodSync, mkdirSync, accessSync, constants, symlinkSync, unlinkSync, existsSync, lstatSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,8 +49,13 @@ function pickBinDir(): string {
 const binDir = pickBinDir();
 const target = join(binDir, 'yoagent');
 
-if (existsSync(target) || (() => { try { lstatSync(target); return true; } catch { return false; } })()) {
-  rmSync(target, { force: true });
+// lstat + unlink：两者都不追链接。rmSync(force) 对「死链接」（目标已失效，如仓库挪过位置）会顺链探测
+// 到 ENOENT 而静默跳过不删，随后 symlinkSync 撞 EEXIST——重装/重定位场景恒触发（真机实锤）。
+try {
+  lstatSync(target);
+  unlinkSync(target);
+} catch {
+  /* 不存在即无需删 */
 }
 symlinkSync(launcher, target);
 
