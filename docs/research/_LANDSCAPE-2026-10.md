@@ -91,3 +91,61 @@
 9. **ACP 规划 v1/v2 并行**：v2 解耦 turn 与响应、按 ID 增量 patch、结构化 diff、权限请求 subject——yo-agent 的 ACP 表面层若基于 v1 语义硬编码，需提前抽象。
 10. **插件 host 对标"mods"**：进程内插件能注册 deferred 工具、挂 UI 面板、spawn agent、复用模型调用；skill 名称/内容要做注入与隐藏字符清洗，并统计 skill 的上下文成本。
 11. **生态风险**：Gemini CLI 闭源化、OAuth 订阅登录被封、Assistants API 关停、参数逐版禁用——provider 适配器要带版本感知与能力探测（如 `capabilities.server_tools`）。
+
+## 10. 消费级 / 平台级个人 agent（2026-09～10）
+
+> §1 讲的是开发者侧 runtime；本节补的是同期面向普通用户/企业员工的"常驻个人 agent"产品。共同形态：云端常驻 VM + 自带浏览器、目标驱动的后台任务、proactive 模式、连接器优先 + 浏览器兜底、写动作前审批。
+
+### 10.1 Meta Muse
+- **形态**：09-08 发布，美国 iOS/Android/Web + WhatsApp，每个用户一台 "Muse Secure VM"（自带浏览器，可旁观），关掉 app 继续跑，会主动给建议。**模型** Muse Spark（家族 04-08 发布，1.3 版 09-02）。**定价**：免费（按用量）/ Power $20 / Maximum $100 每月，注册需绑卡，无广告，靠交易抽成。
+- **接入**：逐个 opt-in 的内置连接器（邮件/日历/支付/健康/智能家居/购物等）；有公开 API 的服务填凭据，没有的走浏览器；Stripe Link 结账；同 VM 上独立的 **Sentinel** agent 做读/写分级权限。09-23 Connect 加 Realtime Avatar、控制 macOS 应用、agent 专属邮箱、眼镜唤醒词、Muse Charm 掌上设备，合作方 Stripe/Shopify/Walmart/GitHub/Notion。**09-29 Muse for Small Business**：不是新 app，是 QuickBooks/Stripe/Shopify/Slack/Canva + IG 专业号/FB 主页/广告账户的连接器包，无单独定价。
+- **争议**：09-21 Amazon 封禁 Muse（未自报身份、疑似存储凭据）；09-22 404 Media 披露 beta 中"自动打电话"实为呼叫中心人工完成（内部称 human agent layer，成功率 95–98%），Meta 称属内测已回滚 [存疑：回滚细节仅社媒单一来源]；对话默认用于训练（可关）。
+- [财经] https://techcrunch.com/2026/09/08/meta-debuts-its-muse-ai-agent-will-consumers-trust-it/ ；https://techcrunch.com/2026/09/23/everything-new-coming-to-metas-ai-agent-muse/ ；https://www.cnbc.com/2026/09/29/meta-launches-muse-for-small-business-zuckerberg-pushes-enterprise-ai.html ；https://www.geekwire.com/2026/amazon-blocks-metas-muse-ai-assistant-in-new-standoff-over-agentic-shopping/ ；https://www.404media.co/meta-tests-muse-ai-agent-calls-that-are-actually-made-by-humans-in-a-call-center/
+
+### 10.2 OpenAI dots
+- **形态**：DevDay 09-29 发布的 "always-on agents"，**模型 GPT-6 Astra**（GPT-6.1 Astra 会前撤回 [存疑]）。每个 dot 自带云电脑 + 浏览器，本机默认不可达（需经 ChatGPT 桌面端显式连接）；入口 ChatGPT 各端 + Slack/Teams，短信仅美国 Pro 有限 beta，不能打电话、无独立邮箱。
+- **接入**：4000+ 应用经 ChatGPT 插件/connector 生态；dot 可被赋予独立身份、凭据与工具，并与微软 Agent 365 集成。**Proactive research**：用户不在时用**只读**工具找可做的事，不能发消息/改内容/操控浏览器。**Auto-review** 对影响账户或外发信息的动作按用户指令、Custom Rules 和 OpenAI 安全要求复核，监控可暂停 dot。
+- **套餐/区域**：Pro（EEA/瑞士/英国除外）与 Business Premium 首个 dot 免费，对话不计 ChatGPT 额度，首月后台用量不计（之后未公布）；Enterprise/Edu/Healthcare 管理员开启 beta；specialist dots 仅企业试点；Plus 不含。官方页与安全 FAQ 本次抓取 403，细节经二手转述 [存疑]。
+- [官方] https://openai.com/index/introducing-dots/ ；https://openai.com/index/how-we-build-safety-security-and-privacy-into-dots/ ；[财经] https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/ ；https://www.cnbc.com/2026/09/29/openai-devday-2026-live-updates.html ；[二手] https://www.datacamp.com/blog/openai-dots
+
+### 10.3 SpaceX(AI) / Cursor / Grok Bot
+- **收购**：04-21 期权（$60B 收购或付 $10B 合作费）→ 06-16 行权，全股票 $60B → **08-14 完成**（SEC 8-K），Cursor 为 SpaceX 全资子公司；xAI 2 月并入 SpaceX，7 月更名 SpaceXAI/SpaceXSI；08-28 OpenAI 停止向 Cursor 供模型。
+- **Grok Bot**：08-11 beta，"always-on agents 团队"，与 Cursor 共建；Bots 共用一台云电脑、登录现有工具（含无 API/MCP 的网站，走浏览器），需审批时回来找人；用量额度独立于 Grok/Cursor 套餐，超出按 token 经 Cursor 计费。09-28 Team Bots、10-02 proactive 主 Bot [二手]。**模型**：官方未写；SpaceXSI 称 Grok 4.7 针对 Bot harness 训练；Grok Build 为终端编码 agent，称用 Grok 4.6 [存疑，二手]。10-06 Musk 称 Bot 按任务路由"最佳后端模型"含 Claude Opus 5.5，10-11 仍无 changelog；**Claude 额外收费未找到一手证据 [存疑]**。
+- **订阅**：10-13 "The X Subscription" 合并 X Premium + Grok + Cursor：Free / Plus $8 / Premium $30 / Super $100 / Ultra $200，Grok Bot 包含；Cursor 附加条款 10-07。
+- [官方] https://x.ai/news/introducing-grok-bot ；https://x.ai/legal/x-subscription-cursor-addendum ；[财经] https://www.cnbc.com/2026/04/21/spacex-says-it-can-buy-cursor-later-this-year-for-60-billion-or-pay-10-billion-for-our-work-together.html ；https://www.reuters.com/legal/transactional/spacex-buy-anysphere-60-billion-2026-06-16/ ；https://news.bloomberglaw.com/mergers-and-acquisitions/spacex-completes-its-60-billion-cursor-acquisition ；https://techcrunch.com/2026/10/13/spacexsi-bundles-x-premium-grok-and-cursor-into-one-subscription/ ；[二手] https://www.lindy.ai/blog/grok-bot
+
+### 10.4 Google
+- **Gemini Spark**（消费）：I/O 05-19 发布，24/7 云端个人 agent，Gemini 3.5 + **Antigravity harness**；Gmail/Docs/Slides 深度集成，MCP 接 Canva/OpenTable/Instacart；花钱/发邮件前必须确认。5 月 Ultra beta → 07-23 美国 AI Pro → 7 月底近乎全球 Pro/Ultra（EEA/英国/瑞士/尼日利亚除外 [二手]）。9–10 月无新一手公告，搜索里的"Gemini Spark 10 月"均为二手回顾。
+- **"Gemini agent"（10-08，Gemini at Work）**：Google Cloud 的 "universal agent for work"，企业向：单一提示框、目标/定时/事件触发、云端持久、可拥有自己的 Workspace 账号与邮箱、临时子 agent、Agent Sandbox/Agent Gateway、按项目花费上限、自动选模型（"含 Claude"来自评论区 [存疑]）。与 Spark 的关系官方未说明。Antigravity 同时是 Gemini CLI 的接替者（§4）与 Spark 的 harness。
+- [官方] https://blog.google/innovation-and-ai/products/gemini-app/next-evolution-gemini-app/ ；https://blog.google/innovation-and-ai/infrastructure-and-cloud/google-cloud/gemini-at-work/ ；[财经] https://techcrunch.com/2026/10/08/google-brings-agentic-ai-to-gemini-starting-with-businesses/ ；https://9to5google.com/2026/07/23/gemini-spark-google-ai-pro-us/
+
+### 10.5 Microsoft
+- **03-17 重组**：消费与商业 Copilot 合并归 Jacob Andreou（升 EVP），Suleyman 转去做 MAI 自研模型；07-29 财报会 Nadella 确认合并成单一 app。
+- **09-25 新 Copilot** = Home（Chat + Cowork，将自动路由）/ Code（沙箱、租户内 Copilot Managed Runtime）/ **Autopilot**（原 Scout）：持久、proactive、云端常驻，"在你的租户里有自己的身份、记忆、电脑和工作区"，用户设目标与边界，权限/审计/治理归 IT。**计费**：USL 固定费 + Cowork/Code/Autopilot/前沿模型按用量（credits），管理员控花费与模型族（提及 Astra、Fable）；插件注册表含伙伴插件。Autopilot 月底私有预览，走 Frontier 计划；页面几乎只谈企业，消费端仅 M365 Premium 年内预览 Code。"消费版 Copilot 并入企业产品"为二手说法 [存疑]。
+- [官方] https://blogs.microsoft.com/blog/2026/09/25/introducing-the-new-copilot-with-home-code-and-autopilot/ ；[财经] https://fortune.com/2026/09/25/microsoft-unveils-copilot-super-app-targeting-business-users-with-ai-agents/ ；[二手] https://samexpert.com/microsoft-copilot-reorganisation-march-2026/
+
+### 10.6 Apple / Amazon
+- **Siri AI**：WWDC 06-08 发布，**09-14 随 iOS/iPadOS/macOS/watchOS/visionOS 27 英文 beta 上线**，10 月加 5 种语言；模型为与 Google Gemini 合作定制的 Apple Foundation Models，云端走 PCC；能力是个人上下文检索、屏幕感知、跨应用动作（WhatsApp/Audible，Outlook/Notability 待接）；EU 与中国不可用；服务端功能有每日用量上限，"将来可付费扩容"。设备内 agent，不是 Muse/dots 的云常驻形态；"第三方 agent 可设为默认"仅二手 [存疑]。
+- **Alexa+**：02-04 美国全量，Prime 免费/独立 $19.99；9 月末 **Alexa+ Agentic Ads**（对话内下单，Papa Johns 等）；更强 agent 化项目 "Moonraker" 仅 BI 7 月报道 [存疑]。9–10 月无一手架构公告。
+- [官方] https://www.apple.com/newsroom/2026/09/siri-ai-a-profoundly-more-capable-and-personal-assistant-is-here/ ；https://advertising.amazon.com/library/news/alexa-agentic-ads ；[财经] https://www.cnbc.com/2026/02/04/amazon-alexa-plus-us-releas.html
+
+### 10.7 Anthropic
+- Cowork 04-09 GA（macOS/Windows）→ 07-07 上 Web/移动端（Max）→ 春季起云端化（定时任务无需设备在线，动作前仍审批）。**09-16 起 Cowork 并入 Claude 主对话**（不再选模式），同时 Claude Docs/Slides beta、Design 进每个对话；Pro/Max 先行，Team/Free 跟进；默认动作前询问，可改为"持续工作、仅需复核时打断"。未公布新定价；Fortune 指出 agentic 默认路径会抬高简单问题的 token 成本。9–10 月没有"自带云电脑的 dot 式"消费产品——Anthropic 的常驻形态仍在 Claude Code Channels/Routines/Managed Agents（§3）。
+- [财经] https://fortune.com/2026/09/16/anthropic-merges-its-claude-chat-and-agentic-cowork-products-into-a-single-ai-assistant-as-part-of-a-push-to-build-an-ai-superapp/ ；https://techcrunch.com/2026/07/07/the-coding-agent-wars-are-spilling-into-the-rest-of-the-office-claude-cowork/
+
+### 10.8 中国
+- **腾讯 LightVela**：腾讯轻量云的云端 agent 托管，底层开源 **Hermes Agent**，"7×24 在线"、长期记忆、定时任务、可装 skills；渠道微信/QQ/企微/飞书/钉钉/Telegram/WhatsApp/Discord/Slack（微信扫码授权）；模型自选（DeepSeek/Kimi/豆包/MiniMax/千问或 OpenAI 兼容端点）；国际站 Launch $7.5/月（2C4G、100 模型额度）、Cruise $15/月，14 天试用；上线日期与安全声明官网未写。
+- **字节豆包**：9 月末多家报道个人助理定名"小豆"、将出独立 App，前身代号 Spell（4 月内测），能力来自豆包手机助手（09-14 消费者版落地努比亚）；官方未确认 [存疑]。阿里/百度/智谱：本轮未找到 9–10 月个人 agent 一手公告。
+- [官方] https://www.tencentcloud.com/act/pro/LightVela ；[二手] https://www.ithome.com/1/008/773.htm
+
+### 10.9 独立产品
+- **Manus**：Meta 收购 04-27 被发改委否决，08-11 宣布独立；9 月末 **Manus 2.0**（Cascade harness、Cloud Computer、Automations、个人 agent app "Cue"——订餐/打电话），Manus Flex 自带 API key；10-08 融资 $5 亿+（博裕领投、腾讯参投，估值约 $40 亿 [存疑]）。
+- **Perplexity Computer**：02-25 发布，云端 agent 编排约 20 个模型，Max $200/月，后以 credit 开放 Pro；"Personal Computer" 本地版仅单一来源 [存疑]。**Genspark**：Plus $24.99 / Pro $249.99（credit 制），09-18 起新用户 chat/图片不再无限；无 9–10 月产品大更新。
+- [财经] https://techcrunch.com/2026/10/08/chinas-manus-raises-over-500m-in-first-funding-round-since-split-with-meta/ ；[二手] https://www.eesel.ai/blog/genspark-ai-pricing
+
+### 对 yo-agent 的补充启示
+1. **目标驱动的常驻任务是产品层标配**：Muse/dots/Grok Bot/Autopilot/Gemini agent 都是"给目标 + 边界 → 云端持久跑 → 需要时回来找人"。yo-agent 的 scheduler 不应只是 cron，要有 goal/objective 一等对象：持久状态、进度事件、主动回报点、挂起等审批。
+2. **应用连接器 = 凭据托管 + API/MCP 优先、浏览器兜底**：Muse（有 API 填凭据、否则走浏览器）、Grok Bot（登录无 API 的网站）、dots（4000+ connector）、Spark（MCP）。yo-agent 需要 connector 抽象：凭据存 agent loop 之外（§9），MCP 为首选接法，浏览器工具为 fallback，并按连接记录读/写范围（Sentinel 式分级）。
+3. **代用户执行必须有可审计的身份**：Autopilot"在租户里有自己的身份"、Gemini agent 有自己的 Workspace 账号、dots 接 Agent 365、Amazon 封 Muse 的理由正是"未自报身份"。yo-agent 对外动作（HTTP UA、邮件 From、消息渠道）应带 agent 身份标识，审计日志区分"用户说的"与"agent 做的"；404 Media 事件说明"实际由谁执行"也要向用户披露。
+4. **proactive 模式要节流且只读**：dots 的 proactive research 限只读工具，Spark/Muse 的主动建议不执行写动作。yo-agent 若做 proactive，默认 read-only 工具集 + 频率/预算上限 + 结果只进收件箱不外发。
+5. **用量与模型路由是 runtime 的事**：dots/Autopilot/Grok Bot 都把后台用量从聊天额度中拆出按 credit 计；Grok Bot/Copilot/Gemini agent 都自动路由模型。yo-agent 的事件流应按任务记录 token/成本与所用模型，provider 层支持按任务类型的路由策略，便于上层做配额。
