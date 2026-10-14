@@ -912,13 +912,13 @@ yo-agent/
 - **5.3b fork 最小闭环（✅）**：fork = 新 sessionId（per-session cursor 线性保持，否决单会话内 DAG 多头）；历史点 messages 用 per-turn 快照（否决事件回放重建——压缩不可逆，ContextCompacted 事件重建不出真实消息窗口；`structuredClone` 防活数组串改）；`kernel.forkSession/listForkPoints/readThread`（fork 会话 cursor 从 fork 点续起 → 跨链合并时间线全局单调，不复制事件）+ `SessionRow.forkedFrom` + 三 store turn 快照面（冻结接口按 deleteSession 先例做可选方法）+ RPC `session/fork` + `ChatController.fork`。两处实施更正：fork 对源纯读（turn 进行中亦可 fork 已完成边界）、doEmit 终态落库先于 fan-out（观察到 TurnCompleted ⇒ 快照可查）。shadow-git checkpoint 联动留候选。
 - **5.3c 表面兑现（✅）**：TUI `/fork [n]` + `/tree`（谱系树含孤儿分支保留）；web-console 侧栏谱系树（treeOrder 纯函数 + 缩进/⑂ 标记）+ 聊天视图「分支」按钮。Phase 6 接点未做：聊天 replyToId → 会话内 parentId 标注。
 
-### Phase 6 — 聊天平台接入（微信 iLink 优先；6a/6b ✅ 已交付，见 [`PHASE-6.md`](PHASE-6.md)）
+### Phase 6 — 聊天平台接入（微信 iLink 优先；6a/6b/6c ✅ 已交付，见 [`PHASE-6.md`](PHASE-6.md)）
 
 > 渠道调整（2026-07）：微信官方 iLink Bot API 开放（协议文档化 + 官方参考实现 MIT），微信插队为首渠道；QQ/OneBot、Telegram 顺延。研究与拍板见 [`research/weixin-ilink.md`](research/weixin-ilink.md)（直连自建，否决挂 OpenClaw）。
 
 - **6a 协议客户端（✅）**：`@yo-agent/surface-weixin`——扫码登录状态机（confirmed/redirect/verifycode/expired/binded 全分支）+ 长轮询 monitor（游标逐轮落盘断线续接、退避、-14 停机回调）+ 五端点 API（headers/base_info 照官方形制，`fetchImpl` 可注入 mock 网关离线测试）。
 - **6b 内核装配（✅）**：WeixinSurface——每（账号, 对端）确定性 sessionId（配 YO_DB 跨重启续聊）；入站文本/语音转文字 → submitInput（5.3a 队列防交错）；出站 typing 起止 + FINISH 文本切段 + context_token 回传；授权门（allow 名单 + 机主自动过 + 陌生人一次性提示）；权限模式固定 ci。CLI：`yoagent weixin login|run|allow`。
-- **6c（规划）**：CDN 媒体（AES-128-ECB）+ GENERATING 流式/tool-call item + 群聊形态实测 + `ref_msg` → parentId 标注。
+- **6c 媒体 / 引用 / 进度 / 配对（✅ 2026-10-14）**：入站图片/文件/视频 CDN 下载 + AES-128-ECB 解密落 workspace 媒体目录（路径告知模型；多模态看图留 Phase 7）；`ref_msg` → `EventEnvelope.parentId`（kernel `submitInput` 增 `{ parentId }`，仅挂 UserMessage，越界降 null）+ 引用摘要进 prompt；ToolCallStarted/Completed → TOOL_CALL_START/RESULT item 同 run_id（与官方参考实现同形——其全部出站为 FINISH，不用 GENERATING，本实现同）；uint64 消息 id 无损解析；配对码自助授权。群聊：官方参考实现 groupPolicy=disabled、协议仅有 group_id 字段，继续不接入（每群记一次日志）。
 - 另接收 Phase 4 顺延项：L2 容器沙箱 + OTel 可观测；QQ/OneBot、Telegram 作为后续渠道复用 Transport + Adapter 分层。
 
 ### Phase 7 — 打磨 + 多用户接缝

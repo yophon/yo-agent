@@ -572,3 +572,31 @@ describe('AgentKernel —— MCP 审批缓存失效 + 中途熔断落库（3C �
     expect(st).toContain('failed'); // tool 循环后 sync 已落库 failed，不必等下一 turn
   });
 });
+
+describe('6c submitInput parentId（聊天引用回复 → 事件 DAG 边）', () => {
+  it('parentId 只挂在 UserMessage 信封且须指向本会话既有 cursor；越界/未指定 → null；排队 turn 也带', async () => {
+    const h = harness();
+    h.provider.script(textTurn('a'));
+    h.provider.script(textTurn('b'));
+    h.provider.script(textTurn('c'));
+    const sid = await h.kernel.startSession({ model: 'fake' });
+    await h.kernel.submitInput(sid, 'one', 'k1');
+    const log1: EventEnvelope[] = [];
+    for await (const e of h.kernel.events.read(sid)) log1.push(e);
+    const firstUser = log1.find((e) => e.event.kind === 'UserMessage')!;
+    expect(firstUser.parentId).toBeNull();
+
+    await h.kernel.submitInput(sid, 'two', 'k2', { parentId: firstUser.cursor });
+    // 第三条在第二条进行中排队：parentId 随队列项带到起跑
+    const p3 = h.kernel.submitInput(sid, 'three', 'k3', { parentId: 999_999 });
+    await p3;
+    const log: EventEnvelope[] = [];
+    for await (const e of h.kernel.events.read(sid)) log.push(e);
+    const users = log.filter((e) => e.event.kind === 'UserMessage');
+    expect(users).toHaveLength(3);
+    expect(users[1]!.parentId).toBe(firstUser.cursor);
+    expect(users[2]!.parentId).toBeNull(); // 越界降 null，不毒化事件流
+    // 其它事件不受影响
+    expect(log.filter((e) => e.event.kind !== 'UserMessage').every((e) => e.parentId === null)).toBe(true);
+  });
+});

@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   ApprovalDecision,
   ApprovalSuggestion,
+  Cursor,
   EventEnvelope,
   HandoffSummary,
   Id,
@@ -97,6 +98,11 @@ export interface AgentKernelDeps {
   concurrentTools?: readonly string[];
 }
 
+/** 6c：submitInput/beginTurn 可选项——parentId 把本次 UserMessage 挂到既有事件 cursor 下（聊天引用回复）。 */
+export interface SubmitInputOpts {
+  parentId?: Cursor;
+}
+
 export interface StartSessionOpts {
   sessionId?: Id;
   model?: string;
@@ -164,6 +170,8 @@ interface QueuedTurn {
   prompt: string;
   idemKey: string;
   turnId: Id;
+  /** 6c：UserMessage 信封的 parentId（聊天渠道「引用回复」→ 事件 DAG 边；缺省 null）。 */
+  parentId?: Cursor;
   done: Promise<void>;
   resolveDone: () => void;
   rejectDone: (e: unknown) => void;
@@ -420,15 +428,15 @@ export class AgentKernel implements Kernel, SubagentHost {
   }
 
   /** 阻塞版（CLI 用）：跑完整 turn 才 resolve（排队则含排队等待）；排队被取消（interrupt/endSession）reject。 */
-  async submitInput(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }> {
-    const { turnId, done } = await this.launchTurn(this.require(sessionId), prompt, idemKey);
+  async submitInput(sessionId: Id, prompt: string, idemKey: string, opts?: SubmitInputOpts): Promise<{ turnId: Id }> {
+    const { turnId, done } = await this.launchTurn(this.require(sessionId), prompt, idemKey, opts?.parentId);
     await done;
     return { turnId };
   }
 
   /** 非阻塞版（RpcSurface 用）：立即返回 turnId（进行中则排队预分配），turn 在后台跑、事件经订阅推送。 */
-  async beginTurn(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }> {
-    const { turnId } = await this.launchTurn(this.require(sessionId), prompt, idemKey);
+  async beginTurn(sessionId: Id, prompt: string, idemKey: string, opts?: SubmitInputOpts): Promise<{ turnId: Id }> {
+    const { turnId } = await this.launchTurn(this.require(sessionId), prompt, idemKey, opts?.parentId);
     return { turnId };
   }
 
@@ -436,7 +444,7 @@ export class AgentKernel implements Kernel, SubagentHost {
    * 公共起 turn 逻辑（5.3a 并发闸）：空闲直接起跑；turn 进行中则入队（turnId 预分配），当前 turn 完结自动出队串行。
    * 同 idemKey 命中活跃/排队 turn 时返回既有 {turnId, done} 不新建（RPC 重连重试对账）。
    */
-  private async launchTurn(s: SessionState, prompt: string, idemKey: string): Promise<{ turnId: Id; done: Promise<void> }> {
+  private async launchTurn(s: SessionState, prompt: string, idemKey: string, parentId?: Cursor): Promise<{ turnId: Id; done: Promise<void> }> {
     if (s.activeTurn?.idemKey === idemKey) return { turnId: s.activeTurn.turnId, done: s.activeTurn.done };
     const dup = s.turnQueue.find((q) => q.idemKey === idemKey);
     if (dup) return { turnId: dup.turnId, done: dup.done };
@@ -450,14 +458,14 @@ export class AgentKernel implements Kernel, SubagentHost {
       });
       // 标记 handled：beginTurn 调用方丢弃 done，排队被取消（interrupt/endSession）时 reject 不得成为 unhandledRejection。
       done.catch(() => {});
-      s.turnQueue.push({ prompt, idemKey, turnId, done, resolveDone, rejectDone });
+      s.turnQueue.push({ prompt, idemKey, turnId, done, resolveDone, rejectDone, ...(parentId !== undefined ? { parentId } : {}) });
       return { turnId, done };
     }
-    return this.startTurnNow(s, prompt, idemKey, turnId);
+    return this.startTurnNow(s, prompt, idemKey, turnId, parentId);
   }
 
   /** 实际起跑一个 turn：emit TurnStarted → 后台跑 runTurn（异常兜底 TurnFailed）→ 收尾清闸 + drain 队列。 */
-  private async startTurnNow(s: SessionState, prompt: string, idemKey: string, turnId: Id): Promise<{ turnId: Id; done: Promise<void> }> {
+  private async startTurnNow(s: SessionState, prompt: string, idemKey: string, turnId: Id, parentId?: Cursor): Promise<{ turnId: Id; done: Promise<void> }> {
     s.turnActive = true; // 首个 await 前同步置位：封死同 tick 双进
     let resolveDone!: () => void;
     let rejectDone!: (e: unknown) => void;
@@ -471,7 +479,8 @@ export class AgentKernel implements Kernel, SubagentHost {
       s.interrupted = false;
       await this.emit(s, { kind: 'TurnStarted', turnId, promptIdemKey: idemKey }, turnId);
       // 用户输入落事件流（5.1b）：回放可重建用户气泡（此前只进 messages 快照）。
-      await this.emit(s, { kind: 'UserMessage', text: prompt, source: 'prompt' }, turnId);
+      // 6c：parentId 仅挂在 UserMessage 信封（聊天「引用回复」指向被引用消息的 cursor，形成 DAG 边；§2.1 预留接点）。
+      await this.emit(s, { kind: 'UserMessage', text: prompt, source: 'prompt' }, turnId, parentId);
       s.messages.push({ role: 'user', content: prompt });
       await this.hooks.fireUserPromptSubmit(this.hookCtx(s), prompt, this.hookErr(s, turnId)); // UserPromptSubmit hook（4A）
     } catch (e) {
@@ -505,7 +514,7 @@ export class AgentKernel implements Kernel, SubagentHost {
   private drainTurnQueue(s: SessionState): void {
     const next = s.turnQueue.shift();
     if (!next) return;
-    void this.startTurnNow(s, next.prompt, next.idemKey, next.turnId)
+    void this.startTurnNow(s, next.prompt, next.idemKey, next.turnId, next.parentId)
       .then(({ done }) => done)
       .then(next.resolveDone, next.rejectDone);
   }
@@ -1320,22 +1329,23 @@ export class AgentKernel implements Kernel, SubagentHost {
    * 对父会话的 emit」并发抢 headCursor → append 单调校验抛错。turn 内 emit 本就顺序 await（prev 已 resolve，
    * 零额外开销）；仅后台离带 emit 受此保护。doEmit 抛错仍向调用方传播（行为不变），但不毒化链（chain 自吞）。
    */
-  private emit(s: SessionState, event: AgentEvent, turnId?: Id): Promise<void> {
+  private emit(s: SessionState, event: AgentEvent, turnId?: Id, parentId?: Cursor): Promise<void> {
     const prev = s.emitChain;
     const run = (async () => {
       await prev;
-      await this.doEmit(s, event, turnId);
+      await this.doEmit(s, event, turnId, parentId);
     })();
     s.emitChain = run.catch(() => {});
     return run;
   }
 
-  private async doEmit(s: SessionState, event: AgentEvent, turnId?: Id): Promise<void> {
+  private async doEmit(s: SessionState, event: AgentEvent, turnId?: Id, parentId?: Cursor): Promise<void> {
     const cursor = ++s.headCursor;
     const env: EventEnvelope = {
       sessionId: s.id,
       cursor,
-      parentId: null,
+      // parentId 须指向本会话已存在的 cursor（DAG 边不得悬空）；越界/未来值静默降为 null，不让渠道层的错配毒化事件流。
+      parentId: parentId !== undefined && parentId >= 0 && parentId < cursor ? parentId : null,
       turnId: turnId ?? null,
       ts: Date.now(),
       event,

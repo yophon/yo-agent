@@ -82,7 +82,7 @@ yoagent acp
 # WeChat integration (official iLink Bot protocol, see docs/weixin.md)
 yoagent weixin login                          # QR-code login
 yoagent weixin run                            # resident send/receive loop (YO_DB recommended)
-yoagent weixin allow <accountId> <userId>     # authorize a sender
+yoagent weixin allow <accountId> <userId>     # authorize a sender (or have them send "配对 <code>"; the code is printed by run)
 ```
 
 Use `/help` inside the TUI to list available commands. Common commands include `/model`, `/cwd`, `/resume`, `/compact`, `/tasks`, `/fork`, and `/tree`.

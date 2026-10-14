@@ -14,7 +14,7 @@ import type {
 import type { CanonMessage, ModelInfo, Provider } from '@yo-agent/provider';
 import type { ToolRegistry } from '@yo-agent/tools';
 import type { EventStore, SessionRow } from '@yo-agent/store';
-import type { StartSessionOpts } from './kernel';
+import type { StartSessionOpts, SubmitInputOpts } from './kernel';
 
 export type SurfaceKind = 'cli' | 'rpc' | 'chat' | 'acp' | 'mcp-server';
 
@@ -31,9 +31,9 @@ export interface Kernel {
   readonly events: EventStore;
   startSession(opts?: StartSessionOpts): Promise<Id>;
   /** 阻塞版：跑完整 turn 才 resolve（CLI）。turn 进行中则排队串行（5.3a）；排队被取消（interrupt/endSession）reject。 */
-  submitInput(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }>;
+  submitInput(sessionId: Id, prompt: string, idemKey: string, opts?: SubmitInputOpts): Promise<{ turnId: Id }>;
   /** 非阻塞版：立即返回 turnId，turn 后台跑（RpcSurface）。turn 进行中则排队（turnId 预分配，TurnStarted 在实际起跑时经订阅推送）；同 idemKey 命中活跃/排队 turn 返回既有 turnId（重试对账）。 */
-  beginTurn(sessionId: Id, prompt: string, idemKey: string): Promise<{ turnId: Id }>;
+  beginTurn(sessionId: Id, prompt: string, idemKey: string, opts?: SubmitInputOpts): Promise<{ turnId: Id }>;
   steer(sessionId: Id, text: string): Promise<void>;
   interrupt(sessionId: Id): Promise<void>;
   subscribe(

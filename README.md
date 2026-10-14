@@ -82,7 +82,7 @@ yoagent acp
 # 微信接入（官方 iLink Bot 协议，详见 docs/weixin.md）
 yoagent weixin login                          # 扫码登录
 yoagent weixin run                            # 常驻收发（建议配 YO_DB）
-yoagent weixin allow <accountId> <userId>     # 授权发件人
+yoagent weixin allow <accountId> <userId>     # 授权发件人（或让对方发「配对 <码>」，码在 run 启动日志）
 ```
 
 TUI 内使用 `/help` 查看命令。常用命令包括 `/model`、`/cwd`、`/resume`、`/compact`、`/tasks`、`/fork` 和 `/tree`。

@@ -1,12 +1,14 @@
 /**
- * iLink Bot HTTP 客户端（Phase 6a）：五业务端点 + 登录两端点，照官方参考实现的请求形制
+ * iLink Bot HTTP 客户端（Phase 6a/6c）：五业务端点 + 登录两端点，照官方参考实现的请求形制
  * （headers/base_info/超时档位）自建。`fetchImpl` 可注入——测试 mock 网关不走真网络。
+ * 6c：uint64 消息 id 无损解析（parseWeixinJson）；通用单 item 发送（工具进度/媒体）+ run_id 关联。
  */
 import { randomBytes } from 'node:crypto';
 import type {
   BaseInfo,
   GetConfigResp,
   GetUpdatesResp,
+  MessageItem,
   QrCodeResp,
   QrStatusResp,
   SendMessageResp,
@@ -14,6 +16,19 @@ import type {
 } from './types';
 
 export const DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com';
+/** 媒体 CDN（参考实现 CDN_BASE_URL）：下载 `<cdn>/download?encrypted_query_param=…`。 */
+export const CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
+
+/** 线上 uint64 的 id 字段：JSON.parse 前引成字符串，> 2^53 不丢精度（引用回复 svr_id 对账依赖逐字相等）。 */
+const LOSSLESS_ID_RE = /(?<!\\)"(message_id|msg_id|svr_id)"(\s*:\s*)(\d+)(?=\s*[,}\]])/g;
+
+/**
+ * 解析网关 JSON：message_id/msg_id/svr_id 的裸数字值先加引号再 parse。
+ * 只改「键名紧跟冒号 + 纯数字值」形态；键名出现在字符串值内部时前有转义反斜杠，不命中。
+ */
+export function parseWeixinJson<T>(raw: string): T {
+  return JSON.parse(raw.replace(LOSSLESS_ID_RE, '"$1"$2"$3"')) as T;
+}
 
 /** 长轮询默认超时（服务端可经 longpolling_timeout_ms 调整）。 */
 export const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
@@ -92,7 +107,7 @@ async function postJson<T>(opts: WeixinApiOpts, endpoint: string, body: Record<s
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`${label} HTTP ${res.status}: ${text.slice(0, 200)}`);
-    return JSON.parse(text) as T;
+    return parseWeixinJson<T>(text);
   } finally {
     cleanup();
   }
@@ -139,9 +154,12 @@ export async function getUpdates(
   }
 }
 
-/** 发消息（6b：单文本 item，FINISH 态；context_token 回传）。 */
-export async function sendTextMessage(
-  opts: WeixinApiOpts & { to: string; text: string; contextToken?: string; clientId: string },
+/**
+ * 发单 item 消息（FINISH 态；每请求恰一个 item，与参考实现同形）。context_token 回传；run_id 把同一轮的
+ * 工具进度/正文消息关联成一组。非零 ret/errcode 抛错（静默失败会让用户以为 bot 哑了）。
+ */
+export async function sendMessageItem(
+  opts: WeixinApiOpts & { to: string; item: MessageItem; contextToken?: string; clientId: string; runId?: string },
 ): Promise<SendMessageResp> {
   const msg: WeixinMessage = {
     from_user_id: '',
@@ -149,10 +167,22 @@ export async function sendTextMessage(
     client_id: opts.clientId,
     message_type: 2, // BOT
     message_state: 2, // FINISH
-    item_list: [{ type: 1, text_item: { text: opts.text } }],
+    item_list: [opts.item],
     ...(opts.contextToken ? { context_token: opts.contextToken } : {}),
+    ...(opts.runId ? { run_id: opts.runId } : {}),
   };
-  return postJson<SendMessageResp>(opts, 'ilink/bot/sendmessage', { msg, base_info: baseInfo() }, 'sendMessage');
+  const resp = await postJson<SendMessageResp>(opts, 'ilink/bot/sendmessage', { msg, base_info: baseInfo() }, 'sendMessage');
+  if ((resp.ret !== undefined && resp.ret !== 0) || (resp.errcode !== undefined && resp.errcode !== 0)) {
+    throw new Error(`sendMessage 业务错误：ret=${resp.ret} errcode=${resp.errcode} ${resp.errmsg ?? ''}`);
+  }
+  return resp;
+}
+
+/** 发文本（6b 形态保留；6c 加 runId）。 */
+export async function sendTextMessage(
+  opts: WeixinApiOpts & { to: string; text: string; contextToken?: string; clientId: string; runId?: string },
+): Promise<SendMessageResp> {
+  return sendMessageItem({ ...opts, item: { type: 1, text_item: { text: opts.text } } });
 }
 
 /** 拿账号配置（typing_ticket）。 */
@@ -208,5 +238,5 @@ export async function getQrcodeStatus(
   let endpoint = `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(opts.qrcode)}`;
   if (opts.verifyCode) endpoint += `&verify_code=${encodeURIComponent(opts.verifyCode)}`;
   const raw = await getRaw({ ...opts, timeoutMs: opts.timeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS }, endpoint, 'getQrcodeStatus');
-  return JSON.parse(raw) as QrStatusResp;
+  return parseWeixinJson<QrStatusResp>(raw);
 }

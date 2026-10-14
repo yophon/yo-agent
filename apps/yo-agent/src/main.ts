@@ -476,6 +476,11 @@ async function main(): Promise<void> {
     const abort = new AbortController();
     process.on('SIGINT', () => abort.abort());
     process.on('SIGTERM', () => abort.abort());
+    // 6c：配对码（YO_WEIXIN_PAIRING_CODE 固定，否则每次运行随机 6 位）；陌生人发「配对 <码>」自助入名单。
+    const pairingCode = env.YO_WEIXIN_PAIRING_CODE?.trim() || String(100000 + Math.floor(Math.random() * 900000));
+    // 6c：入站媒体落在会话 cwd 内（模型用 read 读得到）；工具进度 item 可用 YO_WEIXIN_PROGRESS=0 关。
+    const mediaDir = join(cwd, '.yo-agent', 'weixin-media');
+    const progressMessages = env.YO_WEIXIN_PROGRESS !== '0';
     const loops = accounts.map(async (account) => {
       const log = (m: string): void => console.error(`[weixin:${account.accountId}] ${m}`);
       const surface = new WeixinSurface({
@@ -483,6 +488,9 @@ async function main(): Promise<void> {
         account,
         allowAll: args.allowAll ?? false,
         ...(env.YO_WEIXIN_SYSTEM ? { system: env.YO_WEIXIN_SYSTEM } : {}),
+        pairingCode,
+        mediaDir,
+        progressMessages,
         log,
       });
       const apiOpts = { baseUrl: account.baseUrl || WEIXIN_BASE_URL, token: account.token };
@@ -501,6 +509,8 @@ async function main(): Promise<void> {
       }
     });
     console.error(`[weixin] 收发已启动（${accounts.length} 个账号，权限模式 ci；Ctrl+C 退出）`);
+    console.error(`[weixin] 本次配对码：${pairingCode}（陌生人发「配对 ${pairingCode}」即可自助授权；设 YO_WEIXIN_PAIRING_CODE 可固定）`);
+    console.error(`[weixin] 入站图片/文件落盘目录：${mediaDir}`);
     await Promise.allSettled(loops);
     return;
   }
