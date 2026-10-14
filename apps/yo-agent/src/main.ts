@@ -10,6 +10,8 @@
  * Provider：ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY（OPENAI_MODE=responses，YO_TOOL_SHIM=1 双轨）；
  * 否则 FakeProvider 演示。YO_DB=路径 → SQLite 持久化。YO_COMPACT=1 → 启用 Condenser。自动加载 cwd 链上 yo.md/AGENTS.md。
  * YO_LOOP_BREAKER=off|loose|strict → 死循环熔断档位（4.10a，默认 loose）。
+ * --permission-mode <档位> / YO_PERMISSION_MODE → 会话起始权限档位（read-only|supervised|accept-edits|autonomous|ci|bypass，
+ * 默认 supervised；headless/jsonl 无人审批，supervised 下所有待审工具自动拒，脚本/CI 场景按需选 ci 或 accept-edits）。
  */
 import {
   AgentKernel,
@@ -82,7 +84,7 @@ import { createInterface } from 'node:readline/promises';
 import type { ApprovalGate } from '@yo-agent/kernel';
 import type { EventEnvelope } from '@yo-agent/protocol';
 
-import { parseArgs } from './args';
+import { PERMISSION_MODES, parseArgs, resolvePermissionMode } from './args';
 import type { Mode } from './args';
 
 /** 内核 I/O 的 Node 实现（5.2a EnvAdapter）：context-files/skills/recipes 经此注入（无状态，进程单例）。 */
@@ -428,7 +430,7 @@ function installShutdown(mcpHost: McpHostManager, pluginHost?: DefaultPluginHost
 }
 
 async function main(): Promise<void> {
-  const { prompt, mode, listenPort, resume } = parseArgs(process.argv.slice(2));
+  const { prompt, mode, listenPort, resume, permissionMode: pmFlag } = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
   const env = process.env;
 
@@ -564,9 +566,17 @@ async function main(): Promise<void> {
 
   // --tui 是交互式 REPL，允许无初始 prompt 启动（进输入态等待键入）；其余一次性模式仍需 prompt。
   if (!prompt && mode !== 'tui') {
-    console.error('用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server | acp]');
+    console.error(`用法：yo-agent [-p "提问"] [--tui | --mode jsonl | rpc | mcp-server | acp] [--permission-mode ${PERMISSION_MODES.join('|')}]`);
     process.exit(2);
   }
+  // 权限档位：--permission-mode > YO_PERMISSION_MODE > 内核默认 supervised（恢复会话则沿用其既有档位）。
+  const pm = resolvePermissionMode(pmFlag, env.YO_PERMISSION_MODE);
+  if (pm.error) {
+    console.error(pm.error);
+    process.exit(2);
+  }
+  if (pm.warning) console.error(pm.warning);
+  const permissionMode = pm.mode;
   const workspaceRoot = await findWorkspaceRoot(contextFs, cwd);
 
   // 手动记忆主路（3E）：`#remember <文本>` 落盘 MEMORY.md + 写结构化 MemoryStore，不耗 LLM 轮次。
@@ -613,7 +623,11 @@ async function main(): Promise<void> {
   }
   // 4.7f:恢复成功的会话在 TUI 挂载时回放历史(不再空屏)。
   const replayOnMount = sessionId !== undefined;
-  sessionId ??= await kernel.startSession({ system, model });
+  if (sessionId !== undefined && permissionMode !== undefined) {
+    // 恢复的会话带着落库档位；显式指定时覆盖（setPermissionMode 收紧会清 allow_always 缓存并向 LLM 注入切档提示）。
+    kernel.setPermissionMode(sessionId, permissionMode);
+  }
+  sessionId ??= await kernel.startSession({ system, model, ...(permissionMode !== undefined ? { permissionMode } : {}) });
 
   // try/finally：turn 抛错（走 main().catch→exit(1)）也回收子进程，不只 happy-path（审查 lifecycle）。
   try {

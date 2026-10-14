@@ -1,6 +1,10 @@
 /** CLI 参数解析(纯函数,从 main.ts 抽出可测,4.8c)。 */
+import { PermissionModeSchema, type PermissionMode } from '@yo-agent/protocol';
 
 export type Mode = 'tui' | 'jsonl' | 'headless' | 'rpc' | 'mcp-server' | 'acp' | 'weixin';
+
+/** 可用权限档位（与 protocol sealed enum 同源；用法提示/报错列此清单）。 */
+export const PERMISSION_MODES: readonly PermissionMode[] = PermissionModeSchema.options;
 
 export interface Args {
   /** 4.6e：'last'（--continue）| 'picker'（--resume 不带 id）| 具体会话 id。 */
@@ -9,10 +13,43 @@ export interface Args {
   mode: Mode;
   /** rpc --listen <port>：WS server 模式（带设备鉴权），否则 stdio。 */
   listenPort?: number;
+  /**
+   * --permission-mode <档位> 原始值（未校验；校验见 resolvePermissionMode）。
+   * 缺值/后跟 flag → 空串，交由 resolvePermissionMode 报可行动错误。
+   */
+  permissionMode?: string;
   /** weixin 子命令参数（6b）：['login'] | ['run'] | ['allow', <accountId>, <userId>]。 */
   weixinArgs?: string[];
   /** weixin run --allow-all：跳过授权名单放行全部发件人（仅显式要求时开）。 */
   allowAll?: boolean;
+}
+
+export interface PermissionModeResolution {
+  /** 生效档位；undefined = 未指定，沿用内核默认（supervised）或恢复会话的既有档位。 */
+  mode?: PermissionMode;
+  /** 环境变量非法：告警后忽略（与 YO_LOOP_BREAKER 同策略——env 常是继承来的，不该让进程起不来）。 */
+  warning?: string;
+  /** 命令行非法：显式输入写错属用户笔误，报错退出（exit 2）比静默退回 supervised 更不坑。 */
+  error?: string;
+}
+
+/**
+ * 权限档位来源优先级：`--permission-mode` > `YO_PERMISSION_MODE` > 不指定。
+ * 纯函数：flag 为 parseArgs 的原始值（undefined=未传），envValue 为 process.env.YO_PERMISSION_MODE。
+ */
+export function resolvePermissionMode(flag: string | undefined, envValue: string | undefined): PermissionModeResolution {
+  const list = PERMISSION_MODES.join('|');
+  if (flag !== undefined) {
+    const r = PermissionModeSchema.safeParse(flag.trim());
+    if (r.success) return { mode: r.data };
+    return { error: `--permission-mode ${flag === '' ? '缺值' : `${flag} 不是有效档位`}（${list}）` };
+  }
+  if (envValue !== undefined && envValue.trim() !== '') {
+    const r = PermissionModeSchema.safeParse(envValue.trim());
+    if (r.success) return { mode: r.data };
+    return { warning: `[warn] YO_PERMISSION_MODE=${envValue} 不是有效档位（${list}），已忽略` };
+  }
+  return {};
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -25,12 +62,27 @@ export function parseArgs(argv: string[]): Args {
   let wantWeixin = false;
   let allowAll = false;
   let listenPort: number | undefined;
+  let permissionMode: string | undefined;
   /** 4.6e:'last'(--continue)| 'picker'(--resume 不带 id)| 具体会话 id。 */
   let resume: string | undefined;
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--') continue; // pnpm 注入的分隔符
+    if (a === '--permission-mode' || a.startsWith('--permission-mode=')) {
+      if (a.includes('=')) {
+        permissionMode = a.slice('--permission-mode='.length);
+        continue;
+      }
+      const v = argv[i + 1];
+      if (v !== undefined && !v.startsWith('-')) {
+        permissionMode = v;
+        i++;
+      } else {
+        permissionMode = ''; // 缺值：留空交 resolvePermissionMode 报错，勿吞掉用户意图
+      }
+      continue;
+    }
     if (a === '--listen') {
       const v = argv[i + 1];
       if (v !== undefined && !v.startsWith('-')) {
@@ -116,5 +168,5 @@ export function parseArgs(argv: string[]): Args {
           : wantTui
             ? 'tui'
             : 'headless';
-  return { prompt, mode, listenPort, resume };
+  return { prompt, mode, listenPort, resume, ...(permissionMode !== undefined ? { permissionMode } : {}) };
 }

@@ -131,3 +131,10 @@ describe('4B — apply_patch 工具', () => {
     ).rejects.toThrow(/越界/);
   });
 });
+
+describe('只读搜索工具审批档位', () => {
+  it('grep/glob 与 read/ls 同为 approval:never —— headless supervised 下只读白名单一致(否则 ls 放行而 glob 自动拒)', () => {
+    expect(grepTool.descriptor).toMatchObject({ kind: 'search', approval: 'never' });
+    expect(globTool.descriptor).toMatchObject({ kind: 'search', approval: 'never' });
+  });
+});

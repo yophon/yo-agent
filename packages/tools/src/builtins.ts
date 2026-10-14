@@ -179,7 +179,9 @@ export const grepTool: RegisteredTool = {
     },
     owner: 'core',
     availability: { always: true },
-    approval: 'risk-based',
+    // 只读搜索与 read/ls 同类同档：confine cwd、无副作用、不出网，approval:'never'（曾为 risk-based——
+    // 使 headless supervised 下 ls 放行而 glob/grep 被自动拒，只读白名单自相矛盾；read-only 档本就按 kind 放行 search）。
+    approval: 'never',
   },
   executor: {
     async *execute(input, ctx: ToolContext) {
@@ -230,7 +232,9 @@ export const globTool: RegisteredTool = {
     },
     owner: 'core',
     availability: { always: true },
-    approval: 'risk-based',
+    // 只读搜索与 read/ls 同类同档：confine cwd、无副作用、不出网，approval:'never'（曾为 risk-based——
+    // 使 headless supervised 下 ls 放行而 glob/grep 被自动拒，只读白名单自相矛盾；read-only 档本就按 kind 放行 search）。
+    approval: 'never',
   },
   executor: {
     async *execute(input, ctx: ToolContext) {

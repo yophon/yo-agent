@@ -64,6 +64,10 @@ yoagent -p "解释 src/main.ts"
 # JSONL 事件流
 yoagent --mode jsonl -p "运行测试并总结结果"
 
+# 无人值守：指定权限档位（默认 supervised；headless 无人审批，待审工具一律自动拒绝）
+yoagent --permission-mode ci -p "把 README 的拼写错误改掉"      # 只读 + 低/中风险编辑自动放行，命令恒拒
+yoagent --permission-mode bypass -p "跑一遍 lint 并修掉告警"   # 命令执行恒为高风险：无人值守要跑 bash 只能 bypass（跳过全部审批，仅限可信环境）
+
 # 恢复会话，需要配置 YO_DB
 yoagent --continue
 yoagent --resume
@@ -100,6 +104,7 @@ CLI 会读取当前进程环境变量。通过全局 `yoagent` 启动时，还�
 | `YO_COMPACT_MODEL` | 指定压缩摘要模型 |
 | `YO_CHECKPOINT=1` | 编辑后创建 shadow-git checkpoint |
 | `YO_LOOP_BREAKER` | `off`、`loose` 或 `strict`，默认 `loose` |
+| `YO_PERMISSION_MODE` | 会话起始权限档位：`read-only`、`supervised`、`accept-edits`、`autonomous`、`ci`、`bypass`；`--permission-mode` 优先 |
 | `YO_TOOL_SHIM=1` | 为不支持原生工具调用的兼容模型启用 prompt shim |
 | `YO_HISTORY` | TUI 输入历史路径；空字符串表示关闭 |
 | `YO_TRUSTED_KEYS` | RPC WebSocket 允许的设备公钥列表 |

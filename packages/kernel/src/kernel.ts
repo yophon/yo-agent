@@ -553,6 +553,16 @@ export class AgentKernel implements Kernel, SubagentHost {
     s.permissionMode = mode;
   }
 
+  /**
+   * 拒绝文案里的「如何放宽」指引：交互会话指向 /mode；非交互会话（headless/jsonl/被编排）无人可切档，
+   * 指向启动方重启时指定档位（CLI 形态为 --permission-mode / YO_PERMISSION_MODE），LLM 不再误导用户敲 /mode。
+   */
+  private escalationHint(): string {
+    return this.d.interactiveApproval
+      ? '用户可用 /mode 切换更宽档位后重试'
+      : '本会话非交互、无法切档，需启动方以更宽档位重启（CLI：--permission-mode <档位> 或 YO_PERMISSION_MODE）';
+  }
+
   /** K3：手动压缩（/compact，跳过阈值与 min-rounds 闸门）；返回是否压成。 */
   async compactNow(sessionId: Id): Promise<boolean> {
     return this.doCondense(this.require(sessionId));
@@ -842,7 +852,7 @@ export class AgentKernel implements Kernel, SubagentHost {
             // 4.9c 文案富化：带当前档位 + 引导，LLM 不再自由脑补拒因。
             return {
               verdict: 'reject',
-              content: `权限模式（${s.permissionMode}）拒绝该工具调用。该工具在当前档位不可用；用户可用 /mode 切换更宽档位后重试，或改用当前档位允许的工具。`,
+              content: `权限模式（${s.permissionMode}）拒绝该工具调用。该工具在当前档位不可用；${this.escalationHint()}，或改用当前档位允许的工具。`,
             };
           }
           if (gate === 'ask' && desc.approval !== 'never') {
@@ -868,7 +878,7 @@ export class AgentKernel implements Kernel, SubagentHost {
                 autoReason === 'timeout'
                   ? `审批超时（${Math.round((this.d.approvalTimeoutMs ?? 0) / 1000)} 秒无人响应）自动拒绝该工具调用——这不是用户的明确拒绝。可先做无需审批的部分，稍后再试或等用户回应。`
                   : autoReason === 'noninteractive'
-                    ? `非交互环境自动拒绝该工具调用（无人可批；当前权限模式：${s.permissionMode}）。请改用无需审批的工具完成任务，并在结果中说明该步骤被跳过。`
+                    ? `非交互环境自动拒绝该工具调用（无人可批；当前权限模式：${s.permissionMode}）。请改用无需审批的工具完成任务，并在结果中说明该步骤被跳过（${this.escalationHint()}）。`
                     : `用户拒绝了该工具调用（当前权限模式：${s.permissionMode}）。未经用户要求不要原样重试；用户可用 /mode 切换档位或重新发起。`;
               if (autoReason === 'timeout') {
                 await this.emit(s, { kind: 'Error', message: `审批超时，已自动拒绝工具 ${name}` }, turnId); // surface 同步提示

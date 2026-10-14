@@ -1,6 +1,6 @@
 /**
  * headless 文本渲染（DESIGN §7.2）：非 TUI、非 jsonl 时的人读输出（流式拼接）。
- * Reasoning 默认折叠（§2.2）；ApprovalRequested 提示 headless 默认拒绝。
+ * Reasoning 默认折叠（§2.2）；ApprovalRequested 提示 headless 默认拒绝并指向 --permission-mode。
  */
 import type { EventEnvelope } from '@yo-agent/protocol';
 
@@ -18,7 +18,7 @@ export function formatHeadless(env: EventEnvelope): string | null {
     case 'ContextCompacted':
       return `\n[上下文压缩：省 ${e.tokensSaved} tokens]\n`;
     case 'ApprovalRequested':
-      return `\n[审批] ${e.tool}（headless 默认拒绝；交互审批用 TUI）`;
+      return `\n[审批] ${e.tool}（headless 无人审批，默认拒绝；用 --permission-mode / YO_PERMISSION_MODE 放宽，或 --tui 交互审批）`;
     case 'TurnCompleted':
       return `\n[完成: ${e.stopReason}]\n`;
     case 'TurnFailed':

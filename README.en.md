@@ -64,6 +64,10 @@ yoagent -p "Explain src/main.ts"
 # JSONL event stream
 yoagent --mode jsonl -p "Run the tests and summarize the results"
 
+# Unattended runs: pick a permission mode (defaults to supervised; headless has nobody to approve, so pending tools are auto-denied)
+yoagent --permission-mode ci -p "Fix the typos in README"          # read-only + low/medium-risk edits auto-allowed, commands always denied
+yoagent --permission-mode bypass -p "Run lint and fix the warnings"  # command execution is always high risk: unattended bash needs bypass (skips all approvals; trusted environments only)
+
 # Resume a session; requires YO_DB
 yoagent --continue
 yoagent --resume
@@ -100,6 +104,7 @@ The CLI reads environment variables from the current process. When launched thro
 | `YO_COMPACT_MODEL` | Select the model used for compaction summaries |
 | `YO_CHECKPOINT=1` | Create a shadow-git checkpoint after edits |
 | `YO_LOOP_BREAKER` | Set loop detection to `off`, `loose`, or `strict`; defaults to `loose` |
+| `YO_PERMISSION_MODE` | Initial permission mode: `read-only`, `supervised`, `accept-edits`, `autonomous`, `ci`, or `bypass`; `--permission-mode` takes precedence |
 | `YO_TOOL_SHIM=1` | Enable the prompt shim for compatible models without native tool calling |
 | `YO_HISTORY` | Set the TUI input history path; an empty string disables history |
 | `YO_TRUSTED_KEYS` | Set the list of device public keys allowed to use WebSocket RPC |
