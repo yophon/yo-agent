@@ -12,7 +12,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 /**
@@ -53,7 +53,12 @@ if (!existsSync(loader)) {
   process.exit(127);
 }
 
-const child = spawn(process.execPath, ['--import', loader, main, ...process.argv.slice(2)], {
+// Windows: `--import D:\...` is parsed as the drive letter being a URL scheme, so
+// pass an explicit file:// URL for the loader. `main` must stay a plain path —
+// tsx's path-alias resolver expects to join it against the cwd.
+const loaderUrl = pathToFileURL(loader).href;
+
+const child = spawn(process.execPath, ['--import', loaderUrl, main, ...process.argv.slice(2)], {
   stdio: 'inherit',
   env: {
     ...process.env,
