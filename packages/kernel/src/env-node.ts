@@ -4,6 +4,7 @@
  */
 import { access, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import type { FileStat, FileSystem } from './env';
+import { toPosixPath } from './paths';
 
 export class NodeFileSystem implements FileSystem {
   readTextFile(path: string): Promise<string> {
@@ -32,7 +33,8 @@ export class NodeFileSystem implements FileSystem {
     }
   }
 
-  realpath(path: string): Promise<string> {
-    return realpath(path);
+  /** realpath 结果归一为正斜杠（内核路径内部形态，见 paths.ts）——Windows 下 node 返回反斜杠，否则 isWithinPath 前缀比对失配。 */
+  async realpath(path: string): Promise<string> {
+    return toPosixPath(await realpath(path));
   }
 }

@@ -58,7 +58,7 @@ describe('loadConventionFiles（DESIGN §5.2）', () => {
 
   it('dirChain：根在前、cwd 在后', () => {
     const chain = dirChain(root);
-    expect(chain[chain.length - 1]).toBe(root);
+    expect(chain[chain.length - 1]).toBe(root.replace(/\\/g, '/')); // 内核路径内部形态恒为正斜杠（Windows 输入归一）
     expect(chain.length).toBeGreaterThan(1);
   });
 });
@@ -266,7 +266,7 @@ describe('3E — 手动 #remember 落盘主路', () => {
       const deep = join(repo, 'a', 'b');
       await mkdir(deep, { recursive: true });
       await mkdir(join(repo, '.git'), { recursive: true });
-      expect(await findWorkspaceRoot(nfs, deep)).toBe(repo); // 上溯到 .git 所在目录
+      expect(await findWorkspaceRoot(nfs, deep)).toBe(repo.replace(/\\/g, '/')); // 上溯到 .git 所在目录（内部形态正斜杠）
     } finally {
       await rm(base, { recursive: true, force: true });
     }

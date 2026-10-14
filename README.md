@@ -25,6 +25,8 @@ pnpm install
 pnpm run install:cli
 ```
 
+支持 macOS、Linux 和 Windows。Windows 下 `install:cli` 会把 `yoagent.cmd`（cmd / PowerShell）和 `yoagent`（Git Bash）两个 shim 写到 `%LOCALAPPDATA%\yo-agent\bin`，并提示如何加入 PATH；`bash` 工具优先使用 Git Bash，未安装时退回 PowerShell 或 cmd，工具描述会告诉模型当前是哪种 shell。
+
 配置一个模型：
 
 ```bash
@@ -202,7 +204,7 @@ pnpm run test:coverage
 
 ## 安全边界
 
-- 默认 shell 后端只是进程级 L1 防护：会剥离 API key 等环境变量并在中断时清理进程组，但仍可访问本机文件系统和网络。
+- 默认 shell 后端只是进程级 L1 防护：会剥离 API key 等环境变量并在中断时清理进程组（Windows 下用 `taskkill /T` 杀进程树），但仍可访问本机文件系统和网络。
 - `bypass` 权限模式会跳过审批，只应在明确受信任的环境使用。
 - WebSocket RPC 会监听 `0.0.0.0`，应放在 Tailscale、WireGuard 或其他可信网络后面。
 - 浏览器端审批不是服务端授权。业务工具 API 必须独立校验用户身份和权限。

@@ -2,6 +2,7 @@
  * TUI 纯格式化助手（DESIGN §7.2）。与 ink 解耦，便于离线单测。
  * app.ts 负责把这些字符串/数组塞进 React 元素。
  */
+import { homedir } from 'node:os';
 import type { RiskLevel } from '@yo-agent/protocol';
 
 /** 紧凑整数：1234→1.2k，1_200_000→1.2M。状态栏 token 计数用。 */
@@ -19,9 +20,9 @@ export function fmtCost(usd: number | undefined): string {
   return `$${usd.toFixed(2)}`;
 }
 
-/** 家目录折叠为 ~，状态栏 cwd 用。 */
-export function shortPath(p: string, home = process.env.HOME): string {
-  if (home && (p === home || p.startsWith(`${home}/`))) return `~${p.slice(home.length)}`;
+/** 家目录折叠为 ~，状态栏 cwd 用（Windows 无 $HOME 时取 os.homedir()，分隔符两种都认）。 */
+export function shortPath(p: string, home = process.env.HOME ?? homedir()): string {
+  if (home && (p === home || p.startsWith(`${home}/`) || p.startsWith(`${home}\\`))) return `~${p.slice(home.length)}`;
   return p;
 }
 

@@ -25,6 +25,8 @@ pnpm install
 pnpm run install:cli
 ```
 
+macOS, Linux and Windows are supported. On Windows, `install:cli` writes two shims to `%LOCALAPPDATA%\yo-agent\bin` — `yoagent.cmd` (cmd / PowerShell) and `yoagent` (Git Bash) — and prints how to add that directory to PATH. The `bash` tool prefers Git Bash and falls back to PowerShell or cmd; the tool description tells the model which shell is active.
+
 Configure a model provider:
 
 ```bash
@@ -202,7 +204,7 @@ pnpm run test:coverage
 
 ## Security Boundaries
 
-- The default shell backend only provides process-level L1 protection. It removes API keys and other sensitive environment variables and cleans up process groups on interruption, but commands can still access the host filesystem and network.
+- The default shell backend only provides process-level L1 protection. It removes API keys and other sensitive environment variables and cleans up process groups on interruption (process trees via `taskkill /T` on Windows), but commands can still access the host filesystem and network.
 - The `bypass` permission mode skips approvals and must only be used in an explicitly trusted environment.
 - WebSocket RPC listens on `0.0.0.0`; place it behind Tailscale, WireGuard, or another trusted network.
 - Browser-side approval is not server-side authorization. Business tool APIs must independently authenticate and authorize every request.

@@ -6,7 +6,7 @@
  * 仅 readGitBranch 触 fs（读 .git/HEAD，不 spawn git）。空数据 → 返回空串（该段不注入，不占 token）。
  */
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { joinPath } from './paths';
 
 /** startSession 时喂给 systemSuffix 函数的会话事实（kernel 注入，见 AgentKernelDeps.systemSuffix）。 */
 export interface SessionSelfInfo {
@@ -78,7 +78,7 @@ export function renderMemoryPreamble(opts: { workspaceRoot: string; writeTool?: 
     : '用户可以用 `#remember <文本>` 手动写入一条长期记忆。';
   return [
     '# 长期记忆',
-    `本 workspace 有跨会话长期记忆，落盘于 \`${join(opts.workspaceRoot, 'MEMORY.md')}\`（按 workspace 隔离，不跨仓库泄漏）。`,
+    `本 workspace 有跨会话长期记忆，落盘于 \`${joinPath(opts.workspaceRoot, 'MEMORY.md')}\`（按 workspace 隔离，不跨仓库泄漏）。`,
     '其内容（若存在）已并入本 system prompt 的约定文件部分。',
     write,
   ].join('\n');
@@ -135,7 +135,7 @@ export function composeSystemSections(...parts: Array<string | undefined>): stri
  */
 export async function readGitBranch(workspaceRoot: string): Promise<string | undefined> {
   try {
-    const head = (await readFile(join(workspaceRoot, '.git', 'HEAD'), 'utf8')).trim();
+    const head = (await readFile(joinPath(workspaceRoot, '.git', 'HEAD'), 'utf8')).trim();
     const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
     if (m) return m[1]!.trim();
     return head ? head.slice(0, 12) : undefined;

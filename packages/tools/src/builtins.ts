@@ -7,6 +7,11 @@ import { LocalSubprocessExecBackend } from './exec-local';
 import { parallelTool } from './parallel-tool';
 import type { RegisteredTool, ToolContext } from './index';
 
+/** 相对路径输出归一为正斜杠（Windows 下 node:path.relative 产反斜杠；回灌模型/测试断言统一 POSIX 形态）。 */
+function toPosixRel(p: string): string {
+  return sep === '/' ? p : p.split(sep).join('/');
+}
+
 /** realpath（解析符号链接）；不存在则原样返回。 */
 function realpathOr(p: string): string {
   try {
@@ -198,7 +203,7 @@ export const grepTool: RegisteredTool = {
         } catch {
           continue;
         }
-        const rel = relative(base, file);
+        const rel = toPosixRel(relative(base, file));
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i]!)) {
@@ -237,8 +242,8 @@ export const globTool: RegisteredTool = {
       const out: string[] = [];
       const MAX = 500;
       for await (const file of walkFiles(root)) {
-        if (re.test(relative(root, file))) {
-          out.push(relative(base, file));
+        if (re.test(toPosixRel(relative(root, file)))) {
+          out.push(toPosixRel(relative(base, file)));
           if (out.length >= MAX) break;
         }
       }

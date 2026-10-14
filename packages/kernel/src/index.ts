@@ -208,3 +208,4 @@ export * from './self-knowledge';
 export * from './skills';
 export * from './recipes';
 export * from './fallback';
+export * from './paths';
