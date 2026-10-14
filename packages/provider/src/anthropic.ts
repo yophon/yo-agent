@@ -26,6 +26,16 @@ export interface AnthropicProviderOpts {
   defaultMaxTokens?: number;
   /** 追加/覆盖请求头（5A）：自建代理的宿主鉴权令牌、anthropic-dangerous-direct-browser-access 等。 */
   headers?: Record<string, string>;
+  /**
+   * thinking 形态（2026-10）：缺省 adaptive——Claude 4.6+ 推荐且 5.x 系列本就恒开（显式 disabled 会 400）；
+   * 'off' = 不发 thinking 参数（4.7/4.8 即不思考；5.x 仍 adaptive）。老模型（4.5 及更早）自动不发（它们不认 adaptive）。
+   */
+  thinking?: 'adaptive' | 'off';
+}
+
+/** 不认 `thinking:{type:'adaptive'}` 的老模型（Claude 3.x / 4.5 系列仍用 budget_tokens 形态）。 */
+export function supportsAdaptiveThinking(modelId: string): boolean {
+  return !/-(3|4-[0-5])(-|$)/.test(modelId);
 }
 
 export class AnthropicProvider implements Provider {
@@ -34,13 +44,14 @@ export class AnthropicProvider implements Provider {
     nativeToolCalling: true,
     thinking: true,
     promptCache: true,
-    minCacheablePrefixTokens: 4096, // Opus 4.8（§15.4）
+    minCacheablePrefixTokens: 4096, // Opus 级（§15.4）；按模型精确值见 catalog.json
     effort: true,
   };
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly defaultMaxTokens: number;
   private readonly extraHeaders: Record<string, string>;
+  private readonly thinking: 'adaptive' | 'off';
   /** baseUrl 被显式覆盖（自建代理/中转站）：key 可由代理侧注入，空 key 不再早退（5A 双模式）。 */
   private readonly hasCustomBase: boolean;
 
@@ -50,6 +61,7 @@ export class AnthropicProvider implements Provider {
     this.hasCustomBase = opts.baseUrl !== undefined;
     this.defaultMaxTokens = opts.defaultMaxTokens ?? 16_000;
     this.extraHeaders = opts.headers ?? {};
+    this.thinking = opts.thinking ?? 'adaptive';
   }
 
   async *streamChat(req: ChatRequest): AsyncIterable<ProviderEvent> {
@@ -57,7 +69,7 @@ export class AnthropicProvider implements Provider {
       yield { kind: 'Error', error: { message: '缺少 ANTHROPIC_API_KEY' } };
       return;
     }
-    const body = buildAnthropicBody(req, this.defaultMaxTokens);
+    const body = buildAnthropicBody(req, this.defaultMaxTokens, { thinking: this.thinking });
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'anthropic-version': ANTHROPIC_VERSION,
@@ -113,7 +125,11 @@ export class AnthropicProvider implements Provider {
 
 // ───────────────────────── body 构造 ─────────────────────────
 
-export function buildAnthropicBody(req: ChatRequest, defaultMaxTokens: number): Record<string, unknown> {
+export function buildAnthropicBody(
+  req: ChatRequest,
+  defaultMaxTokens: number,
+  opts: { thinking?: 'adaptive' | 'off' } = {},
+): Record<string, unknown> {
   const system = req.system ?? collectSystem(req.messages);
   const nonSystem = req.messages.filter((m) => m.role !== 'system');
   const body: Record<string, unknown> = {
@@ -131,6 +147,8 @@ export function buildAnthropicBody(req: ChatRequest, defaultMaxTokens: number): 
     }));
   }
   if (req.toolChoice) body.tool_choice = toAnthropicToolChoice(req.toolChoice);
+  // 2026-10：adaptive thinking（无 budget_tokens）；老模型不发。effort 走 output_config（GA）。
+  if ((opts.thinking ?? 'adaptive') === 'adaptive' && supportsAdaptiveThinking(req.modelId)) body.thinking = { type: 'adaptive' };
   if (req.effort) body.output_config = { effort: req.effort }; // §15.4：原生 GA，非 budget_tokens
   if (req.userId) body.metadata = { user_id: req.userId };
   return body;
@@ -152,15 +170,20 @@ function textOf(m: CanonMessage): string {
 function toAnthropicMessage(m: CanonMessage): { role: 'user' | 'assistant'; content: unknown } {
   const role: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user';
   if (typeof m.content === 'string') return { role, content: m.content };
-  return { role, content: m.content.map(toAnthropicBlock) };
+  const blocks = m.content.map(toAnthropicBlock).filter((b): b is Record<string, unknown> => b !== null);
+  // 全是无签名 thinking（来自别家 provider 的历史）被滤空：补一个占位文本块，保持严格交替不 400。
+  return { role, content: blocks.length ? blocks : [{ type: 'text', text: '（无内容）' }] };
 }
 
-function toAnthropicBlock(b: ContentBlock): Record<string, unknown> {
+function toAnthropicBlock(b: ContentBlock): Record<string, unknown> | null {
   switch (b.type) {
     case 'text':
       return { type: 'text', text: b.text };
     case 'thinking':
-      return { type: 'thinking', thinking: b.text };
+      // 原样回传（含签名）；无签名（别家 provider 产出 / 旧历史）不可回传 → 丢弃。
+      return b.signature ? { type: 'thinking', thinking: b.text, signature: b.signature } : null;
+    case 'redacted_thinking':
+      return { type: 'redacted_thinking', data: b.data };
     case 'tool_use':
       return { type: 'tool_use', id: b.id, name: b.name, input: b.input };
     case 'tool_result':
@@ -194,8 +217,8 @@ async function safeText(res: Response): Promise<string> {
 
 export type AnthropicSseEvent =
   | { type: 'message_start'; message?: unknown }
-  | { type: 'content_block_start'; index: number; content_block: { type: string; id?: string; name?: string } }
-  | { type: 'content_block_delta'; index: number; delta: { type: string; text?: string; thinking?: string; partial_json?: string } }
+  | { type: 'content_block_start'; index: number; content_block: { type: string; id?: string; name?: string; data?: string } }
+  | { type: 'content_block_delta'; index: number; delta: { type: string; text?: string; thinking?: string; partial_json?: string; signature?: string } }
   | { type: 'content_block_stop'; index: number }
   | { type: 'message_delta'; delta?: { stop_reason?: string }; usage?: AnthropicUsage }
   | { type: 'message_stop' }
@@ -221,12 +244,15 @@ export class AnthropicSseDecoder {
           this.toolByIndex.set(ev.index, cb.id);
           return [{ kind: 'ToolCallStart', id: cb.id, name: cb.name ?? '' }];
         }
+        if (cb.type === 'thinking') return [{ kind: 'ThinkingStart' }];
+        if (cb.type === 'redacted_thinking' && cb.data) return [{ kind: 'RedactedThinking', data: cb.data }];
         return [];
       }
       case 'content_block_delta': {
         const d = ev.delta;
         if (d.type === 'text_delta' && d.text != null) return [{ kind: 'TextDelta', text: d.text }];
         if (d.type === 'thinking_delta' && d.thinking != null) return [{ kind: 'ThinkingDelta', text: d.thinking }];
+        if (d.type === 'signature_delta' && d.signature) return [{ kind: 'ThinkingSignature', signature: d.signature }];
         if (d.type === 'input_json_delta' && d.partial_json != null) {
           const id = this.toolByIndex.get(ev.index);
           if (id) return [{ kind: 'ToolCallArgsDelta', id, delta: d.partial_json }];

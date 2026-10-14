@@ -679,6 +679,8 @@ export class AgentKernel implements Kernel, SubagentHost {
       this.drainStatusNotes(s);
 
       let text = '';
+      /** 本 step 的 thinking 块（含签名/加密块），按产出顺序置于 assistant 消息最前（2026-10：Claude 5 系工具回合必须原样回传）。 */
+      let thinkingBlocks: ContentBlock[] = [];
       let toolCalls: ToolCallAccum[] = [];
       let argsById = new Map<string, string>();
       let stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'pause_turn' = 'end_turn';
@@ -697,6 +699,7 @@ export class AgentKernel implements Kernel, SubagentHost {
         }
         const route = chain[Math.min(s.routeIdx, chain.length - 1)]!;
         text = '';
+        thinkingBlocks = [];
         toolCalls = [];
         argsById = new Map<string, string>();
         stopReason = 'end_turn';
@@ -712,9 +715,26 @@ export class AgentKernel implements Kernel, SubagentHost {
               produced = true;
               await this.emit(s, { kind: 'AssistantText', delta: ev.text }, turnId);
               break;
-            case 'ThinkingDelta':
+            case 'ThinkingStart':
               produced = true;
+              thinkingBlocks.push({ type: 'thinking', text: '' });
+              break;
+            case 'ThinkingDelta': {
+              produced = true;
+              const last = thinkingBlocks[thinkingBlocks.length - 1];
+              if (last && last.type === 'thinking') last.text += ev.text;
+              else thinkingBlocks.push({ type: 'thinking', text: ev.text });
               await this.emit(s, { kind: 'Reasoning', delta: ev.text }, turnId);
+              break;
+            }
+            case 'ThinkingSignature': {
+              const last = thinkingBlocks[thinkingBlocks.length - 1];
+              if (last && last.type === 'thinking') last.signature = ev.signature;
+              break;
+            }
+            case 'RedactedThinking':
+              produced = true;
+              thinkingBlocks.push({ type: 'redacted_thinking', data: ev.data });
               break;
             case 'ToolCallStart':
               produced = true;
@@ -773,7 +793,7 @@ export class AgentKernel implements Kernel, SubagentHost {
 
       // max_tokens：话未说完，追加"请继续"续传，不算错误（§15.1）。
       if (stopReason === 'max_tokens') {
-        s.messages.push({ role: 'assistant', content: text ? [{ type: 'text', text }] : [] });
+        s.messages.push({ role: 'assistant', content: [...thinkingBlocks, ...(text ? [{ type: 'text' as const, text }] : [])] });
         s.messages.push({ role: 'user', content: '请继续' });
         continue;
       }
@@ -781,7 +801,7 @@ export class AgentKernel implements Kernel, SubagentHost {
 
       // 无工具调用 → 收尾。
       if (toolCalls.length === 0) {
-        s.messages.push({ role: 'assistant', content: text });
+        s.messages.push({ role: 'assistant', content: thinkingBlocks.length ? [...thinkingBlocks, ...(text ? [{ type: 'text' as const, text }] : [])] : text });
         await this.completeTurn(s, 'end_turn', usage ?? zeroUsage(), turnId);
         return;
       }
@@ -793,7 +813,7 @@ export class AgentKernel implements Kernel, SubagentHost {
       // 不变量：EventLog 单写者（emit 经 s.emitChain 串行落盘）；tool_result 按原批次位置回填；
       // interrupt 经 turnAbort signal 取消在飞的并发调用。
       const available = toolset;
-      const assistantBlocks: ContentBlock[] = [];
+      const assistantBlocks: ContentBlock[] = [...thinkingBlocks];
       if (text) assistantBlocks.push({ type: 'text', text });
       /** 每个 tool_use 的最终 tool_result，按批次位置存放（阶段 1 拒绝 / 阶段 2 执行都落这里）。 */
       const results: (ContentBlock | undefined)[] = new Array(toolCalls.length);

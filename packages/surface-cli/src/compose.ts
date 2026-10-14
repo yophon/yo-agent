@@ -30,15 +30,18 @@ export interface ProviderChoice {
  */
 export function selectProvider(env: NodeJS.ProcessEnv, prompt = ''): ProviderChoice {
   const model = env.YO_MODEL;
-  if (env.ANTHROPIC_API_KEY) return { provider: new AnthropicProvider(), model: model ?? 'claude-opus-4-8', demo: false };
-  if (env.GEMINI_API_KEY || env.GOOGLE_API_KEY) return { provider: new GeminiProvider(), model: model ?? 'gemini-2.0-flash', demo: false };
+  // 2026-10 默认模型：各家当前主力档（目录见 provider/catalog.json）；YO_THINKING=off 关 Anthropic adaptive thinking（5.x 仍恒开）。
+  if (env.ANTHROPIC_API_KEY) {
+    return { provider: new AnthropicProvider({ thinking: env.YO_THINKING === 'off' ? 'off' : 'adaptive' }), model: model ?? 'claude-opus-5-5', demo: false };
+  }
+  if (env.GEMINI_API_KEY || env.GOOGLE_API_KEY) return { provider: new GeminiProvider(), model: model ?? 'gemini-3.8-flash', demo: false };
   if (env.OPENAI_API_KEY) {
     if (env.OPENAI_MODE === 'responses') {
-      return { provider: new OpenAiResponsesProvider({ baseUrl: env.OPENAI_BASE_URL }), model: model ?? 'gpt-4o', demo: false };
+      return { provider: new OpenAiResponsesProvider({ baseUrl: env.OPENAI_BASE_URL }), model: model ?? 'gpt-6.1-sol', demo: false };
     }
     let provider: Provider = new OpenAiCompatibleProvider({ baseUrl: env.OPENAI_BASE_URL });
     if (env.YO_TOOL_SHIM === '1') provider = new PromptShimProvider(provider); // 双轨：弱/本地模型回退
-    return { provider, model: model ?? 'gpt-4o', demo: false };
+    return { provider, model: model ?? 'gpt-6.1-sol', demo: false };
   }
   const fake = new FakeProvider();
   fake.script(

@@ -191,6 +191,8 @@ export interface OpenAiChunk {
   choices?: Array<{
     delta?: {
       content?: string;
+      /** DeepSeek 等兼容接口 thinking 态的推理增量（2026-10）。 */
+      reasoning_content?: string;
       tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
     };
     finish_reason?: string | null;
@@ -206,6 +208,7 @@ export class OpenAiSseDecoder {
     const choice = chunk.choices?.[0];
     if (choice) {
       const d = choice.delta;
+      if (d?.reasoning_content) out.push({ kind: 'ThinkingDelta', text: d.reasoning_content });
       if (d?.content) out.push({ kind: 'TextDelta', text: d.content });
       if (d?.tool_calls) {
         for (const tc of d.tool_calls) {

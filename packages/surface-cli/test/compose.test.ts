@@ -5,7 +5,7 @@ import { FakeProvider } from '@yo-agent/provider';
 
 describe('selectProvider', () => {
   it('ANTHROPIC → anthropic；GEMINI → gemini', () => {
-    expect(selectProvider({ ANTHROPIC_API_KEY: 'x' } as NodeJS.ProcessEnv)).toMatchObject({ model: 'claude-opus-4-8', demo: false });
+    expect(selectProvider({ ANTHROPIC_API_KEY: 'x' } as NodeJS.ProcessEnv)).toMatchObject({ model: 'claude-opus-5-5', demo: false });
     expect(selectProvider({ ANTHROPIC_API_KEY: 'x' } as NodeJS.ProcessEnv).provider.id).toBe('anthropic');
     expect(selectProvider({ GEMINI_API_KEY: 'x' } as NodeJS.ProcessEnv).provider.id).toBe('gemini');
   });

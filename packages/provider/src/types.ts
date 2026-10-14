@@ -20,7 +20,13 @@ export type ToolChoice =
 /** 归一消息内容块。 */
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'thinking'; text: string }
+  /**
+   * 思考块（2026-10 刷新）：Anthropic 带 signature 才可回传——Claude 4.6+ 开 thinking 时工具回合的 assistant 消息
+   * 必须原样带回 thinking 块（剥掉会 400：ordering/signature），且只在同一会话原样回放；无 signature 的块回传时丢弃。
+   */
+  | { type: 'thinking'; text: string; signature?: string }
+  /** Anthropic redacted_thinking（加密块，原样回传）。 */
+  | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   // name：工具函数名。Gemini 靠 functionResponse.name（非 id）关联回 functionCall，故必须携带真名（非合成 call id）。
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; name?: string };
@@ -48,7 +54,13 @@ export interface ChatRequest {
 
 export type ProviderEvent =
   | { kind: 'TextDelta'; text: string }
+  /** 新 thinking 块开始（Anthropic content_block_start type=thinking）；内核据此分块。 */
+  | { kind: 'ThinkingStart' }
   | { kind: 'ThinkingDelta'; text: string }
+  /** 当前 thinking 块的签名（Anthropic signature_delta）；无签名的块不可回传。 */
+  | { kind: 'ThinkingSignature'; signature: string }
+  /** Anthropic redacted_thinking 块（整块原样回传）。 */
+  | { kind: 'RedactedThinking'; data: string }
   | { kind: 'ToolCallStart'; id: string; name: string }
   | { kind: 'ToolCallArgsDelta'; id: string; delta: string } // 累积拼完才 JSON.parse（§15.4）
   | { kind: 'ToolCallEnd'; id: string }

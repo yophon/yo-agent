@@ -11,7 +11,7 @@
 Phase 5.2 收口审查留下两个内核层欠账，且互为前置：
 
 1. **MED-2 并发 turn 竞态**（PHASE-5.2.md 审查节）：内核无「同会话 turn 进行中」互斥闸。TUI 本地队列（app.ts）与扩展 followUp 队列（extension-host host.ts）判据一致（`TurnCompleted{stopReason:'end_turn'}` 出队），两队列同时非空时同一事件双路触发 submit → 两 turn 并发交错。RPC 客户端并发 `turn/start` 同样命中。防线目前全在 surface 自律，与「内核是事件唯一写入方、也应是状态一致性守门人」的架构立场矛盾。
-2. **会话 DAG 未兑现**（pi 研究的第三样精华，research/pi.md §12）：`EventEnvelope.parentId` 协议已预留（protocol/src/events.ts:257）、三 store 全存取（sqlite `parent_cursor` 列 / indexeddb / memory），但 kernel `doEmit` 恒填 `null`（kernel.ts:1149）；DESIGN §6.2 预留的 `session/fork(sessionId, atCursor)` RPC 方法未实现。Phase 6 聊天平台的 `UnifiedMessage.replyToId → parentId` 映射（kernel/src/index.ts:160）在等它。
+2. **会话 DAG 未兑现**（pi 研究的第三样精华，archive/2026-06-research/pi.md §12）：`EventEnvelope.parentId` 协议已预留（protocol/src/events.ts:257）、三 store 全存取（sqlite `parent_cursor` 列 / indexeddb / memory），但 kernel `doEmit` 恒填 `null`（kernel.ts:1149）；DESIGN §6.2 预留的 `session/fork(sessionId, atCursor)` RPC 方法未实现。Phase 6 聊天平台的 `UnifiedMessage.replyToId → parentId` 映射（kernel/src/index.ts:160）在等它。
 
 **顺序拍板：先 5.3a 并发闸，后 5.3b/c DAG。** 三个理由：① fork 产生多活跃分支后，多路输入打同一内核的机会只增不减；② fork 一个 turn 进行中的会话必须拒绝或排队——需要「turn 进行中」成为内核正式状态位，正是并发闸的产物；③ 并发闸小（一个文件为主），MED-2 已入档缺陷立刻销账。
 

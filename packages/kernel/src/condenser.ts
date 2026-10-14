@@ -87,7 +87,8 @@ export class SummarizingCondenser implements Condenser {
 
     const head = messages.slice(0, keepFirst);
     const middleAll = messages.slice(keepFirst, tailStart);
-    const tail = messages.slice(tailStart);
+    // 2026-10 preserved thinking：压缩改写了前缀，保尾段里的 thinking 块已与其产生时的历史脱钩，原样回放会 400 → 剥掉（text/tool 块留）。
+    const tail = messages.slice(tailStart).map(stripThinking);
 
     // 压缩保护（4D）：把含 protectedToolNames 工具的消息对（tool_use+tool_result）逐字摘出，仅摘要其余中段。
     const { protectedMsgs, toSummarize: middle } = partitionProtected(middleAll, this.protectedToolNames);
@@ -291,6 +292,14 @@ function toBlocks(content: string | ContentBlock[]): ContentBlock[] {
 }
 
 /** 合并相邻的 user 消息为单条（content 拼成 block 数组），保证 user/assistant 交替合法。 */
+/** 去掉消息里的 thinking / redacted_thinking 块；滤空则退成占位文本（保持交替）。 */
+export function stripThinking(m: CanonMessage): CanonMessage {
+  if (typeof m.content === 'string') return m;
+  const kept = m.content.filter((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
+  if (kept.length === m.content.length) return m;
+  return { ...m, content: kept.length ? kept : [{ type: 'text', text: '（思考已省略）' }] };
+}
+
 function mergeAdjacentUser(messages: CanonMessage[]): CanonMessage[] {
   const out: CanonMessage[] = [];
   for (const m of messages) {

@@ -27,9 +27,9 @@ describe('buildResponsesBody', () => {
     expect(input[2]).toEqual({ type: 'function_call_output', call_id: 'call_1', output: 'ok' });
   });
 
-  it('effort xhigh/max 降到 reasoning.effort=high（Responses 无 xhigh）', () => {
-    const body = buildResponsesBody({ modelId: 'o3', messages: [], tools: [], effort: 'xhigh' }, 16_000);
-    expect(body.reasoning).toEqual({ effort: 'high' });
+  it('effort 全档透传 reasoning.effort（2026-10：gpt-6 系列原生 xhigh/max）', () => {
+    const body = buildResponsesBody({ modelId: 'gpt-6.1-sol', messages: [], tools: [], effort: 'xhigh' }, 16_000);
+    expect(body.reasoning).toEqual({ effort: 'xhigh' });
   });
 });
 

@@ -9,11 +9,11 @@
   },
   "types": "./src/index.ts",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@yo-agent/kernel": "workspace:*",
     "@yo-agent/protocol": "workspace:*",
     "@yo-agent/provider": "workspace:*",
     "@yo-agent/tools": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.24.1"
   }
 }

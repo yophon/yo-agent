@@ -24,6 +24,8 @@ function blockText(b: ContentBlock): string {
     case 'text':
     case 'thinking':
       return b.text;
+    case 'redacted_thinking':
+      return '';
     case 'tool_use':
       return `${b.name} ${stringify(b.input)}`;
     case 'tool_result':

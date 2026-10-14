@@ -123,7 +123,7 @@ export function buildResponsesBody(req: ChatRequest, defaultMaxTokens: number): 
     }));
   }
   if (req.toolChoice) body.tool_choice = toResponsesToolChoice(req.toolChoice);
-  if (req.effort) body.reasoning = { effort: req.effort === 'xhigh' || req.effort === 'max' ? 'high' : req.effort };
+  if (req.effort) body.reasoning = { effort: req.effort }; // 2026-10：gpt-6 系列原生 none|low|medium|high|xhigh|max，不再折到 high
   if (req.userId) body.user = req.userId;
   if (req.providerOptions) Object.assign(body, req.providerOptions);
   return body;

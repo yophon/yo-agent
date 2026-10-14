@@ -899,7 +899,7 @@ yo-agent/
 
 ### Phase 5.2 — 抄 pi 精华：EnvAdapter + 进程内可信扩展档（✅ 已交付，见 [`PHASE-5.2.md`](PHASE-5.2.md)）
 
-> 对 pi 源码研究（[`research/pi.md`](research/pi.md) §12）拍板：**不做 pi ExtensionAPI 兼容层**（UI 面绑 pi-tui / API 未冻结），只抄两样精华进自有架构。
+> 对 pi 源码研究（[`archive/2026-06-archive/2026-06-research/pi.md`](archive/2026-06-archive/2026-06-research/pi.md) §12）拍板：**不做 pi ExtensionAPI 兼容层**（UI 面绑 pi-tui / API 未冻结），只抄两样精华进自有架构。
 
 - **EnvAdapter（5.2a）**：内核自身 I/O 需求接口化——`kernel/env.ts` 窄 `FileSystem` 接口 + `MemoryFileSystem` 进 core、`NodeFileSystem` 仅主入口；context-files/skills/recipes 注入 fs 变纯逻辑进 core → **浏览器面解锁 skills/约定文件**（surface-web `contextFs`）；ExecBackend 提升为装配层共享单例。
 - **`@yo-agent/extension-host`（5.2b）**：进程内**可信**扩展档，与 plugin-host（跨进程不可信档）分层并列——`defineExtension` 自有 API（registerTool 钳制/registerCommand→TUI extraCommands/addSystemSection/on hooks 直通 HookBus/onEvent/exec 共享后端/steer/followUp）+ 双目录发现 + 项目信任门（`extension-trust.json`，TUI 交互确认/headless 跳过）+ 崩溃围栏（健康 flag 显隐）。
@@ -920,6 +920,16 @@ yo-agent/
 - **6b 内核装配（✅）**：WeixinSurface——每（账号, 对端）确定性 sessionId（配 YO_DB 跨重启续聊）；入站文本/语音转文字 → submitInput（5.3a 队列防交错）；出站 typing 起止 + FINISH 文本切段 + context_token 回传；授权门（allow 名单 + 机主自动过 + 陌生人一次性提示）；权限模式固定 ci。CLI：`yoagent weixin login|run|allow`。
 - **6c 媒体 / 引用 / 进度 / 配对（✅ 2026-10-14）**：入站图片/文件/视频 CDN 下载 + AES-128-ECB 解密落 workspace 媒体目录（路径告知模型；多模态看图留 Phase 7）；`ref_msg` → `EventEnvelope.parentId`（kernel `submitInput` 增 `{ parentId }`，仅挂 UserMessage，越界降 null）+ 引用摘要进 prompt；ToolCallStarted/Completed → TOOL_CALL_START/RESULT item 同 run_id（与官方参考实现同形——其全部出站为 FINISH，不用 GENERATING，本实现同）；uint64 消息 id 无损解析；配对码自助授权。群聊：官方参考实现 groupPolicy=disabled、协议仅有 group_id 字段，继续不接入（每群记一次日志）。
 - 另接收 Phase 4 顺延项：L2 容器沙箱 + OTel 可观测；QQ/OneBot、Telegram 作为后续渠道复用 Transport + Adapter 分层。
+
+### 2026-10 刷新（✅ 2026-10-14）
+
+立项研究（2026-06）四个月后对照现状复核，见 [`research/_LANDSCAPE-2026-10.md`](research/_LANDSCAPE-2026-10.md)（2026-06 快照归档至 `archive/2026-06-research/`）。本次落地：
+
+- **模型目录**：Claude Opus/Sonnet/Haiku 5.5 + Fable 5.1（Opus 4.8 留作上代）、GPT-6 Astra/6.1 Sol/6 Luna + GPT-5.5、Gemini 4 Argon/3.8 Flash/3.5 Flash-Lite/3.1 Pro、DeepSeek V4.1 Flash/V4 Pro；增 `capabilities.vision` 标注。默认模型：`claude-opus-5-5` / `gemini-3.8-flash` / `gpt-6.1-sol`。
+- **Anthropic 适配**：`thinking:{type:'adaptive'}`（老模型不发；`YO_THINKING=off` 可关）；SSE 解出 `signature_delta`/`redacted_thinking`，内核把 thinking 块（含签名）置于 assistant 消息最前原样回传——Claude 5 系 thinking 恒开，工具回合剥掉 thinking 块会 400，这是本次最关键的修复。Condenser 保尾段剥 thinking（preserved thinking：改写前缀后旧块回放会 400）。
+- **OpenAI**：Responses `reasoning.effort` 全档透传（gpt-6 原生 xhigh/max）；Chat 兼容层解 `reasoning_content`（DeepSeek thinking 态）为 Reasoning 事件。
+- **依赖**：MCP SDK 1.29 → 1.32（仍为 2025-11 规范线；MCP 2026-07-28 大改版需另立工作项，见 _LANDSCAPE-2026-10 启示 #1）。zod 4 / ink 8 / vitest 5 / TypeScript 7 均为大版本，未动。
+- **未做**：多模态图片输入（provider 三家 + 协议附件字段）、出站媒体、MCP 新规范双栈、延迟工具加载/code mode——按 _LANDSCAPE-2026-10「对 yo-agent 的启示」排期。
 
 ### Phase 7 — 打磨 + 多用户接缝
 
@@ -1005,7 +1015,7 @@ yo-agent/
 
 ## 15. 实现硬细节补遗（claudeLearning 31 篇 + claude-api 权威核查）
 
-> 本节是把 Claude Code / Agent SDK / Anthropic API 的**承重实现细节**收进设计的"已采纳决策"清单。每条都对应一个上面的章节号。完整 ~70 条 findings 与出处见 [`docs/research/_SUPPLEMENT-from-claudeLearning.md`](research/_SUPPLEMENT-from-claudeLearning.md)。**§15.4 / §15.10 的 API 形态已用 claude-api skill 权威核查**（截至 2026-06），优先级高于 2026-05 学习笔记。
+> 本节是把 Claude Code / Agent SDK / Anthropic API 的**承重实现细节**收进设计的"已采纳决策"清单。每条都对应一个上面的章节号。完整 ~70 条 findings 与出处见 [`docs/archive/2026-06-archive/2026-06-research/_SUPPLEMENT-from-claudeLearning.md`](archive/2026-06-archive/2026-06-research/_SUPPLEMENT-from-claudeLearning.md)。**§15.4 / §15.10 的 API 形态已用 claude-api skill 权威核查**（2026-06 首核，**2026-10-14 复核**：模型目录换到 Claude 5.x / GPT-6 / Gemini 3.8 / DeepSeek V4，Anthropic 适配改 adaptive thinking + thinking 块带签名原样回传，详见 §13「2026-10 刷新」），优先级高于 2026-05 学习笔记。
 
 ### 15.1 内核（补 §2）
 - **`stop_reason='max_tokens'` 自动续传**：TurnLoop 遇到 `Stop{reason:'max_tokens'}` 时追加 `{role:'user', content:'请继续'}` 继续循环，**不 `emit(TurnFailed)`**（话未说完≠错误）。`StopReason` / `ProviderEvent.Stop.reason` 补 `'pause_turn'`（server-tool / extended-thinking 暂停），遇到时 `continue`。

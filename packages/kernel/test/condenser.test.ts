@@ -9,6 +9,7 @@ import {
   extractIdentifiers,
   makeProviderSummarizer,
   parseHandoffSections,
+  stripThinking,
 } from '@yo-agent/kernel';
 import type { Condenser } from '@yo-agent/kernel';
 import type { CanonMessage } from '@yo-agent/provider';
@@ -360,5 +361,28 @@ describe('Condenser 接入内核主循环', () => {
     kernel.subscribe(sessionId, null, (env: EventEnvelope) => events.push(env.event));
     await kernel.submitInput(sessionId, 'go', 'k1');
     expect(events.some((e) => e.kind === 'ContextCompacted')).toBe(false);
+  });
+});
+
+describe('2026-10 preserved thinking：保尾段剥 thinking 块', () => {
+  it('stripThinking：去 thinking/redacted_thinking，text/tool 块保留；滤空补占位；字符串与无思考消息原样', () => {
+    expect(stripThinking({ role: 'user', content: 'hi' })).toEqual({ role: 'user', content: 'hi' });
+    const plain = { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'a' }] };
+    expect(stripThinking(plain)).toBe(plain);
+    expect(
+      stripThinking({
+        role: 'assistant',
+        content: [
+          { type: 'thinking', text: 't', signature: 's' },
+          { type: 'redacted_thinking', data: 'd' },
+          { type: 'text', text: 'a' },
+          { type: 'tool_use', id: '1', name: 'x', input: {} },
+        ],
+      }).content,
+    ).toEqual([
+      { type: 'text', text: 'a' },
+      { type: 'tool_use', id: '1', name: 'x', input: {} },
+    ]);
+    expect(stripThinking({ role: 'assistant', content: [{ type: 'thinking', text: 't', signature: 's' }] }).content).toEqual([{ type: 'text', text: '（思考已省略）' }]);
   });
 });

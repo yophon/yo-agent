@@ -104,6 +104,7 @@ The CLI reads environment variables from the current process. When launched thro
 | `YO_COMPACT_MODEL` | Select the model used for compaction summaries |
 | `YO_CHECKPOINT=1` | Create a shadow-git checkpoint after edits |
 | `YO_LOOP_BREAKER` | Set loop detection to `off`, `loose`, or `strict`; defaults to `loose` |
+| `YO_THINKING=off` | Disable Anthropic adaptive thinking (Claude 5.x always thinks regardless; 4.7/4.8 then run without thinking) |
 | `YO_PERMISSION_MODE` | Initial permission mode: `read-only`, `supervised`, `accept-edits`, `autonomous`, `ci`, or `bypass`; `--permission-mode` takes precedence |
 | `YO_TOOL_SHIM=1` | Enable the prompt shim for compatible models without native tool calling |
 | `YO_HISTORY` | Set the TUI input history path; an empty string disables history |
@@ -115,7 +116,7 @@ Example:
 ```bash
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://gateway.example.com/v1
-YO_MODEL=gpt-4o
+YO_MODEL=gpt-6.1-sol
 YO_DB=~/.local/share/yo-agent/sessions.db
 YO_COMPACT=1
 ```

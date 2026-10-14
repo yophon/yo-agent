@@ -104,6 +104,7 @@ CLI 会读取当前进程环境变量。通过全局 `yoagent` 启动时，还�
 | `YO_COMPACT_MODEL` | 指定压缩摘要模型 |
 | `YO_CHECKPOINT=1` | 编辑后创建 shadow-git checkpoint |
 | `YO_LOOP_BREAKER` | `off`、`loose` 或 `strict`，默认 `loose` |
+| `YO_THINKING=off` | 关闭 Anthropic adaptive thinking（Claude 5.x 恒开不受影响；4.7/4.8 即不思考） |
 | `YO_PERMISSION_MODE` | 会话起始权限档位：`read-only`、`supervised`、`accept-edits`、`autonomous`、`ci`、`bypass`；`--permission-mode` 优先 |
 | `YO_TOOL_SHIM=1` | 为不支持原生工具调用的兼容模型启用 prompt shim |
 | `YO_HISTORY` | TUI 输入历史路径；空字符串表示关闭 |
@@ -115,7 +116,7 @@ CLI 会读取当前进程环境变量。通过全局 `yoagent` 启动时，还�
 ```bash
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://gateway.example.com/v1
-YO_MODEL=gpt-4o
+YO_MODEL=gpt-6.1-sol
 YO_DB=~/.local/share/yo-agent/sessions.db
 YO_COMPACT=1
 ```

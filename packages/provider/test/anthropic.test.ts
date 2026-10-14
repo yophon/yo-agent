@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AnthropicSseDecoder, buildAnthropicBody, type ProviderEvent } from '@yo-agent/provider';
+import { AnthropicSseDecoder, buildAnthropicBody, supportsAdaptiveThinking, type ProviderEvent } from '@yo-agent/provider';
 
 describe('AnthropicSseDecoder', () => {
   it('解码文本 + 工具调用 + 停止/用量', () => {
@@ -36,7 +36,7 @@ describe('buildAnthropicBody', () => {
       16_000,
     );
     expect(body.output_config).toEqual({ effort: 'xhigh' });
-    expect(body.thinking).toBeUndefined();
+    expect(body.thinking).toEqual({ type: 'adaptive' }); // 2026-10：adaptive 缺省；无 budget_tokens
     expect(body.temperature).toBeUndefined();
     expect(body.stream).toBe(true);
   });
@@ -63,5 +63,72 @@ describe('buildAnthropicBody', () => {
       type: 'tool_result',
       tool_use_id: 'tu_1',
     });
+  });
+});
+
+describe('2026-10 刷新：thinking 块回传与 adaptive 形态', () => {
+  it('decoder：thinking 块 → ThinkingStart/Delta/Signature；redacted_thinking → RedactedThinking', () => {
+    const d = new AnthropicSseDecoder();
+    const out: ProviderEvent[] = [
+      ...d.push({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }),
+      ...d.push({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '想一下' } }),
+      ...d.push({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig_abc' } }),
+      ...d.push({ type: 'content_block_stop', index: 0 }),
+      ...d.push({ type: 'content_block_start', index: 1, content_block: { type: 'redacted_thinking', data: 'ENC' } }),
+      ...d.push({ type: 'content_block_stop', index: 1 }),
+      ...d.push({ type: 'content_block_start', index: 2, content_block: { type: 'text' } }),
+      ...d.push({ type: 'content_block_delta', index: 2, delta: { type: 'text_delta', text: '答' } }),
+    ];
+    expect(out).toEqual([
+      { kind: 'ThinkingStart' },
+      { kind: 'ThinkingDelta', text: '想一下' },
+      { kind: 'ThinkingSignature', signature: 'sig_abc' },
+      { kind: 'RedactedThinking', data: 'ENC' },
+      { kind: 'TextDelta', text: '答' },
+    ]);
+  });
+
+  it('历史回放：带签名 thinking 原样回传、redacted 原样回传、无签名 thinking 丢弃；滤空补占位文本', () => {
+    const body = buildAnthropicBody(
+      {
+        modelId: 'claude-opus-5-5',
+        messages: [
+          { role: 'user', content: 'hi' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', text: '想', signature: 'sig1' },
+              { type: 'redacted_thinking', data: 'ENC' },
+              { type: 'thinking', text: '别家 provider 的无签名思考' },
+              { type: 'tool_use', id: 'tu_1', name: 'read', input: { path: 'a' } },
+            ],
+          },
+          { role: 'tool', content: [{ type: 'tool_result', toolUseId: 'tu_1', content: 'ok' }] },
+          { role: 'assistant', content: [{ type: 'thinking', text: '只有无签名思考' }] },
+        ],
+        tools: [],
+      },
+      16_000,
+    );
+    const messages = body.messages as Array<{ role: string; content: unknown }>;
+    expect(messages[1]!.content).toEqual([
+      { type: 'thinking', thinking: '想', signature: 'sig1' },
+      { type: 'redacted_thinking', data: 'ENC' },
+      { type: 'tool_use', id: 'tu_1', name: 'read', input: { path: 'a' } },
+    ]);
+    expect(messages[3]!.content).toEqual([{ type: 'text', text: '（无内容）' }]);
+  });
+
+  it('adaptive 只发给认它的模型：5.x/4.6+ 发，4.5 及 3.x 不发；thinking:off 不发', () => {
+    const mk = (modelId: string, thinking?: 'adaptive' | 'off') =>
+      buildAnthropicBody({ modelId, messages: [{ role: 'user', content: 'hi' }], tools: [] }, 16_000, thinking ? { thinking } : {}).thinking;
+    expect(mk('claude-opus-5-5')).toEqual({ type: 'adaptive' });
+    expect(mk('claude-fable-5-1')).toEqual({ type: 'adaptive' });
+    expect(mk('claude-sonnet-4-6')).toEqual({ type: 'adaptive' });
+    expect(mk('claude-haiku-4-5')).toBeUndefined();
+    expect(mk('claude-opus-4-5')).toBeUndefined();
+    expect(mk('claude-3-5-sonnet-20241022')).toBeUndefined();
+    expect(mk('claude-opus-5-5', 'off')).toBeUndefined();
+    expect(supportsAdaptiveThinking('claude-sonnet-5-5')).toBe(true);
   });
 });

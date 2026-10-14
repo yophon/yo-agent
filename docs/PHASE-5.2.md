@@ -5,7 +5,7 @@
 
 ## Context（规划时拍板，交付未变）
 
-对 pi（github.com/earendil-works/pi，MIT）的源码研究确认了两个值得抄的设计。**不做 pi ExtensionAPI 兼容层**——其 UI 面绑定 pi-tui（官方 68 个示例扩展中 21 个 import pi-tui、11 个用 setWidget 等 UI 面）、API 未冻结（0.80.x，240+ releases），兼容是移动目标；**只把精华抄进自有架构**（否决记录与源码实测已沉淀进 [`research/pi.md`](research/pi.md) §12）：
+对 pi（github.com/earendil-works/pi，MIT）的源码研究确认了两个值得抄的设计。**不做 pi ExtensionAPI 兼容层**——其 UI 面绑定 pi-tui（官方 68 个示例扩展中 21 个 import pi-tui、11 个用 setWidget 等 UI 面）、API 未冻结（0.80.x，240+ releases），兼容是移动目标；**只把精华抄进自有架构**（否决记录与源码实测已沉淀进 [`archive/2026-06-archive/2026-06-research/pi.md`](archive/2026-06-archive/2026-06-research/pi.md) §12）：
 
 1. **ExecutionEnv 能力接口** → 5.2a EnvAdapter：pi 把「内核自身的 I/O 需求」接口化（`packages/agent/src/harness/types.ts:332`：`ExecutionEnv = FileSystem + Shell`；node 实现只在一个文件；skills/AGENTS.md/模板加载全走接口）。yo-agent 的 `context-files.ts`/`skills.ts`/`recipes.ts` 曾直接 import node:fs，5A 时被排除出 `/core`——浏览器场景因此没有 skills/约定文件能力。接口化后它们变纯逻辑、进 core，Web 面解锁 skills。
 2. **进程内可信扩展档** → 5.2b `@yo-agent/extension-host`：pi 的扩展（jiti 加载用户 TS + 30 个生命周期事件 + 富注册面）是其生态引擎。yo-agent 既有 plugin-host 是**跨进程不可信档**（Worker+IPC、仅 .mjs、贫 API），缺一个低摩擦**可信档**。做**自有 API**（`defineExtension`），能力面对齐 pi 但不背其 API 包袱。
@@ -49,7 +49,7 @@ pi 的第三样精华——**会话 DAG 兑现**（每条 entry `parentId` 真�
   - `word-count.ts`——注册面三件套：自定义工具（LLM 可调）+ `/exthello` 命令 + system 段。
   - `queue-and-nudge.ts`——行动面：`/queue`（followUp 排队）+ `/nudge`（steer 插话）+ onEvent 观测。
 - **测试（+31，合计 743/94 文件）**：env/paths/MemoryFileSystem + MemoryFileSystem 喂三纯逻辑模块（10，kernel/test/env.test.ts）；surface-web contextFs 最小演示（2，含 skill_activate 激活全文进第二轮消息窗）；loader 发现/信任门/遮蔽回落（5）；host API 各面/围栏全注册面回滚/钳制/exec 超时/followUp 双判据/onEvent fan-out/订阅换挂/信任回落（12）；示例集成（3）；TUI extraCommands 撞名 + /help 同源（1）；既有 3E/4D/4B 全部喂 NodeFileSystem 零回归。
-- **文档**：本文件转交付报告；[`research/pi.md`](research/pi.md) 新增 §12 实测更正（四包→五包实测行数：agent 8,098 / ai 36,133 / coding-agent 51,545 / orchestrator 1,987 / tui 12,118；扩展事件实测 30 个；ExecutionEnv 三层机制；兼容层否决记录）；README（状态段/结构图/快速开始扩展用法）+ DESIGN 路线图（Phase 5.2 段 + Phase 5.3 DAG 候选）。
+- **文档**：本文件转交付报告；[`archive/2026-06-archive/2026-06-research/pi.md`](archive/2026-06-archive/2026-06-research/pi.md) 新增 §12 实测更正（四包→五包实测行数：agent 8,098 / ai 36,133 / coding-agent 51,545 / orchestrator 1,987 / tui 12,118；扩展事件实测 30 个；ExecutionEnv 三层机制；兼容层否决记录）；README（状态段/结构图/快速开始扩展用法）+ DESIGN 路线图（Phase 5.2 段 + Phase 5.3 DAG 候选）。
 
 ## 真机验收实录（2026-07-04）
 

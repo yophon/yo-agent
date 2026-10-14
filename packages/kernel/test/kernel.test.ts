@@ -600,3 +600,46 @@ describe('6c submitInput parentId（聊天引用回复 → 事件 DAG 边）', (
     expect(log.filter((e) => e.event.kind !== 'UserMessage').every((e) => e.parentId === null)).toBe(true);
   });
 });
+
+describe('2026-10 刷新：thinking 块进历史（Claude 5 系工具回合必须原样回传）', () => {
+  it('ThinkingStart/Delta/Signature → assistant 消息最前的带签名 thinking 块，先于 text/tool_use；下一步请求原样带上', async () => {
+    const h = harness();
+    const echo: RegisteredTool = {
+      descriptor: { name: 'echo', kind: 'read', description: 'e', inputSchema: { type: 'object' }, owner: 'core', availability: { always: true }, approval: 'never' },
+      executor: {
+        async *execute() {
+          yield { kind: 'output' as const, chunk: 'ok' };
+        },
+      },
+    };
+    h.tools.register(echo);
+    h.provider.script([
+      { kind: 'ThinkingStart' },
+      { kind: 'ThinkingDelta', text: '先看' },
+      { kind: 'ThinkingDelta', text: '文件' },
+      { kind: 'ThinkingSignature', signature: 'sig_1' },
+      { kind: 'RedactedThinking', data: 'ENC' },
+      { kind: 'TextDelta', text: '我来读' },
+      { kind: 'ToolCallStart', id: 'tu_1', name: 'echo' },
+      { kind: 'ToolCallArgsDelta', id: 'tu_1', delta: '{}' },
+      { kind: 'ToolCallEnd', id: 'tu_1' },
+      { kind: 'Stop', reason: 'tool_use' },
+    ]);
+    h.provider.script([{ kind: 'ThinkingStart' }, { kind: 'ThinkingDelta', text: '收尾' }, { kind: 'ThinkingSignature', signature: 'sig_2' }, ...textTurn('完成')]);
+    const sid = await h.kernel.startSession({ model: 'fake' });
+    await h.kernel.submitInput(sid, '读一下', 'k1');
+
+    const second = h.provider.seen[1]!.messages;
+    const assistant = second.find((m) => m.role === 'assistant')!;
+    expect(assistant.content).toEqual([
+      { type: 'thinking', text: '先看文件', signature: 'sig_1' },
+      { type: 'redacted_thinking', data: 'ENC' },
+      { type: 'text', text: '我来读' },
+      { type: 'tool_use', id: 'tu_1', name: 'echo', input: {} },
+    ]);
+    // 无工具的收尾轮：thinking 块 + 文本（不再退化成裸字符串）
+    const log: EventEnvelope[] = [];
+    for await (const e of h.kernel.events.read(sid)) log.push(e);
+    expect(log.filter((e) => e.event.kind === 'Reasoning').map((e) => (e.event.kind === 'Reasoning' ? e.event.delta : '')).join('')).toBe('先看文件收尾');
+  });
+});

@@ -24,6 +24,8 @@ export interface ModelCatalogEntry {
     thinking?: boolean;
     effort?: boolean;
     promptCache?: boolean;
+    /** 图片输入（多模态）——目录标注，provider 层接入留后续。 */
+    vision?: boolean;
   };
 }
 
